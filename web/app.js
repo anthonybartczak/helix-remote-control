@@ -1,11 +1,16 @@
-// Helix Bridge UI, phase 4: read-only. No build step, no dependencies.
+// Helix Bridge UI. No build step, no dependencies.
 // Talks to the server's REST API (docs/api.md). Every device call runs one
 // `tonepush` command on the server, about 1–3 s each, serialised.
+// Phase 6 writes: load preset, block on/off, parameter value, rename, save.
+// They need the server's shared token (HELIX_TOKEN), asked for once and kept
+// in this browser.
 'use strict';
 
 const SLOTS = 9; // HX Effects block slots. Slot = chain position - 1 (position 1 is the input).
 const RETRY_MS = 5000;
 const GENERIC_NAME = 'New Preset';
+const MAX_NAME = 16; // HX preset name limit; the server checks it too.
+const TOKEN_KEY = 'helix-bridge-token';
 
 // Block categories. The API does not send them yet, so the category is guessed
 // from the model name. Unknown models get a neutral colour. Replace with HX
@@ -50,6 +55,9 @@ const state = {
   blocked: null, // blocking error: { icon, title, text, detail }
   browser: { open: false, filter: '', selected: null },
   connOpen: false,
+  writes: false, // server takes writes (/api/health .writes)
+  unsaved: false, // edits made through the bridge since the last load or save
+  busy: null, // write in progress: short label, e.g. 'Saving…'
 };
 
 // ---------- API ----------
@@ -62,19 +70,25 @@ class ApiError extends Error {
   }
 }
 
-async function api(path) {
+async function api(path, { method = 'GET', body, token } = {}) {
+  const headers = {};
+  if (body !== undefined) headers['Content-Type'] = 'application/json';
+  if (token) headers.Authorization = `Bearer ${token}`;
   let res;
   try {
-    res = await fetch(path, { cache: 'no-store' });
+    res = await fetch(path, {
+      method, headers, cache: 'no-store',
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
   } catch {
     throw new ApiError(0, 'unreachable', "Can't reach Helix Bridge server");
   }
-  let body = null;
-  try { body = await res.json(); } catch { /* not JSON */ }
+  let data = null;
+  try { data = await res.json(); } catch { /* not JSON */ }
   if (!res.ok) {
-    throw new ApiError(res.status, (body && body.code) || 'http', (body && body.error) || `HTTP ${res.status}`);
+    throw new ApiError(res.status, (data && data.code) || 'http', (data && data.error) || `HTTP ${res.status}`);
   }
-  return body;
+  return data;
 }
 
 // One refresh at a time: a second request while one is running reuses it.
@@ -106,11 +120,12 @@ async function doRefresh(full) {
   if (!state.blocked && state.device !== 'ok') state.device = 'checking';
   render();
   try {
-    await api('/api/health');
+    state.writes = !!(await api('/api/health')).writes;
     state.server = 'ok';
     render();
 
     state.chain = await api('/api/chain');
+    state.unsaved = !!state.chain.unsaved;
     keepSelection();
     syncLoaded();
     state.device = 'ok';
@@ -170,6 +185,130 @@ function handleError(e) {
   if (state.blocked) retryTimer = setTimeout(refresh, RETRY_MS);
 }
 
+// ---------- Writes ----------
+
+function storedToken() {
+  try { return localStorage.getItem(TOKEN_KEY) || ''; } catch { return ''; }
+}
+
+function storeToken(token) {
+  try {
+    if (token) localStorage.setItem(TOKEN_KEY, token); else localStorage.removeItem(TOKEN_KEY);
+  } catch { /* private mode: ask again next time */ }
+}
+
+let sessionToken = '';
+
+function askToken(again) {
+  const t = window.prompt(again
+    ? 'That token was not accepted. Enter the Helix Bridge token (HELIX_TOKEN on the server):'
+    : 'Enter the Helix Bridge token (HELIX_TOKEN on the server). It is kept in this browser.');
+  return t ? t.trim() : '';
+}
+
+function canWrite() {
+  return state.writes && !state.busy && !state.loading && state.device === 'ok' && !state.blocked;
+}
+
+/**
+ * Send one write. Asks for the token when none is known or it is refused.
+ * `then` picks the re-read: 'chain' (light) or 'full' (also preset names).
+ * Returns true on success.
+ */
+async function write(label, path, body, then = 'chain') {
+  if (!canWrite()) return false;
+  state.busy = label;
+  render();
+  let ok = false;
+  try {
+    let token = sessionToken || storedToken();
+    for (let attempt = 0; attempt < 2; attempt++) {
+      if (!token) token = askToken(attempt > 0);
+      if (!token) return false;
+      try {
+        const res = await api(path, { method: 'POST', body, token });
+        sessionToken = token;
+        storeToken(token);
+        state.unsaved = !!res.unsaved;
+        ok = true;
+        break;
+      } catch (e) {
+        if (!(e instanceof ApiError) || e.code !== 'unauthorized') throw e;
+        sessionToken = '';
+        storeToken('');
+        token = '';
+      }
+    }
+  } catch (e) {
+    const err = e instanceof ApiError ? e : new ApiError(0, 'client', String(e));
+    if (err.code === 'writes_disabled') state.writes = false;
+    if (err.code === 'unreachable' || err.code === 'no_device') {
+      handleError(err);
+    } else {
+      state.banner = { message: err.message, context: `${label.replace(/…$/, '')} failed.` };
+    }
+  } finally {
+    state.busy = null;
+    render();
+  }
+  if (ok) await refresh({ full: then === 'full' });
+  return ok;
+}
+
+function confirmDiscard() {
+  return !state.unsaved || window.confirm('This preset has unsaved edits. Load another preset and lose them?');
+}
+
+async function loadPreset(index) {
+  const p = state.presets.find((x) => x.index === index);
+  if (!p || p.loaded || !confirmDiscard()) return false;
+  return write(`Loading ${p.label}…`, '/api/select', { index });
+}
+
+function stepPreset(delta) {
+  const loaded = loadedPreset();
+  if (!loaded || !state.presets.length) return;
+  const n = state.presets.length;
+  loadPreset(state.presets[(loaded.index + delta + n) % n].index);
+}
+
+function toggleBlock() {
+  const b = slotMap().get(state.selectedSlot);
+  if (!b) return;
+  write(b.enabled ? 'Turning off…' : 'Turning on…', `/api/blocks/${b.position}/enabled`, { enabled: !b.enabled });
+}
+
+function editParam(index) {
+  const b = slotMap().get(state.selectedSlot);
+  const p = b?.params.find((x) => x.index === index);
+  if (!p) return;
+  const value = window.prompt(`${b.model} · ${p.name}\nNow ${p.value}. Type a value in the same units, e.g. ${p.value}:`, p.value);
+  if (value == null || !value.trim() || value.trim() === p.value) return;
+  write(`Setting ${p.name}…`, `/api/blocks/${b.position}/params/${p.index}`, { value: value.trim() });
+}
+
+function renamePreset() {
+  const p = loadedPreset();
+  if (!p) return;
+  let name = window.prompt(`New name for ${p.label} (up to ${MAX_NAME} characters):`, p.name);
+  if (name == null) return;
+  name = name.trim();
+  if (!name || name === p.name) return;
+  if (name.length > MAX_NAME) {
+    state.banner = { message: `Name is longer than ${MAX_NAME} characters.`, context: 'Not renamed.' };
+    renderBanner();
+    return;
+  }
+  write('Renaming…', `/api/presets/${p.index}/rename`, { name }, 'full');
+}
+
+function savePreset() {
+  const p = loadedPreset();
+  if (!p) return;
+  if (!window.confirm(`Save the current edits over ${p.label} ${p.name}? This replaces the stored preset.`)) return;
+  write('Saving…', '/api/save', {});
+}
+
 // ---------- Derived data ----------
 
 function loadedPreset() {
@@ -220,7 +359,26 @@ function render() {
   renderPresetList();
   renderStatusLine();
   renderBlocker();
+  renderControls();
   if (state.browser.open) renderBrowser();
+}
+
+const WRITES_OFF = 'Writes are off: set HELIX_TOKEN on the server';
+
+/** Enable a static control when writes are possible; dashed and inert otherwise. */
+function setControl(el, enabled, offTitle = WRITES_OFF) {
+  el.disabled = !enabled;
+  el.classList.toggle('later', !state.writes);
+  el.title = state.writes ? '' : offTitle;
+}
+
+function renderControls() {
+  const ready = canWrite() && !!loadedPreset();
+  for (const el of document.querySelectorAll('[data-step]')) setControl(el, ready);
+  setControl($('rename-btn'), ready);
+  const save = $('save-btn');
+  setControl(save, ready);
+  save.classList.toggle('hot', state.writes && state.unsaved);
 }
 
 function dotClass(kind) {
@@ -260,7 +418,8 @@ function renderPresetBar() {
   const name = state.chain?.name ?? loaded?.name ?? '';
   $('nb-label').textContent = label;
   $('nb-name').textContent = name;
-  $('nb-status').textContent = state.loading ? 'Loading from device…' : '';
+  $('nb-status').textContent = state.busy || (state.loading ? 'Loading from device…' : state.unsaved ? 'Unsaved' : '');
+  $('namebar').classList.toggle('unsaved', state.unsaved);
 
   const names = state.chain?.snapshots?.length ? state.chain.snapshots : ['', '', '', ''];
   // The API does not say which snapshot is active, so none is highlighted.
@@ -325,17 +484,24 @@ function renderParams() {
   el.style.setProperty('--c', `var(--cat-${cat || 'unknown'})`);
   const catName = cat ? CATEGORIES[cat][0] : 'Unknown category';
   const meta = `${catName} · slot ${state.selectedSlot} · ${b.enabled ? 'on' : 'bypassed'}`;
+  const live = canWrite();
   const params = b.params.map((p) => {
     const pct = percentOf(p.value);
     const bar = pct == null ? '' :
       `<div class="track-fill" style="width:${pct}%"></div><div class="track-thumb" style="left:${pct}%"></div>`;
-    return `<div class="param"><div class="param-top"><span class="param-name">${esc(p.name)}</span>` +
-      `<span class="param-value">${esc(p.value)}</span></div><div class="track">${bar}</div></div>`;
+    const inner = `<div class="param-top"><span class="param-name">${esc(p.name)}</span>` +
+      `<span class="param-value">${esc(p.value)}</span></div><div class="track">${bar}</div>`;
+    return state.writes
+      ? `<button class="param editable" type="button" data-param="${p.index}"${live ? '' : ' disabled'} aria-label="${esc(p.name)}: ${esc(p.value)}. Tap to change">${inner}</button>`
+      : `<div class="param">${inner}</div>`;
   }).join('');
+  const toggle = state.writes
+    ? `<button class="act ph-toggle" type="button" data-toggle${live ? '' : ' disabled'}>${b.enabled ? 'Turn off' : 'Turn on'}</button>`
+    : `<button class="later ph-toggle" type="button" disabled title="${esc(WRITES_OFF)}">${b.enabled ? 'Turn off' : 'Turn on'}</button>`;
   el.innerHTML =
     `<div class="params-head"><div class="ph-code">${cat ? CATEGORIES[cat][1] : 'FX'}</div>` +
     `<div class="ph-model">${esc(b.model)}</div><div class="ph-meta">${esc(meta)}</div><div class="spacer"></div>` +
-    `<button class="later ph-toggle" type="button" disabled title="Phase 6">${b.enabled ? 'Turn off' : 'Turn on'}</button></div>` +
+    `${toggle}</div>` +
     `<div class="params-grid">${params}</div>`;
 }
 
@@ -347,10 +513,15 @@ function renderBank() {
   }
   const bank = bankOf(loaded.label);
   const tiles = state.presets.filter((p) => bankOf(p.label) === bank);
-  $('bank').innerHTML = tiles.map((p) =>
-    `<div class="tile${p.loaded ? ' loaded' : ''}"><div class="tile-top"><span class="tile-tag">${p.loaded ? 'LOADED' : ''}</span>` +
-    `<span class="tile-label"><span>${esc(bank)}</span>${esc(p.label.slice(-1))}</span></div>` +
-    `<div class="tile-name">${esc(p.name)}</div></div>`).join('');
+  const live = canWrite();
+  $('bank').innerHTML = tiles.map((p) => {
+    const inner = `<div class="tile-top"><span class="tile-tag">${p.loaded ? 'LOADED' : ''}</span>` +
+      `<span class="tile-label"><span>${esc(bank)}</span>${esc(p.label.slice(-1))}</span></div>` +
+      `<div class="tile-name">${esc(p.name)}</div>`;
+    return state.writes && !p.loaded
+      ? `<button class="tile" type="button" data-load="${p.index}"${live ? '' : ' disabled'} aria-label="Load ${esc(p.label)} ${esc(p.name)}">${inner}</button>`
+      : `<div class="tile${p.loaded ? ' loaded' : ''}">${inner}</div>`;
+  }).join('');
 }
 
 let listKey = '';
@@ -437,7 +608,9 @@ function renderBrowser() {
   $('sf-note').textContent = sel && loaded && sel.index !== loaded.index
     ? `selected · ${loaded.label} ${loaded.name} is loaded`
     : sel ? 'loaded' : '';
-  $('load-btn').textContent = sel ? `Load ${sel.label}` : 'Load';
+  const load = $('load-btn');
+  load.textContent = sel ? `Load ${sel.label}` : 'Load';
+  setControl(load, canWrite() && !!sel && !sel.loaded);
 }
 
 function updateActiveJump() {
@@ -499,6 +672,22 @@ document.addEventListener('click', (e) => {
   } else if (t.matches('[data-preset]')) {
     state.browser.selected = Number(t.dataset.preset);
     renderBrowser();
+  } else if (t.matches('[data-step]')) {
+    stepPreset(Number(t.dataset.step));
+  } else if (t.matches('[data-load]')) {
+    loadPreset(Number(t.dataset.load));
+  } else if (t.id === 'load-btn') {
+    const index = state.browser.selected;
+    closeBrowser();
+    loadPreset(index);
+  } else if (t.matches('[data-toggle]')) {
+    toggleBlock();
+  } else if (t.matches('[data-param]')) {
+    editParam(Number(t.dataset.param));
+  } else if (t.id === 'rename-btn') {
+    renamePreset();
+  } else if (t.id === 'save-btn') {
+    savePreset();
   } else if (t.matches('[data-jump]')) {
     const row = $(`bank-${t.dataset.jump}`);
     if (row) row.scrollIntoView({ block: 'start' });

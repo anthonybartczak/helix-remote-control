@@ -12,21 +12,54 @@ use std::time::{Duration, Instant};
 use tokio::process::Command as Process;
 use tokio::sync::Mutex;
 
-/// The `tonepush` commands the bridge may run. Read-only on purpose: write
-/// commands are added in phase 6, after the user confirms a backup (AGENTS.md 6).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub use crate::fake::FakeDevice;
+
+/// The `tonepush` commands the bridge may run.
+///
+/// Writes are limited to what phase 6 needs and TonePush has used on hardware:
+/// load, bypass, parameter, rename, save. `move` (reorder) is left out: TonePush
+/// marks it untested against hardware (AGENTS.md 6, unverified operations).
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
     List,
     Info,
     Setlists,
-    Presets { setlist: u32 },
+    Presets {
+        setlist: u32,
+    },
     Preset,
     Chain,
+    /// Load a stored preset into the edit buffer. Discards unsaved edits.
+    Select {
+        setlist: u32,
+        index: u32,
+    },
+    /// Switch a block on or off, by `chain` position. Edit buffer only.
+    Enable {
+        block: u32,
+        on: bool,
+    },
+    /// Set a parameter by index, in display units (`50`, `2.2 kHz`). Edit buffer only.
+    Set {
+        block: u32,
+        param: u32,
+        value: String,
+    },
+    /// Rename a stored preset. Written to the device's flash at once.
+    Rename {
+        setlist: u32,
+        index: u32,
+        name: String,
+    },
+    /// Commit the edit buffer over the loaded preset, keeping its name.
+    Save,
 }
 
 impl Command {
     /// Arguments after the program name.
-    pub fn args(self) -> Vec<String> {
+    ///
+    /// User text goes after `--`, so a value like `-22.1` is not read as a flag.
+    pub fn args(&self) -> Vec<String> {
         match self {
             Command::List => vec!["list".into()],
             Command::Info => vec!["info".into()],
@@ -36,7 +69,54 @@ impl Command {
             }
             Command::Preset => vec!["preset".into()],
             Command::Chain => vec!["chain".into()],
+            Command::Select { setlist, index } => vec![
+                "select".into(),
+                format!("--setlist={setlist}"),
+                "--".into(),
+                index.to_string(),
+            ],
+            Command::Enable { block, on } => vec![
+                "enable".into(),
+                "--".into(),
+                block.to_string(),
+                if *on { "on" } else { "off" }.into(),
+            ],
+            Command::Set {
+                block,
+                param,
+                value,
+            } => vec![
+                "set".into(),
+                "--".into(),
+                block.to_string(),
+                param.to_string(),
+                value.clone(),
+            ],
+            Command::Rename {
+                setlist,
+                index,
+                name,
+            } => vec![
+                "rename".into(),
+                format!("--setlist={setlist}"),
+                "--".into(),
+                index.to_string(),
+                name.clone(),
+            ],
+            Command::Save => vec!["save".into()],
         }
+    }
+
+    /// True if the command changes the device.
+    pub fn is_write(&self) -> bool {
+        matches!(
+            self,
+            Command::Select { .. }
+                | Command::Enable { .. }
+                | Command::Set { .. }
+                | Command::Rename { .. }
+                | Command::Save
+        )
     }
 }
 
@@ -132,7 +212,7 @@ impl CliDevice {
     }
 
     /// Run one session, after the cooldown since the previous one.
-    async fn run_spaced(&self, session: &mut Session, cmd: Command) -> Result<String> {
+    async fn run_spaced(&self, session: &mut Session, cmd: &Command) -> Result<String> {
         if let Some(end) = session.last_end {
             let wait = self.cooldown.saturating_sub(end.elapsed());
             if !wait.is_zero() {
@@ -145,7 +225,7 @@ impl CliDevice {
         result
     }
 
-    async fn run_once(&self, cmd: Command) -> Result<String> {
+    async fn run_once(&self, cmd: &Command) -> Result<String> {
         let child = Process::new(&self.program)
             .args(cmd.args())
             .stdin(Stdio::null())
@@ -191,13 +271,18 @@ impl Device for CliDevice {
                 return Ok(info.clone());
             }
         }
-        let mut result = self.run_spaced(&mut session, cmd).await;
+        if cmd.is_write() {
+            tracing::info!(args = ?cmd.args(), "device write");
+        }
+        // Safe to retry a write too: a claim failure means tonepush never got
+        // a session, so nothing reached the device.
+        let mut result = self.run_spaced(&mut session, &cmd).await;
         for delay in CLAIM_RETRY_DELAYS {
             match &result {
                 Err(e) if is_claim_failure(e) => {
                     tracing::warn!(?cmd, ?delay, "interface busy, retrying");
                     tokio::time::sleep(delay).await;
-                    result = self.run_spaced(&mut session, cmd).await;
+                    result = self.run_spaced(&mut session, &cmd).await;
                 }
                 _ => break,
             }
@@ -212,66 +297,30 @@ impl Device for CliDevice {
     }
 }
 
-/// Replays output recorded from the real device (`server/fixtures/`).
-pub struct FakeDevice {
-    dir: PathBuf,
-    delay: Duration,
-}
-
-impl FakeDevice {
-    pub fn new(dir: impl Into<PathBuf>) -> Self {
-        FakeDevice {
-            dir: dir.into(),
-            delay: Duration::ZERO,
-        }
-    }
-
-    /// Wait this long before each reply, to mimic a real `tonepush` call
-    /// (1–3 s) when working on the UI's loading states.
-    pub fn with_delay(mut self, delay: Duration) -> Self {
-        self.delay = delay;
-        self
-    }
-
-    /// The fixtures committed with this crate.
-    pub fn bundled() -> Self {
-        Self::new(concat!(env!("CARGO_MANIFEST_DIR"), "/fixtures"))
-    }
-
-    fn file(cmd: Command) -> Option<&'static str> {
-        Some(match cmd {
-            Command::List => "list.txt",
-            Command::Info => "info.txt",
-            Command::Setlists => "setlists.txt",
-            // Only setlist 0 was recorded.
-            Command::Presets { setlist: 0 } => "presets.txt",
-            Command::Presets { .. } => return None,
-            Command::Preset => "preset.txt",
-            Command::Chain => "chain.txt",
-        })
-    }
-}
-
-impl Device for FakeDevice {
-    fn kind(&self) -> &'static str {
-        "fake"
-    }
-
-    async fn run(&self, cmd: Command) -> Result<String> {
-        if !self.delay.is_zero() {
-            tokio::time::sleep(self.delay).await;
-        }
-        let name = Self::file(cmd).ok_or(DeviceError::NoFixture(cmd))?;
-        let path = self.dir.join(name);
-        tokio::fs::read_to_string(&path)
-            .await
-            .map_err(|e| DeviceError::Spawn(format!("{}: {e}", path.display())))
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn write_args_keep_user_text_after_the_separator() {
+        let set = Command::Set {
+            block: 10,
+            param: 0,
+            value: "-22.1 dB".into(),
+        };
+        assert_eq!(set.args(), ["set", "--", "10", "0", "-22.1 dB"]);
+        let rename = Command::Rename {
+            setlist: 0,
+            index: 7,
+            name: "--help".into(),
+        };
+        assert_eq!(
+            rename.args(),
+            ["rename", "--setlist=0", "--", "7", "--help"]
+        );
+        assert!(rename.is_write() && Command::Save.is_write());
+        assert!(!Command::Chain.is_write());
+    }
 
     #[test]
     fn claim_failures_are_recognised() {
@@ -280,21 +329,6 @@ mod tests {
         assert!(!is_claim_failure(&DeviceError::Failed(
             "no HX device found".into()
         )));
-    }
-
-    #[tokio::test]
-    async fn fake_replays_fixtures() {
-        let out = FakeDevice::bundled().run(Command::Info).await.unwrap();
-        assert!(out.starts_with("HX Effects"));
-    }
-
-    #[tokio::test]
-    async fn fake_has_no_other_setlists() {
-        let err = FakeDevice::bundled()
-            .run(Command::Presets { setlist: 1 })
-            .await
-            .unwrap_err();
-        assert!(matches!(err, DeviceError::NoFixture(_)));
     }
 
     /// A stand-in `tonepush` that fails to claim the interface once, then

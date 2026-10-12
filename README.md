@@ -21,6 +21,11 @@ over USB, UI opened from iPad Safari at `http://helix-bridge.local` with HX Edit
 names. Whole Pi: 222 MB RAM used with the service running. Next: Phase 6 (write
 operations) after a full preset backup. Install guide: [docs/deploy.md](docs/deploy.md).
 
+Phase 6 (write operations) code done 2026-10-12, tested on the fake backend only: load
+preset, block on/off, parameter value, rename, save, behind a shared token
+(`HELIX_TOKEN`). **Not yet run on the HX Effects.** First write on hardware needs your
+confirmation (AGENTS.md 6).
+
 ## Running tonepush on Windows (dev machine)
 
 Uses the official TonePush v0.9.0 release binary (building from source needs the
@@ -42,10 +47,13 @@ Local vs cloud split: see AGENTS.md section 10.
 
 ## Running the server (`server/`)
 
-Read-only HTTP API over the device. Endpoints: [docs/api.md](docs/api.md).
+HTTP API over the device. Endpoints: [docs/api.md](docs/api.md). Writes need
+`HELIX_TOKEN`; without it the server is read-only.
 
 1. Against recorded fixtures (no device needed):
-   `cd server && cargo run` then open http://localhost:8080/api/chain
+   `cd server && cargo run` then open http://localhost:8080/api/chain.
+   With writes: `HELIX_TOKEN=dev cargo run`. The fake keeps writes in memory until
+   restart; it has one recorded chain, so every preset shows it.
 2. Against the real device (quit HX Edit first, `tonepush` on `PATH`):
    - Linux/macOS: `HELIX_BACKEND=cli cargo run`
    - Windows PowerShell, from the repo root:
@@ -64,6 +72,7 @@ Read-only HTTP API over the device. Endpoints: [docs/api.md](docs/api.md).
 | `HELIX_TONEPUSH_TIMEOUT_SECS` | `30` | Kill a `tonepush` call that runs longer |
 | `HELIX_FIXTURES` | bundled `server/fixtures` | Fixture directory for `fake` |
 | `HELIX_FAKE_DELAY_MS` | `0` | `fake` only: wait before each reply, e.g. `1500` to see loading states |
+| `HELIX_TOKEN` | unset | Shared token for writes. Unset or empty = read-only. Keep it in `.env` or the Pi's settings file, never in git |
 | `RUST_LOG` | `info` | Log filter |
 
 `HX_EDIT_RESOURCES` is read by `tonepush` itself, not by the server; set it for model names.
@@ -78,8 +87,18 @@ rebuild (`cargo run`) after editing them. Design: `docs/design/stage-and-studio-
 2. Open http://localhost:8080 on the same machine, or `http://<machine-ip>:8080` on the iPad.
 3. To see loading skeletons on the fake backend: `HELIX_FAKE_DELAY_MS=1500 cargo run`.
 
-Read-only for now. Dashed controls (‹ ›, Rename, Save, Tap, Turn on, Load) arrive in
-phase 6. Known limits of phase 4:
+Writes (server needs `HELIX_TOKEN`; the UI asks for it on the first write and keeps it
+in the browser):
+
+- **Load a preset:** ‹ ›, a bank tile, or Presets → pick → Load. Asks first if there are
+  unsaved edits.
+- **Block on/off:** select a block, tap Turn on / Turn off.
+- **Parameter:** tap a parameter, type a value in the shown units (`40`, `2.2 kHz`).
+- **Rename / Save:** buttons in the preset bar. Save asks first and overwrites the
+  loaded preset. "Unsaved" in the bar means edits are only in the edit buffer.
+
+Without a token, write controls are dashed and inert. Tap tempo stays dashed (not
+built). Known limits:
 
 - **No live updates.** The UI reads the device on open, when the iPad returns to the page,
   and on "Refresh from device" (tap the connection dots). No polling: each read is a USB
@@ -89,6 +108,9 @@ phase 6. Known limits of phase 4:
 - **Slider fill only for `%` values.** The API sends display strings, so other scales are
   unknown and their bars stay empty.
 - **Active snapshot is not shown.** `tonepush chain` does not report it.
+- **Parameters are typed, not dragged.** A slider needs each parameter's range, which
+  the API does not send yet.
+- **Unsaved flag covers bridge edits only.** Changes made on the pedal are not seen.
 
 ## Deploying to the Pi (`deploy/`)
 

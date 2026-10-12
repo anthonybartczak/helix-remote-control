@@ -37,9 +37,13 @@ button:disabled { cursor: default; }
 .caps { font-size: 13px; font-weight: 700; letter-spacing: .1em; }
 .mono { font-family: var(--font-mono); }
 
-/* Phase 6 controls: dashed outline, not interactive yet. */
-.later { border: 1.5px dashed var(--line); border-radius: 6px; color: var(--muted); }
-.later-sm { height: 40px; padding: 0 var(--s3); font-size: 13px; }
+/* Write controls. Solid outline when live; dashed (.later) when the server
+   takes no writes (no HELIX_TOKEN). Disabled while a device call runs. */
+.act { border: 1.5px solid var(--line-strong); border-radius: 6px; color: var(--ink); }
+.act.hot { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+.act:disabled { opacity: .45; }
+.later, .later:disabled { border: 1.5px dashed var(--line); border-radius: 6px; color: var(--muted); background: none; opacity: 1; }
+.later-sm { height: var(--tap); padding: 0 var(--s3); font-size: 13px; flex: none; }
 
 .btn-solid {
   height: 48px; padding: 0 var(--s5); border-radius: var(--r2);
@@ -190,6 +194,9 @@ button:disabled { cursor: default; }
   display: grid; grid-template-columns: minmax(0, 1fr); align-content: start; gap: var(--s1) var(--s6); padding: var(--s3) var(--s5);
 }
 .param { display: flex; flex-direction: column; gap: var(--s2); padding: var(--s2) 0; }
+.param.editable { width: 100%; text-align: left; min-height: var(--tap); border-radius: var(--r2); }
+.param.editable:disabled { opacity: .6; }
+.param.editable:not(:disabled):active .track { outline: 2px solid var(--c); }
 .param-top { display: flex; justify-content: space-between; align-items: baseline; gap: var(--s3); }
 .param-name { font-size: var(--fs-s); color: var(--muted); }
 .param-value { font: 600 var(--fs-l) var(--font-mono); font-variant-numeric: tabular-nums; white-space: nowrap; }
@@ -211,6 +218,10 @@ button:disabled { cursor: default; }
   background: var(--surface); color: var(--ink); min-width: 0; min-height: 0; overflow: hidden;
 }
 .tile.loaded { background: var(--ink); color: var(--bg); }
+button.tile { text-align: left; }
+button.tile:not(:disabled):active { background: var(--surface-2); }
+button.tile:disabled { opacity: .6; }
+.namebar.unsaved .nb-status { color: var(--warn); }
 .tile-top { display: flex; justify-content: space-between; align-items: flex-start; gap: var(--s2); }
 .tile-tag { font: 600 var(--fs-xs) var(--font-mono); letter-spacing: .08em; padding-top: 4px; }
 .tile-label { font: 400 var(--fs-3xl)/1 var(--font-mono); letter-spacing: -0.02em; white-space: nowrap; }
@@ -370,7 +381,7 @@ button:disabled { cursor: default; }
   .presets-btn { width: auto; flex: 1; }
   .namebar { order: 5; flex: 1 1 100%; height: var(--tap-l); }
   .nb-label, .nb-name { font-size: var(--fs-l); }
-  .nb-status { display: none; }
+  .nb-status, .rename-btn { display: none; }
   .tempo-readout { width: 72px; }
   .snaps-row .snap-name { display: none; }
   .chain { height: 120px; gap: var(--s1); }

@@ -13,7 +13,7 @@ Total time: about 45 minutes, most of it flashing the SD card and the first boot
 | `/opt/helix-bridge/bin/` | `helix-bridge` (server + web UI) and `tonepush` (TonePush v0.9.0 CLI) |
 | `/opt/helix-bridge/fixtures/` | Recorded output, for `HELIX_BACKEND=fake` |
 | `/opt/helix-bridge/vendor/res/` | HX Edit data, copied by you (step 6). Never committed |
-| `/etc/helix-bridge/helix-bridge.env` | Settings. Kept on update |
+| `/etc/helix-bridge/helix-bridge.env` | Settings, incl. the write token. Mode `600`. Kept on update |
 | `/etc/systemd/system/helix-bridge.service` | Service, runs as user `helix-bridge` on port 80 |
 | `/etc/udev/rules.d/70-helix-bridge.rules` | USB access to vendor `0e41` for that user |
 | `/etc/avahi/services/helix-bridge.service` | mDNS advert for the web UI |
@@ -66,6 +66,16 @@ Total time: about 45 minutes, most of it flashing the SD card and the first boot
    ```
 8. **Open `http://helix-bridge.local` on the iPad.** Add it to the Home Screen
    (Share → Add to Home Screen) for a full-screen app.
+9. **Turn on writes (about 2 minutes, optional).** Without a token the UI is read-only.
+   Only after a full preset backup from HX Edit (AGENTS.md 6). On the Pi:
+   ```sh
+   echo "HELIX_TOKEN=$(openssl rand -hex 16)" | sudo tee -a /etc/helix-bridge/helix-bridge.env
+   sudo chmod 600 /etc/helix-bridge/helix-bridge.env
+   sudo systemctl restart helix-bridge
+   sudo grep HELIX_TOKEN /etc/helix-bridge/helix-bridge.env   # type this on the iPad
+   ```
+   The iPad asks for the token on the first write and keeps it in Safari. The log line
+   `helix-bridge listening … writes="on"` confirms it (`journalctl -u helix-bridge -n 5`).
 
 ## Updating
 
@@ -90,6 +100,8 @@ HX_EDIT_RESOURCES=/opt/helix-bridge/vendor/res /opt/helix-bridge/bin/tonepush in
 | Device calls time out | HX Edit is open somewhere, or the pedal is wedged. Close HX Edit. If still stuck, pull the pedal's **power adapter** (a USB replug does not help, PROTOCOL.md) |
 | No model names, `FX` everywhere | `vendor/res` missing, wrong folder, or unreadable. `ls -ld /opt/helix-bridge/vendor/res` must show `drwxr-xr-x`; fix with `sudo chmod -R a+rX /opt/helix-bridge/vendor/res`, or re-run `install.sh` |
 | Service does not start | `journalctl -u helix-bridge -n 50` |
+| Write buttons dashed, "Writes are off" | No `HELIX_TOKEN` in the settings file. See step 9 |
+| iPad keeps asking for the token | Token typed wrong, or changed on the Pi. Re-type it; the UI asks again after each refusal |
 
 Memory: `systemctl status helix-bridge` shows the service's RAM, `free -h` the whole Pi.
 The unit caps the service at 180 MB (`MemoryMax`).

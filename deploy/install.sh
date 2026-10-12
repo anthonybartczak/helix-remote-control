@@ -92,8 +92,10 @@ install -d -m 755 "$CONF_DIR"
 if [ -e "$CONF_DIR/helix-bridge.env" ]; then
     say "Keeping existing $CONF_DIR/helix-bridge.env"
 else
-    install -m 644 "$here/deploy/helix-bridge.env" "$CONF_DIR/helix-bridge.env"
+    install -m 600 "$here/deploy/helix-bridge.env" "$CONF_DIR/helix-bridge.env"
 fi
+# May hold HELIX_TOKEN. systemd reads it as root, so nobody else needs to.
+chmod 600 "$CONF_DIR/helix-bridge.env"
 
 # 4. USB permissions. "change" re-applies the rule to a pedal that is already
 # plugged in; it does not reset or re-enumerate the device.

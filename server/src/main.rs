@@ -1,8 +1,7 @@
 use std::net::SocketAddr;
-use std::sync::Arc;
 use std::time::Duration;
 
-use helix_bridge::api;
+use helix_bridge::api::{self, AppState};
 use helix_bridge::device::{CliDevice, Device, FakeDevice};
 use tracing_subscriber::EnvFilter;
 
@@ -14,6 +13,8 @@ struct Config {
     timeout: Duration,
     fixtures: Option<String>,
     fake_delay: Duration,
+    /// Shared token for writes; unset or empty = writes off.
+    token: Option<String>,
 }
 
 fn env_or(key: &str, default: &str) -> String {
@@ -42,6 +43,10 @@ impl Config {
                     .parse()
                     .map_err(|e| format!("HELIX_FAKE_DELAY_MS={fake_delay:?}: {e}"))?,
             ),
+            token: std::env::var("HELIX_TOKEN")
+                .ok()
+                .map(|t| t.trim().to_owned())
+                .filter(|t| !t.is_empty()),
         })
     }
 }
@@ -69,6 +74,7 @@ async fn main() {
             serve(
                 CliDevice::new(&config.tonepush, config.timeout),
                 config.bind,
+                config.token,
             )
             .await
         }
@@ -77,7 +83,12 @@ async fn main() {
                 Some(dir) => FakeDevice::new(dir),
                 None => FakeDevice::bundled(),
             };
-            serve(fake.with_delay(config.fake_delay), config.bind).await
+            serve(
+                fake.with_delay(config.fake_delay),
+                config.bind,
+                config.token,
+            )
+            .await
         }
         other => {
             tracing::error!("HELIX_BACKEND must be \"cli\" or \"fake\", got {other:?}");
@@ -90,10 +101,15 @@ async fn main() {
     }
 }
 
-async fn serve<D: Device>(device: D, bind: SocketAddr) -> std::io::Result<()> {
-    tracing::info!(backend = device.kind(), %bind, "helix-bridge listening");
+async fn serve<D: Device>(
+    device: D,
+    bind: SocketAddr,
+    token: Option<String>,
+) -> std::io::Result<()> {
+    let writes = if token.is_some() { "on" } else { "off" };
+    tracing::info!(backend = device.kind(), %bind, writes, "helix-bridge listening");
     let listener = tokio::net::TcpListener::bind(bind).await?;
-    axum::serve(listener, api::router(Arc::new(device)))
+    axum::serve(listener, api::router(AppState::new(device, token)))
         .with_graceful_shutdown(shutdown_signal())
         .await
 }

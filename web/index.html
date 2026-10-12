@@ -29,22 +29,22 @@
     <main class="main">
       <div class="presetbar">
         <button class="btn presets-btn" type="button" data-open-browser>Presets</button>
-        <button class="btn arrow later" type="button" disabled title="Switching presets comes in phase 6" aria-label="Previous preset">‹</button>
-        <button class="btn arrow later" type="button" disabled title="Switching presets comes in phase 6" aria-label="Next preset">›</button>
+        <button class="btn arrow later" type="button" data-step="-1" disabled aria-label="Previous preset">‹</button>
+        <button class="btn arrow later" type="button" data-step="1" disabled aria-label="Next preset">›</button>
         <div class="namebar" id="namebar">
           <span class="nb-label" id="nb-label">–</span>
           <span class="nb-name" id="nb-name"></span>
           <span class="nb-status" id="nb-status"></span>
           <div class="spacer"></div>
-          <button class="later later-sm desktop-only" type="button" disabled title="Phase 6">Rename</button>
-          <button class="later later-sm desktop-only" type="button" disabled title="Phase 6">Save</button>
+          <button class="act later later-sm rename-btn" type="button" id="rename-btn" disabled>Rename</button>
+          <button class="act later later-sm" type="button" id="save-btn" disabled>Save</button>
           <button class="conn conn-dots" type="button" data-conn aria-haspopup="dialog" aria-label="Connection"></button>
           <div class="progress" id="progress"></div>
         </div>
         <div class="snaps snaps-inline" id="snaps-inline"></div>
         <div class="tempo">
           <div class="tempo-readout"><span class="tempo-bpm" id="tempo">–</span><span class="tempo-unit"><span class="desktop-only">BPM · PRESET</span><span class="tablet-only">BPM</span></span></div>
-          <button class="later tap desktop-only" type="button" disabled title="Phase 6">TAP</button>
+          <button class="later tap desktop-only" type="button" disabled title="Not built yet">TAP</button>
         </div>
         <button class="conn conn-pill blocked-only" type="button" data-conn aria-haspopup="dialog"></button>
       </div>
@@ -101,7 +101,7 @@
     <span class="sf-name" id="sf-name"></span>
     <span class="sf-note landscape-only" id="sf-note"></span>
     <div class="spacer"></div>
-    <button class="later load-btn" type="button" id="load-btn" disabled title="Loading presets comes in phase 6">Load</button>
+    <button class="act later load-btn" type="button" id="load-btn" disabled>Load</button>
   </div>
 </div>
 
