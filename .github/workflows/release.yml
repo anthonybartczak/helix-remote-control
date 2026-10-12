@@ -1,0 +1,115 @@
+# Checks the server, then cross-compiles the Pi bundle (helix-bridge + tonepush)
+# for aarch64-unknown-linux-gnu. The Pi never compiles (AGENTS.md 5.1).
+#
+# - Every push / PR: checks, then the bundle as a workflow artifact.
+# - Tag v*: the same, plus a GitHub release with the tarball attached.
+name: build
+
+on:
+  push:
+    branches: ["**"]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  # TonePush pin (AGENTS.md 3). Bump both together, on purpose.
+  TONEPUSH_TAG: v0.9.0
+  TONEPUSH_COMMIT: 5e44812c53afddf36b2bc38d2355e75341049659
+  # glibc 2.31 floor: runs on Raspberry Pi OS 64-bit Bullseye, Bookworm and Trixie.
+  TARGET: aarch64-unknown-linux-gnu
+  GLIBC: "2.31"
+  ZIG_VERSION: "0.17.0"
+  ZIGBUILD_VERSION: "0.23.4"
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: server
+      - run: cargo fmt --check
+      - run: cargo clippy --locked --all-targets -- -D warnings
+      - run: cargo test --locked
+      - name: shellcheck deploy scripts
+        working-directory: .
+        run: shellcheck deploy/*.sh
+
+  pi-bundle:
+    needs: check
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: crmne/tonepush
+          ref: ${{ env.TONEPUSH_TAG }}
+          path: tonepush
+      - name: Verify TonePush pin
+        run: |
+          got=$(git -C tonepush rev-parse HEAD)
+          [ "$got" = "$TONEPUSH_COMMIT" ] || { echo "TonePush $TONEPUSH_TAG is $got, expected $TONEPUSH_COMMIT"; exit 1; }
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ env.TARGET }}
+      - name: Install zig and cargo-zigbuild
+        run: |
+          pip install "ziglang==$ZIG_VERSION"
+          cargo install --locked "cargo-zigbuild@$ZIGBUILD_VERSION"
+      # No compiler cache for shipped binaries.
+      - name: Build helix-bridge
+        working-directory: server
+        run: cargo zigbuild --release --locked --target "$TARGET.$GLIBC"
+      # TonePush pins its own toolchain; add the target to that one.
+      - name: Build tonepush
+        working-directory: tonepush
+        run: |
+          rustup target add "$TARGET"
+          cargo zigbuild --release --locked -p tonepush-cli --target "$TARGET.$GLIBC"
+      - name: Package
+        run: |
+          if [ "${GITHUB_REF_TYPE}" = tag ]; then
+            version=${GITHUB_REF_NAME#v}
+          else
+            version=$(sed -n 's/^version = "\(.*\)"/\1/p' server/Cargo.toml | head -n 1)-${GITHUB_SHA::7}
+          fi
+          deploy/package.sh "$version" \
+            "server/target/$TARGET/release/helix-bridge" \
+            "tonepush/target/$TARGET/release/tonepush" \
+            tonepush dist
+          ls -l dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pi-bundle
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    if: github.ref_type == 'tag'
+    needs: pi-bundle
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: pi-bundle
+          path: dist
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          body: |
+            Pi bundle for 64-bit Raspberry Pi OS. Includes TonePush ${{ env.TONEPUSH_TAG }} (MIT).
+            Install: see docs/deploy.md.

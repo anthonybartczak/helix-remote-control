@@ -52,6 +52,8 @@ async fn main() {
         .with_env_filter(
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
         )
+        // Plain text under systemd, so `journalctl` shows no colour codes.
+        .with_ansi(std::io::IsTerminal::is_terminal(&std::io::stdout()))
         .init();
 
     let config = match Config::from_env() {
@@ -92,8 +94,31 @@ async fn serve<D: Device>(device: D, bind: SocketAddr) -> std::io::Result<()> {
     tracing::info!(backend = device.kind(), %bind, "helix-bridge listening");
     let listener = tokio::net::TcpListener::bind(bind).await?;
     axum::serve(listener, api::router(Arc::new(device)))
-        .with_graceful_shutdown(async {
-            let _ = tokio::signal::ctrl_c().await;
-        })
+        .with_graceful_shutdown(shutdown_signal())
         .await
+}
+
+/// Ctrl-C, or SIGTERM on Unix (what `systemctl stop` sends).
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        match signal(SignalKind::terminate()) {
+            Ok(mut term) => {
+                tokio::select! {
+                    _ = tokio::signal::ctrl_c() => {}
+                    _ = term.recv() => {}
+                }
+            }
+            Err(e) => {
+                tracing::warn!("cannot listen for SIGTERM: {e}");
+                let _ = tokio::signal::ctrl_c().await;
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+    }
+    tracing::info!("shutting down");
 }

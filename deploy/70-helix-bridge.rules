@@ -1,0 +1,4 @@
+# Let the helix-bridge service user open Line 6 HX devices (USB vendor 0e41;
+# HX Effects is 0e41:4245) without running as root.
+# Installed by install.sh to /etc/udev/rules.d/70-helix-bridge.rules.
+SUBSYSTEM=="usb", ATTR{idVendor}=="0e41", MODE="0660", GROUP="helix-bridge"

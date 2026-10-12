@@ -13,7 +13,11 @@ Device: HX Effects, firmware 3.80.
 
 Status: Phase 4 (read-only web UI) done. Verified from iPad Safari over Wi-Fi against
 HX Effects firmware 3.80 (build `d972399`), server on Windows 11 with `tonepush` v0.9.0,
-2026-10-12. Phase 3 endpoints verified on the same setup. Next: Phase 5 (deploy to Pi 4).
+2026-10-12. Phase 3 endpoints verified on the same setup.
+
+Phase 5 (deploy to Pi 4): code done in the cloud, **not yet run on a Pi**. Cross-compiled
+bundle, systemd service, udev rule, mDNS and install script. Next: install on the Pi 4
+([docs/deploy.md](docs/deploy.md)).
 
 ## Running tonepush on Windows (dev machine)
 
@@ -83,3 +87,20 @@ phase 6. Known limits of phase 4:
 - **Slider fill only for `%` values.** The API sends display strings, so other scales are
   unknown and their bars stay empty.
 - **Active snapshot is not shown.** `tonepush chain` does not report it.
+
+## Deploying to the Pi (`deploy/`)
+
+GitHub Actions (`.github/workflows/release.yml`) checks the server, then cross-compiles
+`helix-bridge` and TonePush's `tonepush` for `aarch64-unknown-linux-gnu` (glibc 2.31,
+`cargo-zigbuild`). Every push uploads a `pi-bundle` workflow artifact; pushing a `v*` tag
+also creates a GitHub release with the tarball.
+
+Install steps, paths and troubleshooting: [docs/deploy.md](docs/deploy.md). In short:
+copy the tarball to the Pi, unpack, `sudo ./install.sh --hostname helix-bridge`, open
+`http://helix-bridge.local`.
+
+Build the bundle locally (Linux or WSL, needs `zig` and `cargo-zigbuild`):
+
+1. `cd server && cargo zigbuild --release --target aarch64-unknown-linux-gnu.2.31`
+2. Same in a TonePush `v0.9.0` checkout: `cargo zigbuild --release -p tonepush-cli --target aarch64-unknown-linux-gnu.2.31`
+3. `deploy/package.sh <version> server/target/aarch64-unknown-linux-gnu/release/helix-bridge <tonepush>/target/aarch64-unknown-linux-gnu/release/tonepush <tonepush> dist`
