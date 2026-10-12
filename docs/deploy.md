@@ -53,7 +53,10 @@ Total time: about 45 minutes, most of it flashing the SD card and the first boot
    sudo rm -rf /opt/helix-bridge/vendor/res
    sudo mv ~/hx-res /opt/helix-bridge/vendor/res
    sudo chown -R root:root /opt/helix-bridge/vendor/res
+   sudo chmod -R a+rX /opt/helix-bridge/vendor/res
    ```
+   The `chmod` matters: `scp` from Windows creates the folder as `drwx------`, so the
+   service user cannot read it and names stay `model 269`.
 7. **Plug in the pedal.** Quit HX Edit on every machine first (AGENTS.md 5.5). Connect
    the HX Effects to the Pi over USB, then:
    ```sh
@@ -85,7 +88,7 @@ HX_EDIT_RESOURCES=/opt/helix-bridge/vendor/res /opt/helix-bridge/bin/tonepush in
 | `helix-bridge.local` does not resolve | Hostname not set or Avahi down. Check `hostname` and `systemctl status avahi-daemon`. Fallback: `http://<pi-ip>` (`hostname -I`) |
 | UI loads, device calls fail with a permission error | udev rule not applied. Run `sudo udevadm trigger --action=change --subsystem-match=usb`, then check step 7 |
 | Device calls time out | HX Edit is open somewhere, or the pedal is wedged. Close HX Edit. If still stuck, pull the pedal's **power adapter** (a USB replug does not help, PROTOCOL.md) |
-| No model names, `FX` everywhere | `vendor/res` missing or wrong folder. Step 6 |
+| No model names, `FX` everywhere | `vendor/res` missing, wrong folder, or unreadable. `ls -ld /opt/helix-bridge/vendor/res` must show `drwxr-xr-x`; fix with `sudo chmod -R a+rX /opt/helix-bridge/vendor/res`, or re-run `install.sh` |
 | Service does not start | `journalctl -u helix-bridge -n 50` |
 
 Memory: `systemctl status helix-bridge` shows the service's RAM, `free -h` the whole Pi.

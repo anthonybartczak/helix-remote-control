@@ -148,6 +148,9 @@ fi
 
 [ "$port" = 80 ] && suffix="" || suffix=":$port"
 say "Done. Open http://$(hostname).local$suffix on the iPad"
-if [ ! -d "$PREFIX/vendor/res" ]; then
+if [ -d "$PREFIX/vendor/res" ]; then
+    # scp from Windows creates it as drwx------; the service user must read it.
+    chmod -R a+rX "$PREFIX/vendor/res"
+else
     say "Note: $PREFIX/vendor/res is missing, so no model names. See docs/deploy.md step 6."
 fi
