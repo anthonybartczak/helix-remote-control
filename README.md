@@ -11,7 +11,8 @@ See [AGENTS.md](AGENTS.md) for architecture, constraints and phases.
 
 Device: HX Effects, firmware 3.80.
 
-Status: Phase 2 (desktop smoke test) done. Next: Phase 3 (server skeleton, cloud).
+Status: Phase 3 (read-only server) written and tested against `FakeDevice`. Next: verify it
+against the real device (local), then Phase 4 (web UI, cloud).
 
 ## Running tonepush on Windows (dev machine)
 
@@ -31,3 +32,25 @@ Windows SDK). Quit HX Edit first.
 Recorded output lives in `server/fixtures/` (see its README).
 
 Local vs cloud split: see AGENTS.md section 10.
+
+## Running the server (`server/`)
+
+Read-only HTTP API over the device. Endpoints: [docs/api.md](docs/api.md).
+
+1. Against recorded fixtures (no device needed):
+   `cd server && cargo run` then open http://localhost:8080/api/chain
+2. Against the real device (quit HX Edit first, `tonepush` on `PATH`):
+   - Linux/macOS: `HELIX_BACKEND=cli cargo run`
+   - Windows PowerShell: `$env:HELIX_BACKEND='cli'; $env:HELIX_TONEPUSH='..\tonepush-bin\tonepush.exe'; cargo run`
+3. Checks before pushing: `cargo fmt`, `cargo clippy --all-targets -- -D warnings`, `cargo test`.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `HELIX_BACKEND` | `fake` | `cli` = real device via `tonepush`; `fake` = replay `server/fixtures/` |
+| `HELIX_BIND` | `0.0.0.0:8080` | Listen address. LAN only (AGENTS.md 5.7) |
+| `HELIX_TONEPUSH` | `tonepush` | Path to the `tonepush` binary |
+| `HELIX_TONEPUSH_TIMEOUT_SECS` | `30` | Kill a `tonepush` call that runs longer |
+| `HELIX_FIXTURES` | bundled `server/fixtures` | Fixture directory for `fake` |
+| `RUST_LOG` | `info` | Log filter |
+
+`HX_EDIT_RESOURCES` is read by `tonepush` itself, not by the server; set it for model names.
