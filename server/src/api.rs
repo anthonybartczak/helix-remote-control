@@ -307,6 +307,18 @@ struct WriteResult {
     /// What `tonepush` printed, e.g. `block 2 engaged`.
     message: String,
     unsaved: bool,
+    /// For a parameter write: the value as the device now shows it
+    /// (`40 %`), so the UI can update without re-reading the chain.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    value: Option<String>,
+}
+
+/// `block 2: Position = 40 %` (or `parameter 0 = 0.4` without the catalog).
+fn set_value(message: &str) -> Option<String> {
+    message
+        .rsplit_once(" = ")
+        .map(|(_, v)| v.trim().to_owned())
+        .filter(|v| !v.is_empty())
 }
 
 /// Run one write and update the unsaved flag on success.
@@ -315,6 +327,7 @@ async fn write<D: Device>(
     _: WriteAccess,
     cmd: Command,
 ) -> ApiResult<WriteResult> {
+    let is_set = matches!(cmd, Command::Set { .. });
     let unsaved = match cmd {
         Command::Enable { .. } | Command::Set { .. } => Some(true),
         Command::Select { .. } | Command::Save => Some(false),
@@ -324,8 +337,10 @@ async fn write<D: Device>(
     if let Some(flag) = unsaved {
         app.unsaved.store(flag, Ordering::Relaxed);
     }
+    let message = out.trim().to_owned();
     Ok(Json(WriteResult {
-        message: out.trim().to_owned(),
+        value: is_set.then(|| set_value(&message)).flatten(),
+        message,
         unsaved: app.unsaved.load(Ordering::Relaxed),
     }))
 }
@@ -573,9 +588,11 @@ mod tests {
         assert_eq!(status, StatusCode::OK, "{res}");
         assert_eq!(res["message"], "block 2: Position = 40 %");
         assert_eq!(res["unsaved"], true);
+        assert_eq!(res["value"], "40 %");
 
         let (_, res) = post(&app, "/api/blocks/2/enabled", t, json!({ "enabled": true })).await;
         assert_eq!(res["message"], "block 2 engaged");
+        assert!(res.get("value").is_none());
 
         let (_, chain) = send(
             &app,

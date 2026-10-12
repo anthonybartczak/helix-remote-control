@@ -71,6 +71,7 @@ HTTP API over the device. Endpoints: [docs/api.md](docs/api.md). Writes need
 | `HELIX_TONEPUSH` | `tonepush` | Path to the `tonepush` binary |
 | `HELIX_TONEPUSH_TIMEOUT_SECS` | `30` | Kill a `tonepush` call that runs longer |
 | `HELIX_FIXTURES` | bundled `server/fixtures` | Fixture directory for `fake` |
+| `HELIX_SESSION_COOLDOWN_MS` | `3000` | `cli` only: gap between two `tonepush` sessions. 3 s was needed on Windows; try `500` on the Pi |
 | `HELIX_FAKE_DELAY_MS` | `0` | `fake` only: wait before each reply, e.g. `1500` to see loading states |
 | `HELIX_TOKEN` | unset | Shared token for writes. Unset or empty = read-only. Keep it in `.env` or the Pi's settings file, never in git |
 | `RUST_LOG` | `info` | Log filter |

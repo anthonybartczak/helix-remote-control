@@ -212,7 +212,9 @@ function canWrite() {
 
 /**
  * Send one write. Asks for the token when none is known or it is refused.
- * `then` picks the re-read: 'chain' (light) or 'full' (also preset names).
+ * `then` picks what follows: 'chain' (re-read the chain), 'full' (also preset
+ * names), or a function that applies the result locally with no device read.
+ * A read costs 3–5 s on hardware, so cheap edits use the function.
  * Returns true on success.
  */
 async function write(label, path, body, then = 'chain') {
@@ -220,13 +222,14 @@ async function write(label, path, body, then = 'chain') {
   state.busy = label;
   render();
   let ok = false;
+  let res = null;
   try {
     let token = sessionToken || storedToken();
     for (let attempt = 0; attempt < 2; attempt++) {
       if (!token) token = askToken(attempt > 0);
       if (!token) return false;
       try {
-        const res = await api(path, { method: 'POST', body, token });
+        res = await api(path, { method: 'POST', body, token });
         sessionToken = token;
         storeToken(token);
         state.unsaved = !!res.unsaved;
@@ -251,7 +254,12 @@ async function write(label, path, body, then = 'chain') {
     state.busy = null;
     render();
   }
-  if (ok) await refresh({ full: then === 'full' });
+  if (ok && typeof then === 'function') {
+    then(res);
+    render();
+  } else if (ok) {
+    await refresh({ full: then === 'full' });
+  }
   return ok;
 }
 
@@ -275,7 +283,9 @@ function stepPreset(delta) {
 function toggleBlock() {
   const b = slotMap().get(state.selectedSlot);
   if (!b) return;
-  write(b.enabled ? 'Turning off…' : 'Turning on…', `/api/blocks/${b.position}/enabled`, { enabled: !b.enabled });
+  const enabled = !b.enabled;
+  write(enabled ? 'Turning on…' : 'Turning off…', `/api/blocks/${b.position}/enabled`, { enabled },
+    () => { b.enabled = enabled; });
 }
 
 function editParam(index) {
@@ -284,7 +294,8 @@ function editParam(index) {
   if (!p) return;
   const value = window.prompt(`${b.model} · ${p.name}\nNow ${p.value}. Type a value in the same units, e.g. ${p.value}:`, p.value);
   if (value == null || !value.trim() || value.trim() === p.value) return;
-  write(`Setting ${p.name}…`, `/api/blocks/${b.position}/params/${p.index}`, { value: value.trim() });
+  write(`Setting ${p.name}…`, `/api/blocks/${b.position}/params/${p.index}`, { value: value.trim() },
+    (res) => { p.value = res.value || value.trim(); });
 }
 
 function renamePreset() {

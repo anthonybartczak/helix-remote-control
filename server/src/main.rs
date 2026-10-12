@@ -13,6 +13,7 @@ struct Config {
     timeout: Duration,
     fixtures: Option<String>,
     fake_delay: Duration,
+    cooldown: Duration,
     /// Shared token for writes; unset or empty = writes off.
     token: Option<String>,
 }
@@ -26,6 +27,7 @@ impl Config {
         let bind = env_or("HELIX_BIND", "0.0.0.0:8080");
         let timeout = env_or("HELIX_TONEPUSH_TIMEOUT_SECS", "30");
         let fake_delay = env_or("HELIX_FAKE_DELAY_MS", "0");
+        let cooldown = env_or("HELIX_SESSION_COOLDOWN_MS", "3000");
         Ok(Config {
             backend: env_or("HELIX_BACKEND", "fake"),
             bind: bind
@@ -42,6 +44,11 @@ impl Config {
                 fake_delay
                     .parse()
                     .map_err(|e| format!("HELIX_FAKE_DELAY_MS={fake_delay:?}: {e}"))?,
+            ),
+            cooldown: Duration::from_millis(
+                cooldown
+                    .parse()
+                    .map_err(|e| format!("HELIX_SESSION_COOLDOWN_MS={cooldown:?}: {e}"))?,
             ),
             token: std::env::var("HELIX_TOKEN")
                 .ok()
@@ -72,7 +79,7 @@ async fn main() {
     let result = match config.backend.as_str() {
         "cli" => {
             serve(
-                CliDevice::new(&config.tonepush, config.timeout),
+                CliDevice::new(&config.tonepush, config.timeout).with_cooldown(config.cooldown),
                 config.bind,
                 config.token,
             )

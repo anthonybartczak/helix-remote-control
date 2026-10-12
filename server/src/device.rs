@@ -211,6 +211,12 @@ impl CliDevice {
         }
     }
 
+    /// Gap between two `tonepush` sessions (default 3 s, measured on Windows).
+    pub fn with_cooldown(mut self, cooldown: Duration) -> Self {
+        self.cooldown = cooldown;
+        self
+    }
+
     /// Run one session, after the cooldown since the previous one.
     async fn run_spaced(&self, session: &mut Session, cmd: &Command) -> Result<String> {
         if let Some(end) = session.last_end {

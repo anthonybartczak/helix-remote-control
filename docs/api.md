@@ -21,7 +21,9 @@ next load or save. Edits made on the pedal itself are not seen; it resets on res
 
 All need `Authorization: Bearer <HELIX_TOKEN>` and a JSON body. Without `HELIX_TOKEN` on
 the server they return 403 `writes_disabled`; `/api/health` reports `writes: true|false`.
-Each returns `{message, unsaved}`, where `message` is what `tonepush` printed.
+Each returns `{message, unsaved}`, where `message` is what `tonepush` printed. A parameter
+write also returns `value`, the new display value (`40 %`), so clients need not re-read
+the chain; the UI does this for parameter and bypass edits.
 
 | Method | Path | Body | Device command | Effect |
 |---|---|---|---|---|
