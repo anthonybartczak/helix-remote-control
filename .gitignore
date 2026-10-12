@@ -1,0 +1,15 @@
+# Rust build output
+target/
+
+# Line 6 HX Edit data files: proprietary, never commit (AGENTS.md 5.4)
+/vendor/
+
+# Secrets: tokens, Wi-Fi credentials (AGENTS.md 6)
+.env
+.env.*
+
+# Editor / OS noise
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
