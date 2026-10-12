@@ -13,6 +13,7 @@ struct Config {
     tonepush: String,
     timeout: Duration,
     fixtures: Option<String>,
+    fake_delay: Duration,
 }
 
 fn env_or(key: &str, default: &str) -> String {
@@ -23,6 +24,7 @@ impl Config {
     fn from_env() -> Result<Self, String> {
         let bind = env_or("HELIX_BIND", "0.0.0.0:8080");
         let timeout = env_or("HELIX_TONEPUSH_TIMEOUT_SECS", "30");
+        let fake_delay = env_or("HELIX_FAKE_DELAY_MS", "0");
         Ok(Config {
             backend: env_or("HELIX_BACKEND", "fake"),
             bind: bind
@@ -35,6 +37,11 @@ impl Config {
                     .map_err(|e| format!("HELIX_TONEPUSH_TIMEOUT_SECS={timeout:?}: {e}"))?,
             ),
             fixtures: std::env::var("HELIX_FIXTURES").ok(),
+            fake_delay: Duration::from_millis(
+                fake_delay
+                    .parse()
+                    .map_err(|e| format!("HELIX_FAKE_DELAY_MS={fake_delay:?}: {e}"))?,
+            ),
         })
     }
 }
@@ -68,7 +75,7 @@ async fn main() {
                 Some(dir) => FakeDevice::new(dir),
                 None => FakeDevice::bundled(),
             };
-            serve(fake, config.bind).await
+            serve(fake.with_delay(config.fake_delay), config.bind).await
         }
         other => {
             tracing::error!("HELIX_BACKEND must be \"cli\" or \"fake\", got {other:?}");

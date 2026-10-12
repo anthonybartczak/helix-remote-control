@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<div style="width:100%;height:100%;display:grid;grid-template-columns:{{ cols }};grid-template-rows:{{ rows }};gap:var(--s1);border-radius:var(--r3);overflow:hidden">
+  <sc-for list="{{ tiles }}" as="t" hint-placeholder-count="4">
+    <div style="display:flex;flex-direction:column;justify-content:space-between;gap:var(--s2);padding:var(--s3) var(--s4);background:{{ t.bg }};color:{{ t.fg }};box-shadow:{{ t.ring }};min-width:0">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:var(--s2)"><span style="font:600 var(--fs-xs) var(--font-mono);letter-spacing:.08em;padding-top:4px">{{ t.tag }}</span><span style="font:400 var(--fs-3xl)/1 var(--font-mono);letter-spacing:-0.02em"><span style="opacity:.55">01</span>{{ t.letter }}</span></div>
+      <div style="font-size:var(--fs-xl);line-height:1.15;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ t.name }}</div>
+    </div>
+  </sc-for>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:520,&quot;height&quot;:300},&quot;layout&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;grid&quot;,&quot;row&quot;],&quot;default&quot;:&quot;grid&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;loadingLetter&quot;:{&quot;editor&quot;:&quot;text&quot;,&quot;default&quot;:&quot;&quot;,&quot;tsType&quot;:&quot;string&quot;}}">
+class Component extends DCLogic {
+  renderVals() {
+    const row = this.props.layout === 'row';
+    const loadingLetter = this.props.loadingLetter || '';
+    const names = { A: 'Clean Verb', B: 'Edge Delay', C: 'New Preset', D: 'New Preset' };
+    const tiles = ['A', 'B', 'C', 'D'].map(letter => {
+      const loaded = letter === 'C' && !loadingLetter, pending = letter === loadingLetter;
+      return { letter, name: names[letter], tag: loaded ? 'LOADED' : pending ? 'LOADING…' : '',
+        bg: loaded ? 'var(--ink)' : 'var(--surface)', fg: loaded ? 'var(--bg)' : 'var(--ink)',
+        ring: pending ? 'inset 0 0 0 3px var(--ink)' : 'none' };
+    });
+    return { tiles, cols: row ? 'repeat(4,minmax(0,1fr))' : 'repeat(2,minmax(0,1fr))', rows: row ? 'minmax(0,1fr)' : 'repeat(2,minmax(0,1fr))' };
+  }
+}
+</script>
+</body>
+</html>

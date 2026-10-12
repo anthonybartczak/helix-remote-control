@@ -1,9 +1,9 @@
-//! HTTP API. Read-only in phase 3; see `docs/api.md`.
+//! HTTP API (read-only, see `docs/api.md`) and the web UI from `/web`.
 
 use std::sync::Arc;
 
 use axum::extract::{Query, State};
-use axum::http::StatusCode;
+use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
@@ -20,10 +20,56 @@ pub fn router<D: Device>(device: Arc<D>) -> Router {
         .route("/api/presets", get(presets::<D>))
         .route("/api/preset", get(current_preset::<D>))
         .route("/api/chain", get(chain::<D>))
+        .route("/", get(index))
+        .route("/app.css", get(app_css))
+        .route("/app.js", get(app_js))
         .with_state(device)
 }
 
+// The UI is compiled into the binary so the Pi gets one file to deploy.
+// `no-cache` makes Safari revalidate after an update instead of running stale JS.
+const NO_CACHE: (header::HeaderName, &str) = (header::CACHE_CONTROL, "no-cache");
+
+async fn index() -> impl IntoResponse {
+    (
+        [(header::CONTENT_TYPE, "text/html; charset=utf-8"), NO_CACHE],
+        include_str!("../../web/index.html"),
+    )
+}
+
+async fn app_css() -> impl IntoResponse {
+    (
+        [(header::CONTENT_TYPE, "text/css; charset=utf-8"), NO_CACHE],
+        include_str!("../../web/app.css"),
+    )
+}
+
+async fn app_js() -> impl IntoResponse {
+    (
+        [
+            (header::CONTENT_TYPE, "text/javascript; charset=utf-8"),
+            NO_CACHE,
+        ],
+        include_str!("../../web/app.js"),
+    )
+}
+
 struct ApiError(DeviceError);
+
+impl ApiError {
+    /// Stable machine-readable cause, so the UI can tell "no device" (blocking
+    /// screen) from a one-off failure (banner) without parsing messages.
+    fn code(&self) -> &'static str {
+        match self.0 {
+            DeviceError::Spawn(_) => "spawn",
+            DeviceError::NotConnected(_) => "no_device",
+            DeviceError::Failed(_) => "failed",
+            DeviceError::Timeout(_) => "timeout",
+            DeviceError::NoFixture(_) => "no_fixture",
+            DeviceError::Parse(_) => "parse",
+        }
+    }
+}
 
 impl From<DeviceError> for ApiError {
     fn from(e: DeviceError) -> Self {
@@ -34,13 +80,17 @@ impl From<DeviceError> for ApiError {
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let status = match self.0 {
-            DeviceError::Spawn(_) => StatusCode::SERVICE_UNAVAILABLE,
+            DeviceError::Spawn(_) | DeviceError::NotConnected(_) => StatusCode::SERVICE_UNAVAILABLE,
             DeviceError::Timeout(_) => StatusCode::GATEWAY_TIMEOUT,
             DeviceError::Failed(_) | DeviceError::Parse(_) => StatusCode::BAD_GATEWAY,
             DeviceError::NoFixture(_) => StatusCode::NOT_FOUND,
         };
         tracing::warn!(%status, error = %self.0, "device request failed");
-        (status, Json(json!({ "error": self.0.to_string() }))).into_response()
+        (
+            status,
+            Json(json!({ "error": self.0.to_string(), "code": self.code() })),
+        )
+            .into_response()
     }
 }
 
@@ -153,6 +203,25 @@ mod tests {
         let (status, body) = get_json("/api/presets?setlist=3").await;
         assert_eq!(status, StatusCode::NOT_FOUND);
         assert!(body["error"].as_str().unwrap().contains("no fixture"));
+        assert_eq!(body["code"], "no_fixture");
+    }
+
+    #[tokio::test]
+    async fn serves_the_ui() {
+        for (uri, mime) in [
+            ("/", "text/html"),
+            ("/app.css", "text/css"),
+            ("/app.js", "text/javascript"),
+        ] {
+            let app = router(Arc::new(FakeDevice::bundled()));
+            let res = app
+                .oneshot(Request::get(uri).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(res.status(), StatusCode::OK, "{uri}");
+            let ct = res.headers()[header::CONTENT_TYPE].to_str().unwrap();
+            assert!(ct.starts_with(mime), "{uri}: {ct}");
+        }
     }
 
     #[tokio::test]

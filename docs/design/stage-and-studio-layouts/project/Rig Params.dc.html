@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<div style="width:100%;height:100%;background:var(--surface);border-radius:var(--r3);display:flex;flex-direction:column;min-height:0;overflow:hidden">
+  <sc-if value="{{ ready }}" hint-placeholder-val="{{ true }}">
+    <div style="min-height:56px;flex:none;display:flex;align-items:center;gap:var(--s3);padding:0 var(--s4) 0 var(--s5);border-bottom:1px solid var(--bg)">
+      <div style="font:700 var(--fs-s) var(--font-mono);color:var(--cat-pitch)">PIT</div>
+      <div style="font-size:var(--fs-l);font-weight:600">Simple Pitch</div>
+      <div style="font-size:var(--fs-s);color:var(--muted)">Pitch/Synth · slot 2 · bypassed</div>
+      <div style="flex:1"></div>
+      <div style="height:var(--tap);display:flex;align-items:center;gap:var(--s2);padding:0 var(--s4);border:1.5px dashed var(--line);border-radius:var(--r2);font-size:var(--fs-s);color:var(--muted)">Turn on</div>
+    </div>
+    <div style="flex:1;min-height:0;display:grid;grid-template-columns:{{ cols }};align-content:start;gap:var(--s1) var(--s6);padding:var(--s3) var(--s5)">
+      <sc-for list="{{ params }}" as="p" hint-placeholder-count="6">
+        <div style="display:flex;flex-direction:column;gap:var(--s2);padding:var(--s2) 0">
+          <div style="display:flex;justify-content:space-between;align-items:baseline;gap:var(--s3)"><span style="font-size:var(--fs-s);color:var(--muted)">{{ p.name }}</span><span style="font:600 var(--fs-l) var(--font-mono);font-variant-numeric:tabular-nums">{{ p.value }}</span></div>
+          <div style="height:28px;position:relative;border-radius:var(--r2);background:var(--surface-2);overflow:hidden"><div style="position:absolute;left:0;top:0;bottom:0;width:{{ p.pct }};background:var(--cat-pitch);opacity:.35"></div><div style="position:absolute;top:0;bottom:0;left:{{ p.pct }};width:4px;margin-left:-2px;background:var(--cat-pitch)"></div></div>
+        </div>
+      </sc-for>
+    </div>
+  </sc-if>
+  <sc-if value="{{ loading }}" hint-placeholder-val="{{ false }}">
+    <div style="height:56px;flex:none;display:flex;align-items:center;gap:var(--s3);padding:0 var(--s5);border-bottom:1px solid var(--bg)"><div style="width:180px;height:18px;border-radius:var(--r1);background:var(--surface-2)"></div></div>
+    <div style="flex:1;display:grid;grid-template-columns:{{ cols }};align-content:start;gap:var(--s4) var(--s6);padding:var(--s4) var(--s5)">
+      <sc-for list="{{ params }}" as="p" hint-placeholder-count="6">
+        <div style="display:flex;flex-direction:column;gap:var(--s2)"><div style="width:40%;height:14px;border-radius:var(--r1);background:var(--surface-2)"></div><div style="height:28px;border-radius:var(--r2);background:var(--surface-2)"></div></div>
+      </sc-for>
+    </div>
+  </sc-if>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:700,&quot;height&quot;:360},&quot;loading&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:false,&quot;tsType&quot;:&quot;boolean&quot;},&quot;columns&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[1,2],&quot;default&quot;:2,&quot;tsType&quot;:&quot;number&quot;}}">
+class Component extends DCLogic {
+  renderVals() {
+    const loading = !!this.props.loading;
+    const cols = (this.props.columns ?? 2) === 1 ? 'minmax(0,1fr)' : 'repeat(2,minmax(0,1fr))';
+    // pct is a visual estimate; API sends display strings only
+    const params = [
+      { name: 'Interval', value: '+7', pct: '64%' }, { name: 'Cents', value: '+0.00', pct: '50%' },
+      { name: 'Delay', value: '0.0 ms', pct: '0%' }, { name: 'Shift Level', value: '10.0', pct: '100%' },
+      { name: 'Mix', value: '50 %', pct: '50%' }, { name: 'Level', value: '+0.0 dB', pct: '83%' }];
+    return { ready: !loading, loading, cols, params };
+  }
+}
+</script>
+</body>
+</html>

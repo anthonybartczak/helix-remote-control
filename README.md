@@ -11,9 +11,9 @@ See [AGENTS.md](AGENTS.md) for architecture, constraints and phases.
 
 Device: HX Effects, firmware 3.80.
 
-Status: Phase 3 (read-only server) done. All four device endpoints verified on HX Effects
-firmware 3.80 (build `d972399`) via `tonepush` v0.9.0 on Windows 11, 2026-10-12.
-Next: Phase 4 (web UI, cloud).
+Status: Phase 4 (read-only web UI) done. Verified from iPad Safari over Wi-Fi against
+HX Effects firmware 3.80 (build `d972399`), server on Windows 11 with `tonepush` v0.9.0,
+2026-10-12. Phase 3 endpoints verified on the same setup. Next: Phase 5 (deploy to Pi 4).
 
 ## Running tonepush on Windows (dev machine)
 
@@ -57,6 +57,29 @@ Read-only HTTP API over the device. Endpoints: [docs/api.md](docs/api.md).
 | `HELIX_TONEPUSH` | `tonepush` | Path to the `tonepush` binary |
 | `HELIX_TONEPUSH_TIMEOUT_SECS` | `30` | Kill a `tonepush` call that runs longer |
 | `HELIX_FIXTURES` | bundled `server/fixtures` | Fixture directory for `fake` |
+| `HELIX_FAKE_DELAY_MS` | `0` | `fake` only: wait before each reply, e.g. `1500` to see loading states |
 | `RUST_LOG` | `info` | Log filter |
 
 `HX_EDIT_RESOURCES` is read by `tonepush` itself, not by the server; set it for model names.
+
+## Web UI (`web/`)
+
+Plain HTML, CSS and JS, no build step. The server compiles the files into its binary, so
+rebuild (`cargo run`) after editing them. Design: `docs/design/stage-and-studio-layouts`
+(direction 2A "Rig").
+
+1. Start the server (see above), e.g. `cd server && cargo run`.
+2. Open http://localhost:8080 on the same machine, or `http://<machine-ip>:8080` on the iPad.
+3. To see loading skeletons on the fake backend: `HELIX_FAKE_DELAY_MS=1500 cargo run`.
+
+Read-only for now. Dashed controls (‹ ›, Rename, Save, Tap, Turn on, Load) arrive in
+phase 6. Known limits of phase 4:
+
+- **No live updates.** The UI reads the device on open, when the iPad returns to the page,
+  and on "Refresh from device" (tap the connection dots). No polling: each read is a USB
+  session on the pedal.
+- **Block categories are guessed** from the model name (`CATEGORY_RULES` in `app.js`);
+  unknown models show grey `FX`. Real categories need the HX Edit catalog on the server.
+- **Slider fill only for `%` values.** The API sends display strings, so other scales are
+  unknown and their bars stay empty.
+- **Active snapshot is not shown.** `tonepush chain` does not report it.

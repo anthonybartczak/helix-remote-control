@@ -1,8 +1,10 @@
-# Helix Bridge HTTP API (phase 3, read-only)
+# Helix Bridge HTTP API (read-only)
 
 All responses are JSON. Errors are `{"error": "<message>"}` with the status below.
 Every device endpoint runs one `tonepush` command; calls are serialised, so expect
-about 1–3 s per call on real hardware.
+about 1.5 s for a call after a pause, about 5 s for back-to-back calls: the server keeps
+`tonepush` sessions 3 s apart, because Windows holds the USB interface briefly after each
+one. `/api/device` is cached after the first success (cleared when the device is unplugged).
 
 | Method | Path | Device command | Returns |
 |---|---|---|---|
@@ -32,15 +34,26 @@ about 1–3 s per call on real hardware.
 
 ## Status codes
 
-| Status | Cause |
-|---|---|
-| 400 | Bad query string, e.g. `setlist=x` |
-| 404 | Fake backend has no fixture for the request (only setlist 0 is recorded) |
-| 502 | `tonepush` exited with an error (message is its stderr) or printed unexpected output |
-| 503 | `tonepush` could not be started (not installed, wrong `HELIX_TONEPUSH`) |
-| 504 | `tonepush` ran longer than `HELIX_TONEPUSH_TIMEOUT_SECS` |
+Device errors carry a stable `code` so clients need not parse messages:
+`{"error": "tonepush failed: …", "code": "no_device"}`.
+
+| Status | `code` | Cause |
+|---|---|---|
+| 400 | – | Bad query string, e.g. `setlist=x` (plain-text body from axum) |
+| 404 | `no_fixture` | Fake backend has no fixture for the request (only setlist 0 is recorded) |
+| 502 | `failed` | `tonepush` exited with an error (message is its stderr) |
+| 502 | `parse` | `tonepush` printed unexpected output |
+| 503 | `no_device` | `tonepush` found no HX device on USB (`no HX device found`) |
+| 503 | `spawn` | `tonepush` could not be started (not installed, wrong `HELIX_TONEPUSH`) |
+| 504 | `timeout` | `tonepush` ran longer than `HELIX_TONEPUSH_TIMEOUT_SECS` |
 
 "could not claim interface" failures are retried 3 times (after 1 s, 3 s, 8 s) before
 returning 502.
 
-Not yet: WebSocket live state (phase 4/6), write operations (phase 6), auth (phase 6).
+## Web UI
+
+`GET /`, `/app.css`, `/app.js` serve the UI from `/web`. The files are compiled into
+the binary (`include_str!`), so edit them and rebuild; sent with `Cache-Control: no-cache`.
+
+Not yet: WebSocket live state (phase 6, once the bridge holds one device session),
+write operations (phase 6), auth (phase 6).

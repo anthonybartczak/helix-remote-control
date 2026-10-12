@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<div style="width:100%;height:100%;display:flex;align-items:center;gap:var(--s2)">
+  <div style="width:56px;height:112px;flex:none;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;background:var(--surface);border-radius:var(--r3);font-size:var(--fs-s);font-weight:600"><div style="width:22px;height:4px;border-radius:2px;background:var(--ok)"></div>In</div>
+  <div style="flex:1;min-width:0;height:100%;position:relative;display:flex;align-items:center">
+    <div style="position:absolute;left:0;right:0;top:50%;height:2px;margin-top:-1px;background:var(--line-strong)"></div>
+    <sc-for list="{{ slots }}" as="sl" hint-placeholder-count="9">
+      <div style="flex:1;min-width:0;position:relative;display:flex;flex-direction:column;align-items:center;gap:var(--s2)">
+        <div style="font:var(--fs-xs) var(--font-mono);color:var(--muted);height:16px">{{ sl.num }}</div>
+        <sc-if value="{{ sl.filled }}" hint-placeholder-val="{{ false }}">
+          <div style="width:var(--node);height:var(--node);box-sizing:border-box;border-radius:var(--r3);border:3px solid {{ sl.color }};background:var(--bg);box-shadow:{{ sl.ring }};overflow:hidden;display:flex;flex-direction:column">
+            <div style="flex:1;display:grid;place-items:center;font:700 var(--fs-s) var(--font-mono);color:{{ sl.codeColor }}">{{ sl.code }}</div>
+            <div style="height:{{ sl.band }};background:{{ sl.color }}"></div>
+          </div>
+        </sc-if>
+        <sc-if value="{{ sl.empty }}" hint-placeholder-val="{{ true }}">
+          <div style="width:var(--node);height:var(--node);display:grid;place-items:center"><div style="width:12px;height:12px;border-radius:50%;background:var(--bg);border:2px solid var(--line)"></div></div>
+        </sc-if>
+        <sc-if value="{{ sl.skeleton }}" hint-placeholder-val="{{ false }}">
+          <div style="width:var(--node);height:var(--node);border-radius:var(--r3);background:var(--surface-2)"></div>
+        </sc-if>
+        <div style="font-size:var(--fs-xs);font-weight:600;height:16px;max-width:100%;padding:0 2px;box-sizing:border-box;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:{{ sl.nameColor }}">{{ sl.model }}</div>
+      </div>
+    </sc-for>
+  </div>
+  <div style="width:56px;height:112px;flex:none;display:grid;place-items:center;background:var(--surface);border-radius:var(--r3);font-size:var(--fs-s);font-weight:600">Out</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:1100,&quot;height&quot;:200},&quot;loading&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:false,&quot;tsType&quot;:&quot;boolean&quot;},&quot;selected&quot;:{&quot;editor&quot;:&quot;int&quot;,&quot;default&quot;:2,&quot;min&quot;:1,&quot;max&quot;:9,&quot;tsType&quot;:&quot;number&quot;}}">
+class Component extends DCLogic {
+  renderVals() {
+    const loading = !!this.props.loading;
+    const sel = this.props.selected ?? 2;
+    // API position minus 1 = slot (position 1 assumed = input). Category assumed.
+    const blocks = {
+      1: { model: 'Fassel', code: 'WAH', color: 'var(--cat-wah)', on: false },
+      2: { model: 'Simple Pitch', code: 'PIT', color: 'var(--cat-pitch)', on: false },
+      4: { model: 'FX Loop 1', code: 'LOOP', color: 'var(--cat-loop)', on: true },
+      9: { model: 'Noise Gate', code: 'DYN', color: 'var(--cat-dyn)', on: true }
+    };
+    const slots = Array.from({ length: 9 }, (_, i) => {
+      const n = i + 1, b = blocks[n];
+      if (loading) return { num: '', model: '', skeleton: true, filled: false, empty: false };
+      if (!b) return { num: String(n), model: '', empty: true, filled: false, skeleton: false };
+      return { num: String(n), model: b.model, code: b.code, color: b.color, filled: true, empty: false, skeleton: false,
+        band: b.on ? '12px' : '0px', codeColor: b.on ? 'var(--ink)' : b.color,
+        nameColor: b.on ? 'var(--ink)' : 'var(--muted)',
+        ring: n === sel ? '0 0 0 4px var(--bg), 0 0 0 6px var(--ink)' : 'none' };
+    });
+    return { slots };
+  }
+}
+</script>
+</body>
+</html>

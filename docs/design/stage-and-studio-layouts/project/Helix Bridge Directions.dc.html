@@ -1,0 +1,529 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<meta name="design_doc_mode" content="canvas">
+<style>
+body{margin:0;background:#e9e9e7;font-family:system-ui,-apple-system,"Segoe UI",sans-serif;-webkit-font-smoothing:antialiased}
+a{color:#333}a:hover{color:#000}
+:root{--font-ui:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;--font-mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;--tap:44px;--s1:4px;--s2:8px;--s3:12px;--s4:16px;--s5:24px;--s6:32px;--s7:48px;--r1:4px;--r2:8px;--r3:14px;--r-pill:999px}
+[data-theme="stage"]{--bg:oklch(0.15 0.008 255);--surface:oklch(0.2 0.01 255);--surface-2:oklch(0.25 0.012 255);--line:oklch(0.33 0.012 255);--ink:oklch(0.97 0.004 255);--muted:oklch(0.74 0.01 255);--ok:oklch(0.78 0.16 150);--err:oklch(0.7 0.18 25);
+--cat-dist:oklch(0.74 0.15 30);--cat-dyn:oklch(0.74 0.15 60);--cat-eq:oklch(0.74 0.15 90);--cat-wah:oklch(0.74 0.15 120);--cat-filter:oklch(0.74 0.15 150);--cat-mod:oklch(0.74 0.15 180);--cat-delay:oklch(0.74 0.15 210);--cat-reverb:oklch(0.74 0.15 240);--cat-pitch:oklch(0.74 0.15 270);--cat-vol:oklch(0.74 0.15 300);--cat-loop:oklch(0.74 0.15 330);--cat-looper:oklch(0.74 0.15 0);font-family:var(--font-ui);color:var(--ink);background:var(--bg)}
+[data-theme="rig"]{--bg:oklch(0.1 0.004 260);--surface:oklch(0.17 0.006 260);--surface-2:oklch(0.23 0.008 260);--line:oklch(0.36 0.01 260);--ink:oklch(0.97 0.003 260);--muted:oklch(0.72 0.01 260);--ok:oklch(0.8 0.17 150);--err:oklch(0.7 0.19 25);
+--cat-dist:oklch(0.72 0.16 30);--cat-dyn:oklch(0.72 0.16 60);--cat-eq:oklch(0.72 0.16 90);--cat-wah:oklch(0.72 0.16 120);--cat-filter:oklch(0.72 0.16 150);--cat-mod:oklch(0.72 0.16 180);--cat-delay:oklch(0.72 0.16 210);--cat-reverb:oklch(0.72 0.16 240);--cat-pitch:oklch(0.72 0.16 270);--cat-vol:oklch(0.72 0.16 300);--cat-loop:oklch(0.72 0.16 330);--cat-looper:oklch(0.72 0.16 0);font-family:var(--font-ui);color:var(--ink);background:var(--bg)}
+[data-theme="studio"]{--bg:oklch(0.975 0.004 85);--surface:oklch(0.995 0.002 85);--surface-2:oklch(0.95 0.005 85);--line:oklch(0.89 0.006 85);--ink:oklch(0.22 0.01 260);--muted:oklch(0.48 0.01 260);--ok:oklch(0.6 0.14 150);--err:oklch(0.58 0.18 25);
+--cat-dist:oklch(0.62 0.14 30);--cat-dyn:oklch(0.62 0.14 60);--cat-eq:oklch(0.62 0.14 90);--cat-wah:oklch(0.62 0.14 120);--cat-filter:oklch(0.62 0.14 150);--cat-mod:oklch(0.62 0.14 180);--cat-delay:oklch(0.62 0.14 210);--cat-reverb:oklch(0.62 0.14 240);--cat-pitch:oklch(0.62 0.14 270);--cat-vol:oklch(0.62 0.14 300);--cat-loop:oklch(0.62 0.14 330);--cat-looper:oklch(0.62 0.14 0);font-family:"Helvetica Neue",Helvetica,Arial,var(--font-ui);color:var(--ink);background:var(--bg)}
+</style>
+</helmet>
+<section style="padding:64px 64px 0;display:flex;flex-direction:column;gap:32px">
+  <div style="display:flex;flex-direction:column;gap:8px;max-width:900px">
+    <div style="font:600 13px var(--font-mono);letter-spacing:.08em;color:#666">TURN 2 · DIRECTION FROM YOUR REFERENCES</div>
+    <div style="font-size:16px;line-height:1.5;color:#444;text-wrap:pretty"><a href="#2a">2a</a> Rig: takes the shared conventions of hardware editors (near-black ground, chain drawn on a single signal line with every slot visible, category-outlined nodes that fill when on, big bank tiles for the current bank, bar sliders) and keeps the drawing original: no icons, category codes in the nodes, our own tokens. Empty slots are drawn so the 9-block chain reads as a fixed rack.</div>
+  </div>
+  <div id="2a" style="display:flex;flex-direction:column;gap:24px">
+    <div style="display:flex;align-items:center;gap:12px"><div style="font:700 14px var(--font-mono);background:#1d1d1f;color:#fff;padding:6px 10px;border-radius:6px">2a</div><div style="font-size:20px;font-weight:600;color:#1d1d1f">Rig — signal line + bank tiles</div></div>
+    <div style="display:flex;flex-wrap:wrap;gap:64px;align-items:flex-start">
+    <div style="display:flex;flex-direction:column;gap:16px">
+    <div style="font:500 13px var(--font-mono);color:#666">DESKTOP · 1440 × 900</div>
+    <div data-theme="rig" data-screen-label="2a Desktop" style="width:1440px;height:900px;overflow:hidden;display:flex;flex-direction:column;border-radius:10px;box-shadow:0 20px 60px rgba(0,0,0,.3)">
+      <div style="height:56px;flex:none;display:flex;align-items:center;gap:16px;padding:0 20px">
+        <div style="font:700 13px var(--font-mono);letter-spacing:.14em">HELIX BRIDGE</div>
+        <div style="flex:1"></div>
+        <div style="display:flex;gap:16px;align-items:center;font-size:13px;color:var(--muted)"><div style="display:flex;gap:8px;align-items:center"><div style="width:8px;height:8px;border-radius:50%;background:var(--ok)"></div>Server</div><div style="display:flex;gap:8px;align-items:center"><div style="width:8px;height:8px;border-radius:50%;background:var(--ok)"></div>HX Effects</div></div>
+      </div>
+      <div style="flex:1;min-height:0;display:grid;grid-template-columns:272px minmax(0,1fr);gap:8px;padding:0 8px 8px">
+        <div style="background:var(--surface);border-radius:var(--r3);display:flex;flex-direction:column;min-height:0;overflow:hidden">
+          <div style="height:52px;display:flex;align-items:center;justify-content:space-between;padding:0 16px;border-bottom:1px solid var(--bg)"><div style="font-size:13px;font-weight:700;letter-spacing:.1em">PRESETS</div><span style="font:12px var(--font-mono);color:var(--muted);border:1px solid var(--line);border-radius:4px;padding:1px 6px">/</span></div>
+          <div style="flex:1;min-height:0;overflow:hidden;display:flex;flex-direction:column">
+            <sc-for list="{{ listRows }}" as="pr" hint-placeholder-count="16">
+              <div style="height:44px;flex:none;display:flex;align-items:center;gap:12px;padding:0 16px;background:{{ pr.bg }};color:{{ pr.fg }};border-top:{{ pr.sep }}">
+                <div style="font:600 13px var(--font-mono);width:32px;opacity:.7">{{ pr.label }}</div>
+                <div style="font-size:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ pr.name }}</div>
+              </div>
+            </sc-for>
+          </div>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:8px;min-width:0;min-height:0">
+          <div style="height:56px;flex:none;display:flex;gap:8px">
+            <div style="width:56px;display:grid;place-items:center;background:var(--surface);border-radius:var(--r2);font-size:20px">‹</div>
+            <div style="width:56px;display:grid;place-items:center;background:var(--surface);border-radius:var(--r2);font-size:20px">›</div>
+            <div style="flex:1;min-width:0;display:flex;align-items:center;gap:12px;padding:0 18px;background:var(--surface);border-radius:var(--r2)"><span style="font:600 22px var(--font-mono);color:var(--muted)">{{ preset.label }}</span><span style="font-size:22px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ preset.name }}</span><div style="flex:1"></div><div style="height:40px;display:flex;align-items:center;padding:0 12px;border:1.5px dashed var(--line);border-radius:6px;font-size:13px;color:var(--muted)">Rename</div></div>
+            <div style="display:flex;gap:4px">
+              <sc-for list="{{ snaps }}" as="s" hint-placeholder-count="4">
+                <div style="width:96px;display:flex;flex-direction:column;justify-content:center;align-items:center;gap:2px;border-radius:var(--r2);background:{{ s.bg }};color:{{ s.fg }}"><span style="font:700 18px var(--font-mono)">{{ s.key }}</span><span style="font-size:10px;letter-spacing:.06em;opacity:.8">{{ s.name }}</span></div>
+              </sc-for>
+            </div>
+            <div style="width:120px;display:flex;flex-direction:column;justify-content:center;align-items:center;background:var(--surface);border-radius:var(--r2)"><span style="font:700 20px var(--font-mono)">120</span><span style="font-size:10px;letter-spacing:.1em;color:var(--muted)">BPM</span></div>
+          </div>
+          <div style="height:240px;flex:none;display:flex;align-items:center;gap:8px;position:relative">
+            <div style="width:64px;height:120px;flex:none;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;background:var(--surface);border-radius:var(--r3);font-size:14px;font-weight:600"><div style="width:24px;height:4px;border-radius:2px;background:var(--ok)"></div>In</div>
+            <div style="flex:1;min-width:0;position:relative;height:100%;display:flex;align-items:center;justify-content:space-around">
+              <div style="position:absolute;left:0;right:0;top:50%;height:2px;margin-top:-1px;background:var(--ink);opacity:.7"></div>
+              <sc-for list="{{ slots }}" as="sl" hint-placeholder-count="10">
+                <div style="position:relative;display:flex;flex-direction:column;align-items:center;gap:8px;width:80px">
+                  <div style="font:11px var(--font-mono);color:var(--muted);height:14px">{{ sl.posLabel }}</div>
+                  <sc-if value="{{ sl.filled }}" hint-placeholder-val="{{ true }}">
+                    <div style="width:72px;height:72px;box-sizing:border-box;border-radius:16px;border:3px solid {{ sl.color }};background:var(--bg);box-shadow:{{ sl.ring }};overflow:hidden;display:flex;flex-direction:column">
+                      <div style="flex:1;display:grid;place-items:center;font:700 15px var(--font-mono);color:{{ sl.codeColor }}">{{ sl.code }}</div>
+                      <div style="height:{{ sl.band }};background:{{ sl.color }}"></div>
+                    </div>
+                  </sc-if>
+                  <sc-if value="{{ sl.empty }}" hint-placeholder-val="{{ false }}">
+                    <div style="width:72px;height:72px;display:grid;place-items:center"><div style="width:14px;height:14px;border-radius:50%;background:var(--bg);border:2px solid var(--line)"></div></div>
+                  </sc-if>
+                  <div style="font-size:13px;font-weight:600;height:16px;white-space:nowrap;color:{{ sl.nameColor }}">{{ sl.model }}</div>
+                </div>
+              </sc-for>
+            </div>
+            <div style="width:64px;height:120px;flex:none;display:grid;place-items:center;background:var(--surface);border-radius:var(--r3);font-size:14px;font-weight:600">Out</div>
+          </div>
+          <div style="flex:1;min-height:0;display:grid;grid-template-columns:minmax(0,1fr) 520px;gap:8px">
+            <div style="background:var(--surface);border-radius:var(--r3);display:flex;flex-direction:column;min-height:0;overflow:hidden">
+              <div style="height:56px;flex:none;display:flex;align-items:center;gap:12px;padding:0 20px;border-bottom:1px solid var(--bg)">
+                <div style="font:700 13px var(--font-mono);color:var(--cat-pitch)">PIT</div>
+                <div style="font-size:18px;font-weight:600">{{ sel.model }}</div>
+                <div style="font-size:13px;color:var(--muted)">Pitch/Synth · slot 3 · bypassed</div>
+                <div style="flex:1"></div>
+                <div style="height:44px;display:flex;align-items:center;gap:8px;padding:0 14px;border:1.5px dashed var(--line);border-radius:var(--r2);font-size:14px;color:var(--muted)">Turn on <span style="font:11px var(--font-mono)">Space</span></div>
+              </div>
+              <div style="flex:1;min-height:0;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));align-content:start;gap:4px 28px;padding:16px 20px">
+                <sc-for list="{{ sel.params }}" as="p" hint-placeholder-count="6">
+                  <div style="display:flex;flex-direction:column;gap:8px;padding:8px 0">
+                    <div style="display:flex;justify-content:space-between;align-items:baseline"><span style="font-size:14px;color:var(--muted)">{{ p.name }}</span><span style="font:600 18px var(--font-mono)">{{ p.value }}</span></div>
+                    <div style="height:28px;position:relative;border-radius:6px;background:var(--surface-2);overflow:hidden"><div style="position:absolute;left:0;top:0;bottom:0;width:{{ p.pct }};background:var(--cat-pitch);opacity:.35"></div><div style="position:absolute;top:0;bottom:0;left:{{ p.pct }};width:4px;margin-left:-2px;background:var(--cat-pitch)"></div></div>
+                  </div>
+                </sc-for>
+              </div>
+            </div>
+            <div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));grid-template-rows:repeat(2,minmax(0,1fr));gap:4px;border-radius:var(--r3);overflow:hidden">
+              <sc-for list="{{ bankTiles }}" as="t" hint-placeholder-count="4">
+                <div style="display:flex;flex-direction:column;justify-content:space-between;padding:14px 18px;background:{{ t.bg }};color:{{ t.fg }}">
+                  <div style="align-self:flex-end;font:400 44px/1 var(--font-mono);letter-spacing:-0.02em"><span style="opacity:.55">{{ t.bank }}</span>{{ t.letter }}</div>
+                  <div style="font-size:22px;line-height:1.15">{{ t.name }}</div>
+                </div>
+              </sc-for>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div style="height:36px;flex:none;display:flex;align-items:center;gap:20px;padding:0 20px;font:12px var(--font-mono);color:var(--muted)">
+        <span>HX EFFECTS · FW 3.80 · d972399</span><div style="flex:1"></div><span>↑↓ PRESET</span><span>←→ BLOCK</span><span>1–4 SNAPSHOT</span><span>SPACE BYPASS</span>
+      </div>
+    </div>
+    </div>
+
+    <div style="display:flex;flex-direction:column;gap:16px">
+    <div style="font:500 13px var(--font-mono);color:#666">IPAD LANDSCAPE · 1194 × 834</div>
+    <div data-theme="rig" data-screen-label="2a iPad" style="width:1194px;height:834px;overflow:hidden;display:flex;flex-direction:column;gap:8px;padding:8px;box-sizing:border-box;border-radius:18px;box-shadow:0 20px 60px rgba(0,0,0,.3)">
+      <div style="height:56px;flex:none;display:flex;gap:8px">
+        <div style="width:96px;display:grid;place-items:center;background:var(--surface-2);border-radius:var(--r2);font-size:15px;font-weight:600">☰ Presets</div>
+        <div style="width:56px;display:grid;place-items:center;background:var(--surface);border-radius:var(--r2);font-size:20px">‹</div>
+        <div style="width:56px;display:grid;place-items:center;background:var(--surface);border-radius:var(--r2);font-size:20px">›</div>
+        <div style="flex:1;min-width:0;display:flex;align-items:center;gap:12px;padding:0 16px;background:var(--surface);border-radius:var(--r2)"><span style="font:600 22px var(--font-mono);color:var(--muted)">{{ preset.label }}</span><span style="font-size:22px;font-weight:600;white-space:nowrap">{{ preset.name }}</span><div style="flex:1"></div><div style="display:flex;gap:6px;align-items:center"><div style="width:8px;height:8px;border-radius:50%;background:var(--ok)"></div><div style="width:8px;height:8px;border-radius:50%;background:var(--ok)"></div></div></div>
+        <div style="display:flex;gap:4px">
+          <sc-for list="{{ snaps }}" as="s" hint-placeholder-count="4">
+            <div style="width:60px;display:grid;place-items:center;border-radius:var(--r2);background:{{ s.bg }};color:{{ s.fg }};font:700 18px var(--font-mono)">{{ s.key }}</div>
+          </sc-for>
+        </div>
+        <div style="width:88px;display:flex;flex-direction:column;justify-content:center;align-items:center;background:var(--surface);border-radius:var(--r2)"><span style="font:700 18px var(--font-mono)">120</span><span style="font-size:10px;letter-spacing:.1em;color:var(--muted)">BPM</span></div>
+      </div>
+      <div style="height:210px;flex:none;display:flex;align-items:center;gap:8px">
+        <div style="width:56px;height:112px;flex:none;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;background:var(--surface);border-radius:var(--r3);font-size:14px;font-weight:600"><div style="width:22px;height:4px;border-radius:2px;background:var(--ok)"></div>In</div>
+        <div style="flex:1;min-width:0;position:relative;height:100%;display:flex;align-items:center;justify-content:space-around">
+          <div style="position:absolute;left:0;right:0;top:50%;height:2px;margin-top:-1px;background:var(--ink);opacity:.7"></div>
+          <sc-for list="{{ slots }}" as="sl" hint-placeholder-count="10">
+            <div style="position:relative;display:flex;flex-direction:column;align-items:center;gap:8px;width:72px">
+              <div style="font:11px var(--font-mono);color:var(--muted);height:14px">{{ sl.posLabel }}</div>
+              <sc-if value="{{ sl.filled }}" hint-placeholder-val="{{ true }}">
+                <div style="width:64px;height:64px;box-sizing:border-box;border-radius:14px;border:3px solid {{ sl.color }};background:var(--bg);box-shadow:{{ sl.ring }};overflow:hidden;display:flex;flex-direction:column">
+                  <div style="flex:1;display:grid;place-items:center;font:700 14px var(--font-mono);color:{{ sl.codeColor }}">{{ sl.code }}</div>
+                  <div style="height:{{ sl.band }};background:{{ sl.color }}"></div>
+                </div>
+              </sc-if>
+              <sc-if value="{{ sl.empty }}" hint-placeholder-val="{{ false }}">
+                <div style="width:64px;height:64px;display:grid;place-items:center"><div style="width:12px;height:12px;border-radius:50%;background:var(--bg);border:2px solid var(--line)"></div></div>
+              </sc-if>
+              <div style="font-size:12px;font-weight:600;height:16px;white-space:nowrap;color:{{ sl.nameColor }}">{{ sl.model }}</div>
+            </div>
+          </sc-for>
+        </div>
+        <div style="width:56px;height:112px;flex:none;display:grid;place-items:center;background:var(--surface);border-radius:var(--r3);font-size:14px;font-weight:600">Out</div>
+      </div>
+      <div style="flex:1;min-height:0;display:grid;grid-template-columns:minmax(0,1fr) 400px;gap:8px">
+        <div style="background:var(--surface);border-radius:var(--r3);display:flex;flex-direction:column;min-height:0;overflow:hidden">
+          <div style="height:56px;flex:none;display:flex;align-items:center;gap:12px;padding:0 18px;border-bottom:1px solid var(--bg)">
+            <div style="font:700 13px var(--font-mono);color:var(--cat-pitch)">PIT</div>
+            <div style="font-size:18px;font-weight:600">{{ sel.model }}</div>
+            <div style="font-size:13px;color:var(--muted)">bypassed</div>
+            <div style="flex:1"></div>
+            <div style="height:44px;display:flex;align-items:center;padding:0 14px;border:1.5px dashed var(--line);border-radius:var(--r2);font-size:14px;color:var(--muted)">Turn on</div>
+          </div>
+          <div style="flex:1;min-height:0;display:flex;flex-direction:column;gap:2px;padding:10px 18px">
+            <sc-for list="{{ sel.params }}" as="p" hint-placeholder-count="6">
+              <div style="display:flex;flex-direction:column;gap:6px;padding:6px 0">
+                <div style="display:flex;justify-content:space-between;align-items:baseline"><span style="font-size:14px;color:var(--muted)">{{ p.name }}</span><span style="font:600 17px var(--font-mono)">{{ p.value }}</span></div>
+                <div style="height:24px;position:relative;border-radius:6px;background:var(--surface-2);overflow:hidden"><div style="position:absolute;left:0;top:0;bottom:0;width:{{ p.pct }};background:var(--cat-pitch);opacity:.35"></div><div style="position:absolute;top:0;bottom:0;left:{{ p.pct }};width:4px;margin-left:-2px;background:var(--cat-pitch)"></div></div>
+              </div>
+            </sc-for>
+          </div>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));grid-template-rows:repeat(2,minmax(0,1fr));gap:4px;border-radius:var(--r3);overflow:hidden">
+          <sc-for list="{{ bankTiles }}" as="t" hint-placeholder-count="4">
+            <div style="display:flex;flex-direction:column;justify-content:space-between;padding:12px 16px;background:{{ t.bg }};color:{{ t.fg }}">
+              <div style="align-self:flex-end;font:400 38px/1 var(--font-mono);letter-spacing:-0.02em"><span style="opacity:.55">{{ t.bank }}</span>{{ t.letter }}</div>
+              <div style="font-size:20px;line-height:1.15">{{ t.name }}</div>
+            </div>
+          </sc-for>
+        </div>
+      </div>
+    </div>
+    </div>
+    </div>
+  </div>
+</section>
+<section style="padding:64px;display:flex;flex-direction:column;gap:32px">
+  <div style="display:flex;flex-direction:column;gap:8px;max-width:900px">
+    <div style="font:600 13px var(--font-mono);letter-spacing:.08em;color:#666">TURN 1 · TWO DIRECTIONS · MAIN VIEW</div>
+    <div style="font-size:32px;font-weight:600;color:#1d1d1f">Helix Bridge</div>
+    <div style="font-size:16px;line-height:1.5;color:#444;text-wrap:pretty"><a href="#1a">1a</a> Stage: dark, oversized readouts, chain as big tiles, readable at arm's length. <a href="#1b">1b</a> Studio: light, three-pane editor with preset list, chain diagram and inspector. Both use the real /api/chain data; category colours share one lightness and chroma per theme. Dashed elements mark where phase 6 editing controls go.</div>
+  </div>
+  <div style="display:flex;flex-wrap:wrap;gap:64px;align-items:flex-start">
+
+  <!-- ============ 1a STAGE ============ -->
+  <div id="1a" style="display:flex;flex-direction:column;gap:24px">
+    <div style="display:flex;align-items:center;gap:12px"><div style="font:700 14px var(--font-mono);background:#1d1d1f;color:#fff;padding:6px 10px;border-radius:6px">1a</div><div style="font-size:20px;font-weight:600;color:#1d1d1f">Stage — dark, glanceable</div></div>
+    <div style="font:500 13px var(--font-mono);color:#666">DESKTOP · 1440 × 900</div>
+    <div data-theme="stage" data-screen-label="1a Desktop" style="width:1440px;height:900px;overflow:hidden;display:flex;flex-direction:column;border-radius:10px;box-shadow:0 20px 60px rgba(0,0,0,.25)">
+      <div style="height:64px;flex:none;display:flex;align-items:center;gap:16px;padding:0 24px;border-bottom:1px solid var(--line)">
+        <div style="font:700 13px var(--font-mono);letter-spacing:.14em;color:var(--muted)">HELIX BRIDGE</div>
+        <div style="flex:1"></div>
+        <div style="display:flex;gap:8px">
+          <div style="height:44px;display:flex;align-items:center;gap:8px;padding:0 14px;border:1px solid var(--line);border-radius:999px;font-size:14px;color:var(--muted)"><div style="width:10px;height:10px;border-radius:50%;background:var(--ok)"></div>Server</div>
+          <div style="height:44px;display:flex;align-items:center;gap:8px;padding:0 14px;border:1px solid var(--line);border-radius:999px;font-size:14px;color:var(--muted)"><div style="width:10px;height:10px;border-radius:50%;background:var(--ok)"></div>HX Effects · 3.80</div>
+        </div>
+      </div>
+      <div style="flex:1;min-height:0;display:grid;grid-template-columns:minmax(0,1fr) 360px">
+        <div style="display:flex;flex-direction:column;gap:24px;padding:24px;min-width:0">
+          <div style="display:flex;align-items:center;gap:24px">
+            <div style="display:flex;flex-direction:column;gap:8px"><div style="width:64px;height:56px;display:grid;place-items:center;background:var(--surface);border-radius:var(--r2);font-size:22px">▲</div><div style="width:64px;height:56px;display:grid;place-items:center;background:var(--surface);border-radius:var(--r2);font-size:22px">▼</div></div>
+            <div style="font:700 104px/0.9 var(--font-mono);letter-spacing:-0.04em">{{ preset.label }}</div>
+            <div style="display:flex;flex-direction:column;gap:6px;min-width:0;flex:1">
+              <div style="font-size:44px;font-weight:600;line-height:1.05;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ preset.name }}</div>
+              <div style="font-size:16px;color:var(--muted);display:flex;gap:10px;align-items:center">Bank 01 · Preset C <span style="font:12px var(--font-mono);border:1px solid var(--line);border-radius:4px;padding:2px 6px">↑ ↓</span></div>
+            </div>
+            <div style="display:flex;flex-direction:column;align-items:flex-end;padding:12px 20px;background:var(--surface);border-radius:var(--r3)"><div style="font:700 48px/1 var(--font-mono)">120</div><div style="font:600 13px var(--font-mono);letter-spacing:.12em;color:var(--muted)">BPM</div></div>
+          </div>
+          <div style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px">
+            <sc-for list="{{ snaps }}" as="s" hint-placeholder-count="4">
+              <div style="height:64px;display:flex;align-items:center;justify-content:space-between;padding:0 18px;border-radius:var(--r2);background:{{ s.bg }};color:{{ s.fg }};font-size:18px;font-weight:600"><span>{{ s.name }}</span><span style="font:12px var(--font-mono);opacity:.7">{{ s.key }}</span></div>
+            </sc-for>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:12px">
+            <div style="display:flex;align-items:center;gap:10px;font:600 13px var(--font-mono);letter-spacing:.12em;color:var(--muted)">SIGNAL CHAIN <span style="font-weight:400;border:1px solid var(--line);border-radius:4px;padding:2px 6px;letter-spacing:0">← →</span></div>
+            <div style="display:flex;align-items:stretch;gap:10px">
+              <div style="width:44px;display:grid;place-items:center;font:600 12px var(--font-mono);color:var(--muted);writing-mode:vertical-rl">IN</div>
+              <sc-for list="{{ blocks }}" as="b" hint-placeholder-count="4">
+                <div style="flex:1;min-width:0;height:156px;display:flex;flex-direction:column;gap:10px;padding:16px;border-radius:var(--r3);background:var(--surface);border:2px solid {{ b.tileBorder }};box-sizing:border-box">
+                  <div style="height:8px;border-radius:4px;background:{{ b.bar }};border:2px solid {{ b.color }};box-sizing:border-box"></div>
+                  <div style="font-size:13px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:{{ b.color }}">{{ b.catName }}</div>
+                  <div style="font-size:24px;font-weight:600;color:{{ b.modelColor }};white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ b.model }}</div>
+                  <div style="flex:1"></div>
+                  <div style="display:flex;justify-content:space-between;align-items:center"><span style="font:600 12px var(--font-mono);letter-spacing:.08em;padding:4px 8px;border-radius:4px;background:{{ b.pillBg }};color:{{ b.pillFg }}">{{ b.status }}</span><span style="font:12px var(--font-mono);color:var(--muted)">SLOT {{ b.position }}</span></div>
+                </div>
+              </sc-for>
+              <div style="width:44px;display:grid;place-items:center;font:600 12px var(--font-mono);color:var(--muted);writing-mode:vertical-rl">OUT</div>
+            </div>
+          </div>
+          <div style="flex:1;min-height:0;display:flex;flex-direction:column;gap:16px;padding:20px 24px;background:var(--surface);border-radius:var(--r3)">
+            <div style="display:flex;align-items:center;gap:14px">
+              <div style="width:14px;height:14px;border-radius:50%;background:var(--cat-pitch)"></div>
+              <div style="font-size:28px;font-weight:600">{{ sel.model }}</div>
+              <div style="font:600 12px var(--font-mono);letter-spacing:.08em;padding:4px 8px;border-radius:4px;background:var(--surface-2);color:var(--muted)">BYPASSED</div>
+              <div style="flex:1"></div>
+              <div style="height:48px;display:flex;align-items:center;gap:10px;padding:0 18px;border:2px dashed var(--line);border-radius:var(--r2);color:var(--muted);font-size:15px">Turn on <span style="font:12px var(--font-mono)">Space</span></div>
+            </div>
+            <div style="display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:12px">
+              <sc-for list="{{ sel.params }}" as="p" hint-placeholder-count="6">
+                <div style="display:flex;flex-direction:column;gap:10px;padding:16px;background:var(--surface-2);border-radius:var(--r2)">
+                  <div style="font-size:13px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)">{{ p.name }}</div>
+                  <div style="font:600 30px/1.1 var(--font-mono);font-variant-numeric:tabular-nums;white-space:nowrap">{{ p.value }}</div>
+                  <div style="height:6px;border-radius:3px;border:1px dashed var(--line)"></div>
+                </div>
+              </sc-for>
+            </div>
+          </div>
+        </div>
+        <div style="border-left:1px solid var(--line);display:flex;flex-direction:column;gap:14px;padding:20px;min-height:0">
+          <div style="display:flex;align-items:center;justify-content:space-between"><div style="font:600 13px var(--font-mono);letter-spacing:.12em;color:var(--muted)">PRESETS</div><span style="font:12px var(--font-mono);color:var(--muted);border:1px solid var(--line);border-radius:4px;padding:2px 6px">/</span></div>
+          <div style="flex:1;min-height:0;overflow:hidden;display:flex;flex-direction:column;gap:6px">
+            <sc-for list="{{ banks }}" as="bk" hint-placeholder-count="10">
+              <div style="display:grid;grid-template-columns:28px repeat(4,minmax(0,1fr));gap:6px;align-items:stretch">
+                <div style="display:grid;place-items:center;font:600 14px var(--font-mono);color:var(--muted)">{{ bk.num }}</div>
+                <sc-for list="{{ bk.presets }}" as="pr" hint-placeholder-count="4">
+                  <div style="height:56px;box-sizing:border-box;display:flex;flex-direction:column;justify-content:center;gap:2px;padding:0 8px;border-radius:6px;background:{{ pr.bg }};color:{{ pr.fg }};min-width:0">
+                    <div style="font:700 13px var(--font-mono)">{{ pr.letter }}</div>
+                    <div style="font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;opacity:.85">{{ pr.name }}</div>
+                  </div>
+                </sc-for>
+              </div>
+            </sc-for>
+          </div>
+          <div style="height:52px;display:grid;place-items:center;border-radius:var(--r2);background:var(--surface-2);font-size:16px;font-weight:600">All 128 presets</div>
+        </div>
+      </div>
+    </div>
+
+    <div style="font:500 13px var(--font-mono);color:#666;margin-top:24px">IPAD LANDSCAPE · 1194 × 834</div>
+    <div data-theme="stage" data-screen-label="1a iPad" style="width:1194px;height:834px;overflow:hidden;display:flex;flex-direction:column;border-radius:18px;box-shadow:0 20px 60px rgba(0,0,0,.25)">
+      <div style="height:64px;flex:none;display:flex;align-items:center;gap:12px;padding:0 20px;border-bottom:1px solid var(--line)">
+        <div style="height:48px;display:flex;align-items:center;gap:8px;padding:0 18px;border-radius:var(--r2);background:var(--surface-2);font-size:16px;font-weight:600">☰ Presets</div>
+        <div style="flex:1"></div>
+        <div style="height:44px;display:flex;align-items:center;gap:8px;padding:0 14px;border:1px solid var(--line);border-radius:999px;font-size:14px;color:var(--muted)"><div style="width:10px;height:10px;border-radius:50%;background:var(--ok)"></div>Server</div>
+        <div style="height:44px;display:flex;align-items:center;gap:8px;padding:0 14px;border:1px solid var(--line);border-radius:999px;font-size:14px;color:var(--muted)"><div style="width:10px;height:10px;border-radius:50%;background:var(--ok)"></div>HX Effects</div>
+      </div>
+      <div style="flex:1;min-height:0;display:flex;flex-direction:column;gap:20px;padding:20px">
+        <div style="display:flex;align-items:center;gap:20px">
+          <div style="display:flex;flex-direction:column;gap:8px"><div style="width:60px;height:52px;display:grid;place-items:center;background:var(--surface);border-radius:var(--r2);font-size:20px">▲</div><div style="width:60px;height:52px;display:grid;place-items:center;background:var(--surface);border-radius:var(--r2);font-size:20px">▼</div></div>
+          <div style="font:700 88px/0.9 var(--font-mono);letter-spacing:-0.04em">{{ preset.label }}</div>
+          <div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:4px"><div style="font-size:38px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ preset.name }}</div><div style="font-size:16px;color:var(--muted)">Bank 01 · Preset C</div></div>
+          <div style="display:flex;flex-direction:column;align-items:flex-end;padding:10px 18px;background:var(--surface);border-radius:var(--r3)"><div style="font:700 44px/1 var(--font-mono)">120</div><div style="font:600 13px var(--font-mono);letter-spacing:.12em;color:var(--muted)">BPM</div></div>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px">
+          <sc-for list="{{ snaps }}" as="s" hint-placeholder-count="4">
+            <div style="height:60px;display:flex;align-items:center;padding:0 16px;border-radius:var(--r2);background:{{ s.bg }};color:{{ s.fg }};font-size:17px;font-weight:600">{{ s.name }}</div>
+          </sc-for>
+        </div>
+        <div style="display:flex;gap:10px">
+          <sc-for list="{{ blocks }}" as="b" hint-placeholder-count="4">
+            <div style="flex:1;min-width:0;height:144px;display:flex;flex-direction:column;gap:8px;padding:14px;border-radius:var(--r3);background:var(--surface);border:2px solid {{ b.tileBorder }};box-sizing:border-box">
+              <div style="height:8px;border-radius:4px;background:{{ b.bar }};border:2px solid {{ b.color }};box-sizing:border-box"></div>
+              <div style="font-size:13px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:{{ b.color }}">{{ b.catName }}</div>
+              <div style="font-size:22px;font-weight:600;color:{{ b.modelColor }};white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ b.model }}</div>
+              <div style="flex:1"></div>
+              <div><span style="font:600 12px var(--font-mono);letter-spacing:.08em;padding:4px 8px;border-radius:4px;background:{{ b.pillBg }};color:{{ b.pillFg }}">{{ b.status }}</span></div>
+            </div>
+          </sc-for>
+        </div>
+        <div style="flex:1;min-height:0;display:flex;flex-direction:column;gap:14px;padding:18px 20px;background:var(--surface);border-radius:var(--r3)">
+          <div style="display:flex;align-items:center;gap:12px">
+            <div style="width:14px;height:14px;border-radius:50%;background:var(--cat-pitch)"></div>
+            <div style="font-size:26px;font-weight:600">{{ sel.model }}</div>
+            <div style="font:600 12px var(--font-mono);padding:4px 8px;border-radius:4px;background:var(--surface-2);color:var(--muted)">BYPASSED</div>
+            <div style="flex:1"></div>
+            <div style="height:48px;display:flex;align-items:center;padding:0 18px;border:2px dashed var(--line);border-radius:var(--r2);color:var(--muted);font-size:15px">Turn on</div>
+          </div>
+          <div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px">
+            <sc-for list="{{ sel.params }}" as="p" hint-placeholder-count="6">
+              <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:14px 16px;background:var(--surface-2);border-radius:var(--r2)">
+                <div style="font-size:13px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)">{{ p.name }}</div>
+                <div style="font:600 26px/1.1 var(--font-mono);white-space:nowrap">{{ p.value }}</div>
+              </div>
+            </sc-for>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ 1b STUDIO ============ -->
+  <div id="1b" style="display:flex;flex-direction:column;gap:24px">
+    <div style="display:flex;align-items:center;gap:12px"><div style="font:700 14px var(--font-mono);background:#1d1d1f;color:#fff;padding:6px 10px;border-radius:6px">1b</div><div style="font-size:20px;font-weight:600;color:#1d1d1f">Studio — light, three-pane</div></div>
+    <div style="font:500 13px var(--font-mono);color:#666">DESKTOP · 1440 × 900</div>
+    <div data-theme="studio" data-screen-label="1b Desktop" style="width:1440px;height:900px;overflow:hidden;display:grid;grid-template-columns:288px minmax(0,1fr) 384px;border-radius:10px;box-shadow:0 20px 60px rgba(0,0,0,.18)">
+      <div style="border-right:1px solid var(--line);display:flex;flex-direction:column;min-height:0">
+        <div style="padding:20px 20px 12px;display:flex;flex-direction:column;gap:14px">
+          <div style="display:flex;align-items:center;justify-content:space-between"><div style="font-size:16px;font-weight:700;letter-spacing:-0.01em">Helix Bridge</div><div style="display:flex;gap:6px;align-items:center;font-size:12px;color:var(--muted)"><div style="width:8px;height:8px;border-radius:50%;background:var(--ok)"></div>Server<div style="width:8px;height:8px;border-radius:50%;background:var(--ok);margin-left:6px"></div>Device</div></div>
+          <div style="height:44px;display:flex;align-items:center;justify-content:space-between;padding:0 14px;border:1px solid var(--line);border-radius:var(--r2);background:var(--surface);color:var(--muted);font-size:15px">Search presets <span style="font:12px var(--font-mono);border:1px solid var(--line);border-radius:4px;padding:1px 6px">/</span></div>
+        </div>
+        <div style="flex:1;min-height:0;overflow:hidden;padding:0 12px;display:flex;flex-direction:column;gap:2px">
+          <sc-for list="{{ banksShort }}" as="bk" hint-placeholder-count="5">
+            <div style="display:flex;flex-direction:column;gap:2px;padding-bottom:8px">
+              <div style="font-size:12px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);padding:8px 8px 4px">Bank {{ bk.num }}</div>
+              <sc-for list="{{ bk.presets }}" as="pr" hint-placeholder-count="4">
+                <div style="height:44px;display:flex;align-items:center;gap:12px;padding:0 10px;border-radius:var(--r2);background:{{ pr.bgS }};color:{{ pr.fgS }}">
+                  <div style="font:600 13px var(--font-mono);width:32px;opacity:.75">{{ pr.label }}</div>
+                  <div style="font-size:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ pr.name }}</div>
+                </div>
+              </sc-for>
+            </div>
+          </sc-for>
+        </div>
+      </div>
+      <div style="display:flex;flex-direction:column;min-width:0;min-height:0">
+        <div style="padding:32px 40px 0;display:flex;flex-direction:column;gap:24px">
+          <div style="display:flex;align-items:flex-end;gap:24px">
+            <div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:6px">
+              <div style="font:600 18px var(--font-mono);color:var(--muted)">{{ preset.label }}</div>
+              <div style="display:flex;align-items:center;gap:14px"><div style="font-size:48px;font-weight:600;letter-spacing:-0.02em;line-height:1.05">{{ preset.name }}</div><div style="height:44px;display:flex;align-items:center;padding:0 14px;border:1.5px dashed var(--line);border-radius:var(--r2);font-size:14px;color:var(--muted)">Rename</div></div>
+            </div>
+            <div style="display:flex;flex-direction:column;align-items:flex-end;gap:2px"><div style="font-size:12px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)">Tempo</div><div style="font:600 28px var(--font-mono)">120.0<span style="font-size:15px;color:var(--muted)"> BPM</span></div></div>
+          </div>
+          <div style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr));padding:4px;background:var(--surface-2);border-radius:var(--r2);gap:4px">
+            <sc-for list="{{ snaps }}" as="s" hint-placeholder-count="4">
+              <div style="height:48px;display:grid;place-items:center;border-radius:6px;background:{{ s.bgS }};box-shadow:{{ s.shS }};font-size:14px;font-weight:600;color:{{ s.fgS }}">{{ s.name }}</div>
+            </sc-for>
+          </div>
+        </div>
+        <div style="flex:1;min-height:0;display:flex;align-items:center;padding:0 40px;position:relative">
+          <div style="position:absolute;left:40px;right:40px;top:50%;margin-top:-34px;height:2px;background:var(--line)"></div>
+          <div style="position:relative;width:100%;display:flex;align-items:flex-start;justify-content:space-between">
+            <div style="display:flex;flex-direction:column;align-items:center;gap:10px;width:56px"><div style="width:20px;height:20px;margin:24px 0;border-radius:50%;background:var(--ink)"></div><div style="font:600 12px var(--font-mono);color:var(--muted)">IN</div></div>
+            <sc-for list="{{ blocks }}" as="b" hint-placeholder-count="4">
+              <div style="display:flex;flex-direction:column;align-items:center;gap:10px;width:132px">
+                <div style="width:68px;height:68px;box-sizing:border-box;border-radius:50%;border:4px solid {{ b.color }};background:{{ b.nodeBg }};box-shadow:{{ b.ring }}"></div>
+                <div style="font-size:16px;font-weight:600;text-align:center;color:{{ b.modelColor }}">{{ b.model }}</div>
+                <div style="font-size:13px;color:var(--muted);text-align:center">{{ b.catName }} · {{ b.statusLow }}</div>
+              </div>
+            </sc-for>
+            <div style="display:flex;flex-direction:column;align-items:center;gap:10px;width:56px"><div style="width:20px;height:20px;margin:24px 0;border-radius:50%;background:var(--ink)"></div><div style="font:600 12px var(--font-mono);color:var(--muted)">OUT</div></div>
+          </div>
+        </div>
+        <div style="height:48px;flex:none;border-top:1px solid var(--line);display:flex;align-items:center;gap:20px;padding:0 40px;font-size:13px;color:var(--muted)">
+          <div>HX Effects · firmware 3.80 · build d972399</div><div style="flex:1"></div>
+          <div style="display:flex;gap:16px;font-family:var(--font-mono);font-size:12px"><span>↑↓ preset</span><span>←→ block</span><span>1–4 snapshot</span><span>Space bypass</span></div>
+        </div>
+      </div>
+      <div style="border-left:1px solid var(--line);background:var(--surface);display:flex;flex-direction:column;min-height:0">
+        <div style="padding:28px 28px 20px;display:flex;flex-direction:column;gap:14px;border-bottom:1px solid var(--line)">
+          <div style="display:flex;align-items:center;gap:8px"><div style="width:10px;height:10px;border-radius:50%;background:var(--cat-pitch)"></div><div style="font-size:13px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--cat-pitch)">Pitch/Synth · slot 3</div></div>
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:12px"><div style="font-size:28px;font-weight:600;letter-spacing:-0.01em">{{ sel.model }}</div>
+            <div style="display:flex;align-items:center;gap:10px;font-size:14px;color:var(--muted)">Bypassed<div style="width:52px;height:32px;box-sizing:border-box;border-radius:16px;border:1.5px dashed var(--muted);padding:3px"><div style="width:22px;height:22px;border-radius:50%;background:var(--line)"></div></div></div></div>
+        </div>
+        <div style="flex:1;min-height:0;overflow:hidden;padding:8px 28px;display:flex;flex-direction:column">
+          <sc-for list="{{ sel.params }}" as="p" hint-placeholder-count="6">
+            <div style="display:flex;flex-direction:column;gap:10px;padding:16px 0;border-bottom:1px solid var(--line)">
+              <div style="display:flex;justify-content:space-between;align-items:baseline"><div style="font-size:15px">{{ p.name }}</div><div style="font:600 17px var(--font-mono);font-variant-numeric:tabular-nums">{{ p.value }}</div></div>
+              <div style="height:20px;position:relative;display:flex;align-items:center"><div style="position:absolute;left:0;right:0;height:4px;border-radius:2px;background:var(--surface-2)"></div><div style="position:absolute;left:0;height:4px;border-radius:2px;background:var(--cat-pitch);opacity:.45;width:{{ p.pct }}"></div><div style="position:absolute;left:{{ p.pct }};margin-left:-10px;width:20px;height:20px;box-sizing:border-box;border-radius:50%;border:1.5px dashed var(--muted);background:var(--surface)"></div></div>
+            </div>
+          </sc-for>
+        </div>
+      </div>
+    </div>
+
+    <div style="font:500 13px var(--font-mono);color:#666;margin-top:24px">IPAD LANDSCAPE · 1194 × 834</div>
+    <div data-theme="studio" data-screen-label="1b iPad" style="width:1194px;height:834px;overflow:hidden;display:grid;grid-template-columns:minmax(0,1fr) 360px;border-radius:18px;box-shadow:0 20px 60px rgba(0,0,0,.18)">
+      <div style="display:flex;flex-direction:column;min-width:0;min-height:0">
+        <div style="height:64px;flex:none;display:flex;align-items:center;gap:12px;padding:0 24px;border-bottom:1px solid var(--line)">
+          <div style="height:44px;display:flex;align-items:center;gap:8px;padding:0 16px;border:1px solid var(--line);border-radius:var(--r2);background:var(--surface);font-size:15px;font-weight:600">☰ Presets</div>
+          <div style="flex:1"></div>
+          <div style="display:flex;gap:6px;align-items:center;font-size:13px;color:var(--muted)"><div style="width:8px;height:8px;border-radius:50%;background:var(--ok)"></div>Server<div style="width:8px;height:8px;border-radius:50%;background:var(--ok);margin-left:8px"></div>HX Effects</div>
+        </div>
+        <div style="padding:28px 32px 0;display:flex;flex-direction:column;gap:22px">
+          <div style="display:flex;align-items:flex-end;gap:20px">
+            <div style="flex:1;min-width:0"><div style="font:600 18px var(--font-mono);color:var(--muted)">{{ preset.label }}</div><div style="font-size:44px;font-weight:600;letter-spacing:-0.02em">{{ preset.name }}</div></div>
+            <div style="font:600 26px var(--font-mono)">120.0<span style="font-size:14px;color:var(--muted)"> BPM</span></div>
+          </div>
+          <div style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr));padding:4px;background:var(--surface-2);border-radius:var(--r2);gap:4px">
+            <sc-for list="{{ snaps }}" as="s" hint-placeholder-count="4">
+              <div style="height:48px;display:grid;place-items:center;border-radius:6px;background:{{ s.bgS }};box-shadow:{{ s.shS }};font-size:14px;font-weight:600;color:{{ s.fgS }}">{{ s.name }}</div>
+            </sc-for>
+          </div>
+        </div>
+        <div style="flex:1;min-height:0;display:flex;align-items:center;padding:0 28px;position:relative">
+          <div style="position:absolute;left:28px;right:28px;top:50%;margin-top:-34px;height:2px;background:var(--line)"></div>
+          <div style="position:relative;width:100%;display:flex;align-items:flex-start;justify-content:space-between">
+            <div style="width:20px;height:20px;margin:24px 0;border-radius:50%;background:var(--ink)"></div>
+            <sc-for list="{{ blocks }}" as="b" hint-placeholder-count="4">
+              <div style="display:flex;flex-direction:column;align-items:center;gap:10px;width:120px">
+                <div style="width:68px;height:68px;box-sizing:border-box;border-radius:50%;border:4px solid {{ b.color }};background:{{ b.nodeBg }};box-shadow:{{ b.ring }}"></div>
+                <div style="font-size:15px;font-weight:600;text-align:center;color:{{ b.modelColor }}">{{ b.model }}</div>
+                <div style="font-size:13px;color:var(--muted)">{{ b.statusLow }}</div>
+              </div>
+            </sc-for>
+            <div style="width:20px;height:20px;margin:24px 0;border-radius:50%;background:var(--ink)"></div>
+          </div>
+        </div>
+      </div>
+      <div style="border-left:1px solid var(--line);background:var(--surface);display:flex;flex-direction:column;min-height:0">
+        <div style="padding:24px;display:flex;flex-direction:column;gap:12px;border-bottom:1px solid var(--line)">
+          <div style="font-size:13px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--cat-pitch)">Pitch/Synth · slot 3</div>
+          <div style="display:flex;align-items:center;justify-content:space-between"><div style="font-size:26px;font-weight:600">{{ sel.model }}</div><div style="width:52px;height:32px;box-sizing:border-box;border-radius:16px;border:1.5px dashed var(--muted);padding:3px"><div style="width:22px;height:22px;border-radius:50%;background:var(--line)"></div></div></div>
+        </div>
+        <div style="flex:1;min-height:0;overflow:hidden;padding:4px 24px;display:flex;flex-direction:column">
+          <sc-for list="{{ sel.params }}" as="p" hint-placeholder-count="6">
+            <div style="display:flex;flex-direction:column;gap:10px;padding:16px 0;border-bottom:1px solid var(--line)">
+              <div style="display:flex;justify-content:space-between;align-items:baseline"><div style="font-size:15px">{{ p.name }}</div><div style="font:600 17px var(--font-mono)">{{ p.value }}</div></div>
+              <div style="height:20px;position:relative;display:flex;align-items:center"><div style="position:absolute;left:0;right:0;height:4px;border-radius:2px;background:var(--surface-2)"></div><div style="position:absolute;left:0;height:4px;border-radius:2px;background:var(--cat-pitch);opacity:.45;width:{{ p.pct }}"></div><div style="position:absolute;left:{{ p.pct }};margin-left:-10px;width:20px;height:20px;box-sizing:border-box;border-radius:50%;border:1.5px dashed var(--muted);background:var(--surface)"></div></div>
+            </div>
+          </sc-for>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  </div>
+</section>
+</x-dc>
+<script type="text/x-dc" data-dc-script>
+class Component extends DCLogic {
+  renderVals() {
+    const CAT = {
+      wah: ['Wah', 'var(--cat-wah)'], pitch: ['Pitch/Synth', 'var(--cat-pitch)'],
+      loop: ['Send/Return', 'var(--cat-loop)'], dyn: ['Dynamics', 'var(--cat-dyn)']
+    };
+    const selPos = 3;
+    const raw = [
+      { position: 2, model: 'Fassel', cat: 'wah', enabled: false },
+      { position: 3, model: 'Simple Pitch', cat: 'pitch', enabled: false },
+      { position: 5, model: 'FX Loop 1', cat: 'loop', enabled: true },
+      { position: 10, model: 'Noise Gate', cat: 'dyn', enabled: true }
+    ];
+    const blocks = raw.map(b => {
+      const [catName, color] = CAT[b.cat];
+      const selected = b.position === selPos;
+      return { ...b, catName, color,
+        status: b.enabled ? 'ON' : 'BYPASSED', statusLow: b.enabled ? 'On' : 'Bypassed',
+        bar: b.enabled ? color : 'transparent',
+        modelColor: b.enabled ? 'var(--ink)' : 'var(--muted)',
+        tileBorder: selected ? 'var(--ink)' : 'transparent',
+        pillBg: b.enabled ? color : 'var(--surface-2)', pillFg: b.enabled ? 'var(--bg)' : 'var(--muted)',
+        nodeBg: b.enabled ? color : 'var(--surface)',
+        ring: selected ? '0 0 0 5px var(--bg), 0 0 0 7px var(--ink)' : 'none' };
+    });
+    const sel = { model: 'Simple Pitch', params: [
+      { name: 'Interval', value: '+7', pct: '64%' }, { name: 'Cents', value: '+0.00', pct: '50%' },
+      { name: 'Delay', value: '0.0 ms', pct: '0%' }, { name: 'Shift Level', value: '10.0', pct: '100%' },
+      { name: 'Mix', value: '50 %', pct: '50%' }, { name: 'Level', value: '+0.0 dB', pct: '83%' }] };
+    const snaps = ['SNAPSHOT 1', 'SNAPSHOT 2', 'SNAPSHOT 3', 'SNAPSHOT 4'].map((name, i) => ({
+      name, key: String(i + 1),
+      bg: i === 0 ? 'var(--ink)' : 'var(--surface)', fg: i === 0 ? 'var(--bg)' : 'var(--ink)',
+      bgS: i === 0 ? 'var(--surface)' : 'transparent', fgS: i === 0 ? 'var(--ink)' : 'var(--muted)',
+      shS: i === 0 ? '0 1px 3px rgba(0,0,0,.12)' : 'none' }));
+    const named = { '01A': 'Clean Verb', '01B': 'Edge Delay', '02A': 'Wah Lead', '02C': 'Octave Up', '03B': 'Ambient Swell', '04D': 'Slapback', '05A': 'Trem Verb', '06B': 'Loop Rig' };
+    const banksAll = Array.from({ length: 32 }, (_, i) => {
+      const num = String(i + 1).padStart(2, '0');
+      return { num, presets: ['A', 'B', 'C', 'D'].map(letter => {
+        const label = num + letter, cur = label === '01C';
+        return { letter, label, name: named[label] || 'New Preset',
+          bg: cur ? 'var(--ink)' : 'var(--surface)', fg: cur ? 'var(--bg)' : 'var(--ink)',
+          bgS: cur ? 'var(--ink)' : 'transparent', fgS: cur ? 'var(--bg)' : 'var(--ink)' };
+      }) };
+    });
+    const CODES = { wah: 'WAH', pitch: 'PIT', loop: 'LOOP', dyn: 'DYN' };
+    const slots = Array.from({ length: 10 }, (_, i) => {
+      const b = blocks.find(x => x.position === i + 1);
+      if (!b) return { filled: false, empty: true, posLabel: '', model: '' };
+      const selected = b.position === selPos;
+      return { filled: true, empty: false, posLabel: String(b.position), model: b.model, code: CODES[b.cat], color: b.color,
+        band: b.enabled ? '14px' : '0px', codeColor: b.enabled ? 'var(--ink)' : b.color,
+        nameColor: b.enabled ? 'var(--ink)' : 'var(--muted)',
+        ring: selected ? '0 0 0 4px var(--bg), 0 0 0 6px var(--ink)' : 'none' };
+    });
+    const listRows = banksAll.slice(0, 5).flatMap(bk => bk.presets.map((p, j) => ({ label: p.label, name: p.name,
+      bg: p.label === '01C' ? 'var(--ink)' : 'transparent', fg: p.label === '01C' ? 'var(--bg)' : 'var(--ink)',
+      sep: j === 0 ? '1px solid var(--line)' : 'none' })));
+    const bankTiles = banksAll[0].presets.map(p => ({ bank: '01', letter: p.letter, name: p.name,
+      bg: p.label === '01C' ? 'var(--ink)' : 'var(--surface)', fg: p.label === '01C' ? 'var(--bg)' : 'var(--ink)' }));
+    return { preset: { label: '01C', name: 'New Preset' }, blocks, sel, snaps, slots, listRows, bankTiles,
+      banks: banksAll.slice(0, 11), banksShort: banksAll.slice(0, 5) };
+  }
+}
+</script>
+</body>
+</html>

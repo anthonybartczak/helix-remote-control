@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#0b0c0e">
+<title>Helix Bridge</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<div class="app" id="app">
+  <header class="topbar">
+    <div class="brand">HELIX BRIDGE</div>
+    <div class="spacer"></div>
+    <button class="conn conn-pill" type="button" data-conn aria-haspopup="dialog"></button>
+  </header>
+
+  <div class="layout">
+    <aside class="sidebar">
+      <div class="sidebar-head">
+        <div class="caps">PRESETS</div>
+        <button class="chip" type="button" data-open-browser id="all-chip">All</button>
+      </div>
+      <ol class="preset-list" id="preset-list"></ol>
+    </aside>
+
+    <main class="main">
+      <div class="presetbar">
+        <button class="btn presets-btn" type="button" data-open-browser>Presets</button>
+        <button class="btn arrow later" type="button" disabled title="Switching presets comes in phase 6" aria-label="Previous preset">‹</button>
+        <button class="btn arrow later" type="button" disabled title="Switching presets comes in phase 6" aria-label="Next preset">›</button>
+        <div class="namebar" id="namebar">
+          <span class="nb-label" id="nb-label">–</span>
+          <span class="nb-name" id="nb-name"></span>
+          <span class="nb-status" id="nb-status"></span>
+          <div class="spacer"></div>
+          <button class="later later-sm desktop-only" type="button" disabled title="Phase 6">Rename</button>
+          <button class="later later-sm desktop-only" type="button" disabled title="Phase 6">Save</button>
+          <button class="conn conn-dots" type="button" data-conn aria-haspopup="dialog" aria-label="Connection"></button>
+          <div class="progress" id="progress"></div>
+        </div>
+        <div class="snaps snaps-inline" id="snaps-inline"></div>
+        <div class="tempo">
+          <div class="tempo-readout"><span class="tempo-bpm" id="tempo">–</span><span class="tempo-unit"><span class="desktop-only">BPM · PRESET</span><span class="tablet-only">BPM</span></span></div>
+          <button class="later tap desktop-only" type="button" disabled title="Phase 6">TAP</button>
+        </div>
+        <button class="conn conn-pill blocked-only" type="button" data-conn aria-haspopup="dialog"></button>
+      </div>
+
+      <div class="snaps snaps-row" id="snaps-row"></div>
+
+      <div class="banner" id="banner" role="alert" hidden>
+        <div class="banner-dot"></div>
+        <div class="banner-msg" id="banner-msg"></div>
+        <div class="banner-ctx" id="banner-ctx"></div>
+        <div class="spacer"></div>
+        <button class="btn-solid" type="button" data-retry>Retry</button>
+        <button class="icon-btn" type="button" id="banner-close" aria-label="Dismiss">×</button>
+      </div>
+
+      <section class="chain" id="chain" aria-label="Signal chain"></section>
+
+      <div class="lower">
+        <section class="params" id="params" aria-label="Parameters"></section>
+        <section class="bank" id="bank" aria-label="Bank"></section>
+      </div>
+
+      <div class="blocker" id="blocker" hidden>
+        <div class="blocker-body">
+          <div class="blocker-icon" id="blocker-icon">USB</div>
+          <div class="blocker-title" id="blocker-title"></div>
+          <div class="blocker-text" id="blocker-text"></div>
+          <div class="blocker-detail" id="blocker-detail"></div>
+          <button class="btn-solid btn-wide" type="button" data-retry>Try again</button>
+          <div class="blocker-auto">Retrying automatically every 5 s</div>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <footer class="statusline" id="statusline"></footer>
+</div>
+
+<div class="sheet" id="browser" role="dialog" aria-modal="true" aria-label="Presets" hidden>
+  <div class="sheet-head">
+    <button class="icon-btn close-btn portrait-only" type="button" data-close-browser aria-label="Close">×</button>
+    <div class="sheet-title landscape-only">Presets</div>
+    <input class="filter" id="filter" type="search" placeholder="Filter by name or label" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
+    <div class="spacer landscape-only"></div>
+    <div class="legend landscape-only"><span class="sw sw-loaded"></span>Loaded<span class="sw sw-selected"></span>Selected</div>
+    <button class="icon-btn close-btn landscape-only" type="button" data-close-browser aria-label="Close">×</button>
+  </div>
+  <div class="sheet-body">
+    <div class="banks" id="banks"></div>
+    <nav class="jumps portrait-only" id="jumps" aria-label="Jump to bank"></nav>
+  </div>
+  <div class="sheet-foot">
+    <span class="sf-label" id="sf-label"></span>
+    <span class="sf-name" id="sf-name"></span>
+    <span class="sf-note landscape-only" id="sf-note"></span>
+    <div class="spacer"></div>
+    <button class="later load-btn" type="button" id="load-btn" disabled title="Loading presets comes in phase 6">Load</button>
+  </div>
+</div>
+
+<div class="popover" id="conn-popover" role="dialog" aria-label="Connection" hidden>
+  <div class="caps muted">CONNECTION</div>
+  <dl class="kv" id="conn-info"></dl>
+  <button class="btn-solid" type="button" data-retry>Refresh from device</button>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>
