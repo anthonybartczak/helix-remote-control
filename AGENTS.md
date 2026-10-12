@@ -50,6 +50,9 @@ Upstream: https://github.com/crmne/tonepush
   read posted so device notifications never back up; a wedged device needs its power adapter
   pulled, not a USB replug. Do not send MIDI clock while a session is open.
 - Local reference clone (dev machine only): `../tonepush`. Cloud sessions fetch it from GitHub.
+- Dev machine: HX Edit is installed at `C:\Program Files (x86)\Line6\HX Edit`. TonePush does
+  not find it there; set `HX_EDIT_RESOURCES=C:\Program Files (x86)\Line6\HX Edit\res`. On the
+  Pi, copy that `res` folder into `/vendor` and point `HX_EDIT_RESOURCES` at it.
 
 ## 4. Architecture (decided)
 

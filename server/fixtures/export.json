@@ -2,47 +2,47 @@
   "blocks": [
     {
       "enabled": false,
-      "model": "model 269",
+      "model": "Fassel",
       "params": {
-        "param0": 0.017248867079615593,
-        "param1": 455.0,
-        "param2": 2155.0,
-        "param3": 1.0,
-        "param4": 0.0
+        "Fc High": "2.2 kHz",
+        "Fc Low": "455 Hz",
+        "Level": "+0.0 dB",
+        "Mix": "100 %",
+        "Position": "2 %"
       },
       "position": 2
     },
     {
       "enabled": false,
-      "model": "model 296",
+      "model": "Simple Pitch",
       "params": {
-        "param0": 7.0,
-        "param1": 0.0,
-        "param2": 0.0,
-        "param3": 1.0,
-        "param4": 0.5,
-        "param5": 0.0
+        "Cents": "+0.00",
+        "Delay": "0.0 ms",
+        "Interval": "+7",
+        "Level": "+0.0 dB",
+        "Mix": "50 %",
+        "Shift Level": "10.0"
       },
       "position": 3
     },
     {
       "enabled": true,
-      "model": "model 141",
+      "model": "FX Loop 1",
       "params": {
-        "param0": 0.0,
-        "param1": 0.0,
-        "param2": 1.0,
+        "Mix": "100 %",
+        "Return": "+0.0 dB",
+        "Send": "+0.0 dB",
         "param3": 0.0
       },
       "position": 5
     },
     {
       "enabled": true,
-      "model": "model 123",
+      "model": "Noise Gate",
       "params": {
-        "param0": -22.099998474121094,
-        "param1": 0.4309999942779541,
-        "param2": 0.0
+        "Decay": "431 ms",
+        "Level": "+0.0 dB",
+        "Threshold": "-22.1 dB"
       },
       "position": 10
     }

@@ -1,1 +1,1 @@
-     0 Input [1]  ->   1 269 (off)  ->   2 296 (off)  ->   4 141  ->   9 123  ->  10 Output [1]
+     0 Input [Multi (Guitar, Aux, Variax)]  ->   1 Fassel (off)  ->   2 Simple Pitch (off)  ->   4 FX Loop 1  ->   9 Noise Gate  ->  10 Output [Multi (1/4", XLR, Digital, USB 1/2)]

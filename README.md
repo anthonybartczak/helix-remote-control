@@ -22,8 +22,11 @@ Windows SDK). Quit HX Edit first.
    https://github.com/crmne/tonepush/releases/tag/v0.9.0 and check its SHA-256 against
    the release's `checksums.txt`.
 2. Unzip next to this repo, e.g. `..\tonepush-bin\`.
-3. Run read-only commands, e.g. `tonepush.exe list`, `info`, `presets`, `chain`.
-4. Leave about 3 seconds between commands, or the next one may fail to claim the device.
+3. For model and parameter names, point TonePush at HX Edit's data (it does not find the
+   default Windows install on its own):
+   `$env:HX_EDIT_RESOURCES = 'C:\Program Files (x86)\Line6\HX Edit\res'`
+4. Run read-only commands, e.g. `tonepush.exe list`, `info`, `presets`, `chain`.
+5. Leave about 3 seconds between commands, or the next one may fail to claim the device.
 
 Recorded output lives in `server/fixtures/` (see its README).
 

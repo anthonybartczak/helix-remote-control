@@ -1,0 +1,25 @@
+01C New Preset   120.0 BPM
+snapshots: SNAPSHOT 1, SNAPSHOT 2, SNAPSHOT 3, SNAPSHOT 4
+
+ 2. model 269                (bypassed)
+      param 0            0.017248867
+      param 1            455
+      param 2            2155
+      param 3            1
+      param 4            0
+ 3. model 296                (bypassed)
+      param 0            7
+      param 1            0
+      param 2            0
+      param 3            1
+      param 4            0.5
+      param 5            0
+ 5. model 141                
+      param 0            0
+      param 1            0
+      param 2            1
+      param 3            0
+10. model 123                
+      param 0            -22.099998
+      param 1            0.431
+      param 2            0
