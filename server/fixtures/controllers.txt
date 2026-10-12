@@ -1,0 +1,2 @@
+block 1 Param(0)  Expression Pedal 1  0%..100%
+block 1 Bypass  Expression Pedal 1  0%..100%

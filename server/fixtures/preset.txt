@@ -1,0 +1,4 @@
+preset:   01C New Preset  (setlist 0, index 2)
+firmware: 3.80
+build:    d972399
+sections: 48 bytes

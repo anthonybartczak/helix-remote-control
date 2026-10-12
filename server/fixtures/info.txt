@@ -1,0 +1,4 @@
+HX Effects (128 presets)
+device id: 0x00210005
+firmware:  3.80
+build:     d972399

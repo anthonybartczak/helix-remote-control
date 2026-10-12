@@ -1,0 +1,1 @@
+HX Effects (pid 0x4245) serial    3046505 - 128 presets

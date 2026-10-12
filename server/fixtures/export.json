@@ -1,0 +1,59 @@
+{
+  "blocks": [
+    {
+      "enabled": false,
+      "model": "model 269",
+      "params": {
+        "param0": 0.017248867079615593,
+        "param1": 455.0,
+        "param2": 2155.0,
+        "param3": 1.0,
+        "param4": 0.0
+      },
+      "position": 2
+    },
+    {
+      "enabled": false,
+      "model": "model 296",
+      "params": {
+        "param0": 7.0,
+        "param1": 0.0,
+        "param2": 0.0,
+        "param3": 1.0,
+        "param4": 0.5,
+        "param5": 0.0
+      },
+      "position": 3
+    },
+    {
+      "enabled": true,
+      "model": "model 141",
+      "params": {
+        "param0": 0.0,
+        "param1": 0.0,
+        "param2": 1.0,
+        "param3": 0.0
+      },
+      "position": 5
+    },
+    {
+      "enabled": true,
+      "model": "model 123",
+      "params": {
+        "param0": -22.099998474121094,
+        "param1": 0.4309999942779541,
+        "param2": 0.0
+      },
+      "position": 10
+    }
+  ],
+  "build": "d972399",
+  "firmware": "3.80",
+  "snapshots": [
+    "SNAPSHOT 1",
+    "SNAPSHOT 2",
+    "SNAPSHOT 3",
+    "SNAPSHOT 4"
+  ],
+  "tempo": 120.0
+}

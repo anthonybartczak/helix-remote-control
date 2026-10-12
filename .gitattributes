@@ -1,0 +1,2 @@
+# Fixtures are raw device output: keep bytes exactly as recorded
+server/fixtures/** -text
