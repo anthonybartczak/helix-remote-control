@@ -11,8 +11,9 @@ See [AGENTS.md](AGENTS.md) for architecture, constraints and phases.
 
 Device: HX Effects, firmware 3.80.
 
-Status: Phase 3 (read-only server) written and tested against `FakeDevice`. Next: verify it
-against the real device (local), then Phase 4 (web UI, cloud).
+Status: Phase 3 (read-only server) done. All four device endpoints verified on HX Effects
+firmware 3.80 (build `d972399`) via `tonepush` v0.9.0 on Windows 11, 2026-10-12.
+Next: Phase 4 (web UI, cloud).
 
 ## Running tonepush on Windows (dev machine)
 
@@ -43,6 +44,10 @@ Read-only HTTP API over the device. Endpoints: [docs/api.md](docs/api.md).
    - Linux/macOS: `HELIX_BACKEND=cli cargo run`
    - Windows PowerShell, from the repo root:
      `$env:HELIX_BACKEND='cli'; $env:HELIX_TONEPUSH=(Resolve-Path ..\tonepush-bin\tonepush.exe).Path; cd server; cargo run`
+   - Building on Windows needs the MSVC linker: install Visual Studio Build Tools with the
+     "Desktop development with C++" workload
+     (`winget install Microsoft.VisualStudio.2022.BuildTools --override "--add Microsoft.VisualStudio.Workload.VCTools --includeRecommended --passive"`).
+     The `windows-gnu` toolchain fails without a separate `dlltool.exe`.
 3. Checks before pushing: `cargo fmt`, `cargo clippy --all-targets -- -D warnings`, `cargo test`.
 
 | Variable | Default | Meaning |
