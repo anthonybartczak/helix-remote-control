@@ -41,7 +41,8 @@ Read-only HTTP API over the device. Endpoints: [docs/api.md](docs/api.md).
    `cd server && cargo run` then open http://localhost:8080/api/chain
 2. Against the real device (quit HX Edit first, `tonepush` on `PATH`):
    - Linux/macOS: `HELIX_BACKEND=cli cargo run`
-   - Windows PowerShell: `$env:HELIX_BACKEND='cli'; $env:HELIX_TONEPUSH='..\tonepush-bin\tonepush.exe'; cargo run`
+   - Windows PowerShell, from the repo root:
+     `$env:HELIX_BACKEND='cli'; $env:HELIX_TONEPUSH=(Resolve-Path ..\tonepush-bin\tonepush.exe).Path; cd server; cargo run`
 3. Checks before pushing: `cargo fmt`, `cargo clippy --all-targets -- -D warnings`, `cargo test`.
 
 | Variable | Default | Meaning |
