@@ -15,9 +15,11 @@ Status: Phase 4 (read-only web UI) done. Verified from iPad Safari over Wi-Fi ag
 HX Effects firmware 3.80 (build `d972399`), server on Windows 11 with `tonepush` v0.9.0,
 2026-10-12. Phase 3 endpoints verified on the same setup.
 
-Phase 5 (deploy to Pi 4): code done in the cloud, **not yet run on a Pi**. Cross-compiled
-bundle, systemd service, udev rule, mDNS and install script. Next: install on the Pi 4
-([docs/deploy.md](docs/deploy.md)).
+Phase 5 (deploy to Pi 4) verified 2026-10-12: bundle `0.1.0-bfaeb24` installed with
+`install.sh` on a Raspberry Pi 4 (64-bit Raspberry Pi OS Lite), HX Effects firmware 3.80
+over USB, UI opened from iPad Safari at `http://helix-bridge.local` with HX Edit model
+names. Whole Pi: 222 MB RAM used with the service running. Next: Phase 6 (write
+operations) after a full preset backup. Install guide: [docs/deploy.md](docs/deploy.md).
 
 ## Running tonepush on Windows (dev machine)
 
