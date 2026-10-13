@@ -28,6 +28,14 @@ use crate::device::{Cause, Command, Device, DeviceError, Live, Result};
 /// How often an idle session reads notifications and sends keep-alives.
 /// TonePush uses 700 ms; faster polling wedged a device during its development.
 const POLL: Duration = Duration::from_millis(700);
+/// Each poll reads until the pedal has nothing left, for at most this long.
+/// `poll_notifications` takes one USB transfer (512 bytes, about 14
+/// notifications), and the pedal can queue more than that between polls. A
+/// backlog delays every change and, once the pedal's buffer is full, stops it
+/// (PROTOCOL.md: keep reading so notifications never back up).
+const DRAIN_BUDGET: Duration = Duration::from_millis(200);
+/// How often the debug log reports notification counts.
+const STATS_EVERY: Duration = Duration::from_secs(10);
 /// Wait this long after a notification for more before re-reading the chain:
 /// one footswitch press arrives as several notifications.
 const SETTLE: Duration = Duration::from_millis(250);
@@ -135,6 +143,8 @@ struct Worker {
     /// notifications. Those carry the new value; a re-read right after a
     /// change can still return the old document (TonePush GUI, `present`).
     doc: Option<Doc>,
+    /// Notification counts for the debug log: (since, polls, transfers, events).
+    stats: (Instant, u32, u32, u32),
     /// Re-reads refused in a row (a pedal mid-load refuses for a moment).
     reload_retries: u32,
 }
@@ -177,6 +187,7 @@ impl Worker {
             reload: None,
             shown: None,
             doc: None,
+            stats: (Instant::now(), 0, 0, 0),
             reload_retries: 0,
         }
     }
@@ -285,14 +296,25 @@ impl Worker {
 
     fn poll(&mut self) {
         self.last_poll = Instant::now();
-        let Some(session) = self.session.as_mut() else {
-            return;
-        };
-        let polled = session.poll_notifications();
-        let events = match self.check(polled) {
-            Ok(events) => events,
-            Err(_) => return,
-        };
+        let deadline = self.last_poll + DRAIN_BUDGET;
+        let mut events = Vec::new();
+        let mut transfers = 0;
+        loop {
+            let Some(session) = self.session.as_mut() else {
+                return;
+            };
+            let polled = session.poll_notifications();
+            let Ok(batch) = self.check(polled) else {
+                return;
+            };
+            transfers += 1;
+            let drained = batch.is_empty();
+            events.extend(batch);
+            if drained || Instant::now() >= deadline {
+                break;
+            }
+        }
+        self.count(transfers, events.len());
         let mut patched = false;
         for (event, args) in &events {
             let Some(cause) = notice(*event, args) else {
@@ -311,6 +333,23 @@ impl Worker {
         if let Some(session) = self.session.as_mut() {
             let kept = session.keepalive();
             let _ = self.check(kept);
+        }
+    }
+
+    fn count(&mut self, transfers: u32, events: usize) {
+        let (since, polls, total_transfers, total_events) = &mut self.stats;
+        *polls += 1;
+        *total_transfers += transfers;
+        *total_events += events as u32;
+        if since.elapsed() >= STATS_EVERY {
+            tracing::debug!(
+                polls = *polls,
+                transfers = *total_transfers,
+                notifications = *total_events,
+                "pedal notifications in the last {}s",
+                STATS_EVERY.as_secs()
+            );
+            self.stats = (Instant::now(), 0, 0, 0);
         }
     }
 
