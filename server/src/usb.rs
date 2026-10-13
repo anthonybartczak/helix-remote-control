@@ -131,8 +131,31 @@ struct Worker {
     reload: Option<(Instant, Instant, Cause)>,
     /// Last chain published, to send only real changes.
     shown: Option<String>,
+    /// The loaded preset as last read, patched by bypass and parameter
+    /// notifications. Those carry the new value; a re-read right after a
+    /// change can still return the old document (TonePush GUI, `present`).
+    doc: Option<Doc>,
     /// Re-reads refused in a row (a pedal mid-load refuses for a moment).
     reload_retries: u32,
+}
+
+struct Doc {
+    preset: hx_proto::Preset,
+    /// `preset_info`: setlist, index, name. `None` if the pedal refused.
+    info: Option<(i64, i64, String)>,
+}
+
+/// What one notification does to the cached document.
+#[derive(Debug, PartialEq)]
+enum Patch {
+    /// Slot `block` switched on or off.
+    Enabled { block: usize, on: bool },
+    /// Parameter `index` of slot `block`'s primary model took `value`.
+    Param {
+        block: usize,
+        index: usize,
+        value: f32,
+    },
 }
 
 impl Worker {
@@ -153,6 +176,7 @@ impl Worker {
             open_failures: 0,
             reload: None,
             shown: None,
+            doc: None,
             reload_retries: 0,
         }
     }
@@ -250,6 +274,9 @@ impl Worker {
             if e.loses_session() && self.session.take().is_some() {
                 tracing::warn!("USB session lost: {e}");
                 self.reload = None;
+                self.doc = None;
+                // Try again at once; failed opens back off by themselves.
+                self.last_connect = None;
                 let _ = self.live.send(Live::Connected(false));
             }
             DeviceError::Failed(e.to_string())
@@ -266,11 +293,20 @@ impl Worker {
             Ok(events) => events,
             Err(_) => return,
         };
+        let mut patched = false;
         for (event, args) in &events {
-            if let Some(cause) = notice(*event, args) {
-                tracing::debug!(event, ?args, ?cause, "device notification");
-                self.want_reload(cause);
+            let Some(cause) = notice(*event, args) else {
+                continue;
+            };
+            let patch = patch(*event, args);
+            tracing::debug!(event, ?args, ?cause, ?patch, "device notification");
+            match patch {
+                Some(p) if self.apply(&p) => patched = true,
+                _ => self.want_reload(cause),
             }
+        }
+        if patched {
+            self.publish_doc(Cause::Edit);
         }
         if let Some(session) = self.session.as_mut() {
             let kept = session.keepalive();
@@ -284,6 +320,62 @@ impl Worker {
             Some((first, _, was)) => (first, now, was.max(cause)),
             None => (now, now, cause),
         });
+    }
+
+    /// Change the cached document. False if there is none or it does not
+    /// have that block or parameter: then the caller re-reads instead.
+    fn apply(&mut self, patch: &Patch) -> bool {
+        let Some(doc) = self.doc.as_mut() else {
+            return false;
+        };
+        match *patch {
+            Patch::Enabled { block, on } => match doc.preset.slots.get_mut(block) {
+                Some(slot) if slot.model.is_some() => {
+                    slot.enabled = on;
+                    true
+                }
+                _ => false,
+            },
+            Patch::Param {
+                block,
+                index,
+                value,
+            } => match doc
+                .preset
+                .slots
+                .get_mut(block)
+                .and_then(|slot| slot.values.get_mut(index))
+            {
+                Some(v) => {
+                    *v = value;
+                    true
+                }
+                None => false,
+            },
+        }
+    }
+
+    /// Publish the cached document, if it changed.
+    fn publish_doc(&mut self, cause: Cause) {
+        let Some(doc) = &self.doc else {
+            return;
+        };
+        let text = self.render(doc);
+        self.publish(text, cause);
+    }
+
+    fn publish(&mut self, text: String, cause: Cause) {
+        // A loaded preset is news even if it looks the same (two `New Preset`s).
+        if cause != Cause::Preset && self.shown.as_deref() == Some(text.as_str()) {
+            return;
+        }
+        tracing::debug!(
+            ?cause,
+            listeners = self.live.receiver_count(),
+            "live update"
+        );
+        self.shown = Some(text.clone());
+        let _ = self.live.send(Live::Chain { text, cause });
     }
 
     fn publish_chain(&mut self, cause: Cause) {
@@ -301,12 +393,7 @@ impl Worker {
                 return;
             }
         };
-        // A loaded preset is news even if it looks the same (two `New Preset`s).
-        if cause != Cause::Preset && self.shown.as_deref() == Some(text.as_str()) {
-            return;
-        }
-        self.shown = Some(text.clone());
-        let _ = self.live.send(Live::Chain { text, cause });
+        self.publish(text, cause);
     }
 
     fn command(&mut self, cmd: &Command) -> Result<String> {
@@ -344,16 +431,14 @@ impl Worker {
             }
         }
         // Some writes swallow their own notifications (a select reads them
-        // while it waits), so every write schedules the re-read itself.
+        // while it waits), so every write publishes its result itself.
+        // Bypass and parameter writes patched `doc` already.
         if out.is_ok() {
-            let cause = match cmd {
-                Command::Select { .. } => Some(Cause::Preset),
-                Command::Enable { .. } | Command::Set { .. } => Some(Cause::Edit),
-                Command::Rename { .. } | Command::Save => Some(Cause::Other),
-                _ => None,
-            };
-            if let Some(cause) = cause {
-                self.want_reload(cause);
+            match cmd {
+                Command::Select { .. } => self.want_reload(Cause::Preset),
+                Command::Enable { .. } | Command::Set { .. } => self.publish_doc(Cause::Edit),
+                Command::Rename { .. } | Command::Save => self.want_reload(Cause::Other),
+                _ => {}
             }
         }
         out
@@ -426,7 +511,7 @@ impl Worker {
         ))
     }
 
-    /// `show_chain`.
+    /// Read the loaded preset into `doc` and render it.
     fn chain(&mut self) -> Result<String> {
         let preset = self.with(|s| s.read_preset())?;
         // A refusal here (a pedal mid-load) only loses the header.
@@ -435,9 +520,18 @@ impl Worker {
             Err(_) if self.session.is_some() => None,
             Err(e) => return Err(e),
         };
-        let catalog = self.catalog.as_ref();
+        let doc = Doc { preset, info };
+        let text = self.render(&doc);
+        self.doc = Some(doc);
+        Ok(text)
+    }
+
+    /// `show_chain`.
+    fn render(&self, doc: &Doc) -> String {
+        let (preset, catalog) = (&doc.preset, self.catalog.as_ref());
         let mut out = String::new();
-        if let Some((_, index, name)) = info {
+        if let Some((_, index, name)) = &doc.info {
+            let index = *index;
             let _ = write!(out, "{} {name}", self.label(index));
         }
         if let Some(tempo) = preset.tempo() {
@@ -469,7 +563,7 @@ impl Worker {
                 params(&mut out, catalog, cab, &block.paired_values);
             }
         }
-        Ok(out)
+        out
     }
 
     fn select(&mut self, setlist: u32, index: u32) -> Result<String> {
@@ -483,6 +577,10 @@ impl Worker {
 
     fn enable(&mut self, block: u32, on: bool) -> Result<String> {
         self.with(|s| s.set_enabled(i64::from(block) - 1, on))?;
+        let slot = block as usize - 1;
+        if !self.apply(&Patch::Enabled { block: slot, on }) {
+            self.doc = None;
+        }
         Ok(format!(
             "block {block} {}\n",
             if on { "engaged" } else { "bypassed" }
@@ -516,6 +614,7 @@ impl Worker {
                 .filter(|v: &f32| v.is_finite())
                 .ok_or_else(|| DeviceError::Failed(format!("{value:?} is not a number")))?;
             self.with(|s| s.set_param(slot, index, Value::F32(native)))?;
+            self.patch_param(slot, param, native);
             return Ok(format!("block {block}: parameter {param} = {native}\n"));
         };
         let native = catalog.parse(described, value).ok_or_else(|| {
@@ -527,7 +626,20 @@ impl Worker {
             described.kind.wire(native),
         );
         self.with(|s| s.set_param(slot, index, wire))?;
+        self.patch_param(slot, param, native);
         Ok(format!("block {block}: {name} = {shown}\n"))
+    }
+
+    /// Mirror our own parameter write into `doc`; forget it if it cannot be.
+    fn patch_param(&mut self, slot: i64, param: u32, value: f32) {
+        let patch = Patch::Param {
+            block: slot as usize,
+            index: param as usize,
+            value,
+        };
+        if !self.apply(&patch) {
+            self.doc = None;
+        }
     }
 
     fn rename(&mut self, setlist: u32, index: u32, name: &str) -> Result<String> {
@@ -574,6 +686,34 @@ fn params(out: &mut String, catalog: Option<&hx_catalog::Catalog>, model: u32, v
             Some((c, p)) => writeln!(out, "      {:<18} {}", p.name, c.format(p, *value)),
             None => writeln!(out, "      param {i:<12} {value}"),
         };
+    }
+}
+
+/// The change a bypass or parameter notification carries, if it is one this
+/// code can apply without re-reading.
+///
+/// - 49/(5,17) `{98: slot, 59: enabled}`: bypass changed (also from a
+///   footswitch, docs/hx-effects-notifications.md).
+/// - 30/(6,20) `{98: slot, 29, 26: path, 28: index, 119: value}`: parameter
+///   changed, reporting the new value (TonePush opcodes.md 4.3). `26` is not
+///   pinned down (primary/cab model or path); only 0 is applied, anything
+///   else re-reads.
+fn patch(event: i64, args: &Value) -> Option<Patch> {
+    use hx_proto::rpc::key;
+    let inner = args.get(key::EVENT_ARGS)?;
+    let int = |k| inner.get(k).and_then(Value::as_i64);
+    let block = usize::try_from(int(key::BLOCK)?).ok()?;
+    match (event, args.get(121).and_then(Value::as_i64)) {
+        (49, Some(17)) => Some(Patch::Enabled {
+            block,
+            on: inner.get(key::ENABLED)?.as_bool()?,
+        }),
+        (30, _) if int(key::PATH)? == 0 => Some(Patch::Param {
+            block,
+            index: usize::try_from(int(28)?).ok()?,
+            value: inner.get(119)?.as_f32().filter(|v| v.is_finite())?,
+        }),
+        _ => None,
     }
 }
 
@@ -629,6 +769,47 @@ mod tests {
         assert_eq!(notice(49, &bypass), Some(Cause::Edit));
         let cursor = event(3, 19, msgmap! { 98 => Value::Int(2), 26 => Value::Int(0) });
         assert_eq!(notice(39, &cursor), None);
+    }
+
+    #[test]
+    fn patches_from_events() {
+        let bypass = event(
+            5,
+            17,
+            msgmap! { 98 => Value::Int(2), 59 => Value::Bool(false) },
+        );
+        assert_eq!(
+            patch(49, &bypass),
+            Some(Patch::Enabled {
+                block: 2,
+                on: false
+            })
+        );
+        // Opcodes.md 4.3, verbatim apart from the elided keys.
+        let knob = event(
+            6,
+            20,
+            msgmap! { 98 => Value::Int(6), 29 => Value::Bool(true), 26 => Value::Int(0), 28 => Value::Int(0), 119 => Value::F32(0.05) },
+        );
+        assert_eq!(
+            patch(30, &knob),
+            Some(Patch::Param {
+                block: 6,
+                index: 0,
+                value: 0.05
+            })
+        );
+        let cab = event(
+            6,
+            20,
+            msgmap! { 98 => Value::Int(6), 26 => Value::Int(1), 28 => Value::Int(0), 119 => Value::F32(0.5) },
+        );
+        assert_eq!(patch(30, &cab), None);
+        // Slot rebuilt (49/10) is not a bypass change.
+        assert_eq!(
+            patch(49, &event(5, 10, msgmap! { 98 => Value::Int(1) })),
+            None
+        );
     }
 
     #[test]

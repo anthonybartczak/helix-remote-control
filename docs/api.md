@@ -94,8 +94,11 @@ With `HELIX_BACKEND=usb` (and `fake`, which echoes its own writes) `/api/health`
 | `{"type": "device", "connected": true\|false}` | The USB session came up or was lost |
 
 How the `usb` backend sees changes: it reads the pedal's notifications every 700 ms
-(TonePush's own pace) and re-reads the chain 250 ms after a burst settles (at most 1 s
-after it starts). Ids follow TonePush `docs/_reference/opcodes.md` section 3; any event
+(TonePush's own pace). Bypass (event 49) and parameter (event 30) notifications carry
+the new value, which is applied to the last-read preset and pushed at once: a re-read
+right after a change can still return the old document. Other events (preset or
+snapshot switch, anything unknown) re-read the chain 250 ms after a burst settles (at
+most 1 s after it starts). Ids follow TonePush `docs/_reference/opcodes.md` section 3; any event
 not known to be noise triggers a re-read. Only real changes are sent; a preset load
 always is. `unsaved` turns true on a pedal edit (events 30, 49) and false on a preset
 load (4, 8, 22/object 28).
