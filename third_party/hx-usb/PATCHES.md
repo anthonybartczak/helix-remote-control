@@ -42,3 +42,6 @@ runs `tonepush watch`'s loop for 600 notifications: unpatched it stops at exactl
 **On hardware: verified** 2026-10-13, HX Effects 3.80, Pi 4. After a power cycle,
 pedal untouched, `helix-bridge watch 180`: 53, then 64–66 notifications every 10 s
 for the full 3 minutes, 1096 in total (unpatched: 195, then silence).
+A/B the same evening, power cycle before each run, hands off: upstream
+`tonepush watch` (v0.9.0) 43, 63, 61, 29, then nothing - **195** total; patched
+`helix-bridge watch 180` 64–66 every 10 s - **1095** total.

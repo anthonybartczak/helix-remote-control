@@ -36,6 +36,7 @@ pulled. Requests on the data channel keep working.
 |---|---|
 | `tonepush watch` alone, right after a power cycle, **pedal untouched**, 3 min | 195 in ~35 s (14, 62, 59, 61 per 10 s), then 0 for the rest |
 | **`helix-bridge watch 180` with patched hx-usb**, same conditions | **1096**: 64–66 every 10 s for the full 3 min. Fixed |
+| A/B control, same evening: upstream `tonepush watch` vs patched | **195** (43, 63, 61, 29, then 0) vs **1095** |
 | `tonepush watch` alone, footswitches pressed for 3 min | ~190 in 40 s, then 0; 4 of many presses arrived |
 | Bridge `usb`, keep-alive only (`ff00de7`, `7c986a0`) | ~190, then 0 |
 | Bridge `usb`, plus a `preset_info` request after each poll with data (`f5ec3d9`) | ~1300 in 90 s, then 0 |
