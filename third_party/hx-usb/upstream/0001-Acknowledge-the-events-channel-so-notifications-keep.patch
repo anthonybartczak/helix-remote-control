@@ -1,0 +1,266 @@
+From 9f6a9392b9e530df8b7ede81ca6795d2884c2362 Mon Sep 17 00:00:00 2001
+From: anthonybartczak <to0oni456@gmail.com>
+Date: Tue, 13 Oct 2026 19:15:21 +0000
+Subject: [PATCH] Acknowledge the events channel so notifications keep flowing
+
+An HX Effects (firmware 3.80) stops sending notifications after 195 of
+them and stays silent, across new sessions, until its power is pulled.
+`tonepush watch` alone reproduces it: power cycle, touch nothing, and
+the ticks stop after about 35 s.
+
+The device sends at most 4 KB of notifications that no ACK frame has
+acknowledged (195 ticks of 21 bytes is 4095 bytes). hx-usb only sent
+keep-alives on the events channel while idle, which the device does not
+count, and `keepalive` then marked the channel acknowledged, so later
+requests skipped it too. HX Edit ACKs almost every notification
+(mac-library-capture.log: 3453 data frames, 3334 ACKs).
+
+- `poll_notifications` sends an ACK on the events channel whenever it
+  is owed bytes. No host transaction runs on that channel, so this
+  cannot land mid-transaction.
+- `keepalive` no longer marks the events channel acknowledged.
+- `fake::Pedal::events_window` models the 4 KB window; the new test
+  runs watch's loop for 600 notifications. Without the fix it stops at
+  exactly 195.
+
+Measured on an HX Effects at 3.80 with a Raspberry Pi 4, power cycle
+before each run, pedal untouched, three minutes: upstream `watch` 195
+then silence; with this change 1095, still flowing.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ PROTOCOL.md                   | 14 ++++++++
+ crates/hx-usb/src/commands.rs | 54 +++++++++++++++++++++++++++++
+ crates/hx-usb/src/fake.rs     | 64 +++++++++++++++++++++++++++++++++--
+ crates/hx-usb/src/lib.rs      |  6 +++-
+ 4 files changed, 134 insertions(+), 4 deletions(-)
+
+diff --git a/PROTOCOL.md b/PROTOCOL.md
+index be0b1a2..43be0ae 100644
+--- a/PROTOCOL.md
++++ b/PROTOCOL.md
+@@ -127,6 +127,20 @@ received bytes while nobody was waiting on it, moved this from failing on the
+ third preset-document write to comfortably past ten. Measured on an HX Stomp
+ running 3.80.
+ 
++**The events channel needs ACK frames, not keep-alives. [confirmed]** The device
++sends at most 4 KB of notifications that have not been acknowledged by an ACK frame
++(type 0x08), then stops sending on channel `0x1002` and stays silent, across new
++sessions, until its power is pulled. A keep-alive carries the same acknowledgement
++in its header, but the device does not count it. HX Edit sends an ACK for almost
++every notification: in `captures/mac-library-capture.log` the device sends 3453 data
++frames (72 KB) on the events channel and HX Edit answers with 3334 ACKs, each within
++about 50 ms, `ack = 0x1000 + bytes received`. `poll_notifications` now does the same
++whenever the channel is owed bytes, and `keepalive` no longer marks the channel
++acknowledged. Measured on an HX Effects at 3.80, after a power cycle, pedal
++untouched, three minutes of `watch`: 195 notifications and then silence before
++(195 ticks of 21 bytes is 4095 bytes), 1095 and still flowing after. The device
++tests do not cover this; `fake::Pedal::events_window` models it.
++
+ Two things that look like fixes and are not:
+ 
+ - **Acknowledging the channel a reply just arrived on, before returning.** The
+diff --git a/crates/hx-usb/src/commands.rs b/crates/hx-usb/src/commands.rs
+index 9f49c08..1f18628 100644
+--- a/crates/hx-usb/src/commands.rs
++++ b/crates/hx-usb/src/commands.rs
+@@ -1263,8 +1263,24 @@ impl Session {
+     }
+ 
+     /// Any notifications the device has pushed since the last call.
++    ///
++    /// Acknowledges the events channel with an ACK frame whenever it has
++    /// unacknowledged bytes, as HX Edit does after almost every notification.
++    /// The device sends at most 4 KB of notifications unacknowledged and does
++    /// not count a keep-alive's acknowledgement; without this an HX Effects
++    /// went silent after 195 notifications until power-cycled (PROTOCOL.md,
++    /// "The events channel needs ACK frames"). No host transaction ever runs on
++    /// the events channel, so
++    /// this cannot land mid-transaction.
+     pub fn poll_notifications(&mut self) -> Result<Vec<(i64, Value)>> {
+         self.read_available(Duration::from_millis(20))?;
++        let behind = self
++            .channels
++            .get(&ChannelId::EVENTS.device)
++            .is_some_and(|c| c.rx_bytes != c.acked);
++        if behind {
++            self.ack_channel(ChannelId::EVENTS)?;
++        }
+         let mut out = Vec::new();
+         for ch in self.channels.values_mut() {
+             for sm in ch
+@@ -1651,6 +1667,44 @@ mod pedal_tests {
+     use super::*;
+     use crate::fake::{self, Pedal};
+ 
++    /// The pedal's tick, `{82: 0, 68: 10, 121: 27, 106: nil}`: 21 bytes on
++    /// the events channel, about six a second on an idle HX Effects.
++    fn tick() -> Value {
++        hx_proto::msgmap! {
++            82 => Value::Int(0),
++            68 => Value::Int(10),
++            121 => Value::Int(27),
++            106 => Value::Nil,
++        }
++    }
++
++    /// `tonepush watch`'s loop, against a pedal that stops sending once 4 KB
++    /// of notifications go unacknowledged: every notification must arrive.
++    /// Without an ACK on the events channel this stopped at 195, as the HX
++    /// Effects did (PROTOCOL.md, "The events channel needs ACK frames").
++    #[test]
++    fn watching_keeps_the_events_channel_flowing() {
++        let pedal = Pedal::new();
++        let mut session = fake::session(&pedal);
++        // Whatever the handshake left behind.
++        session.poll_notifications().unwrap();
++        pedal.lock().unwrap().events_window = Some(4096);
++        let mut seen = 0;
++        for round in 0..100 {
++            {
++                let mut pedal = pedal.lock().unwrap();
++                for _ in 0..6 {
++                    pedal.notify(22, tick());
++                }
++            }
++            for _ in 0..8 {
++                seen += session.poll_notifications().unwrap().len();
++            }
++            session.keepalive().unwrap();
++            assert_eq!(seen, 6 * (round + 1), "stalled after {seen} notifications");
++        }
++    }
++
+     const SAMPLES: [f32; 4] = [0.5, -0.25, 0.125, 0.0];
+ 
+     fn sum_of(samples: &[f32]) -> u64 {
+diff --git a/crates/hx-usb/src/fake.rs b/crates/hx-usb/src/fake.rs
+index 1d96a69..94f3c6d 100644
+--- a/crates/hx-usb/src/fake.rs
++++ b/crates/hx-usb/src/fake.rs
+@@ -11,7 +11,7 @@ use std::collections::{BTreeMap, VecDeque};
+ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+ use std::time::Duration;
+ 
+-use hx_proto::frame::{ChannelHeader, MSG_DATA};
++use hx_proto::frame::{ChannelHeader, MSG_ACK, MSG_DATA};
+ use hx_proto::msgpack::{Encoder, Value};
+ use hx_proto::rpc::{key, op, Message, StreamReader};
+ use hx_proto::{ChannelId, Frame};
+@@ -50,6 +50,20 @@ pub struct Pedal {
+     pub frames_in: usize,
+     /// Every transfer received, data or not.
+     pub transfers_in: usize,
++    /// Bytes the events channel may have unacknowledged before the pedal
++    /// stops sending on it. `None` sends without limit.
++    ///
++    /// An HX Effects (3.80) stopped after 195 ticks of 21 bytes - 4095 bytes -
++    /// whether or not keep-alives were going out, and HX Edit sends an ACK
++    /// frame for almost every notification it receives (PROTOCOL.md). This
++    /// models that: only ACK and data frames move the window.
++    pub events_window: Option<u32>,
++    /// Data bytes sent on the events channel, after the channel header.
++    events_sent: u32,
++    /// What the host has acknowledged of them through ACK or data frames.
++    events_acked: u32,
++    /// Notifications waiting for the window to open.
++    events_held: VecDeque<Vec<u8>>,
+     inbox: BTreeMap<u16, StreamReader>,
+     seq: BTreeMap<u16, u16>,
+ }
+@@ -70,6 +84,10 @@ impl Pedal {
+             fail_next_send: None,
+             frames_in: 0,
+             transfers_in: 0,
++            events_window: None,
++            events_sent: 0,
++            events_acked: 0,
++            events_held: VecDeque::new(),
+             inbox: BTreeMap::new(),
+             seq: BTreeMap::new(),
+         }))
+@@ -106,6 +124,12 @@ impl Pedal {
+         let Some((header, rest)) = ChannelHeader::decode(&frame.payload) else {
+             return;
+         };
++        if frame.dst == ChannelId::EVENTS.device
++            && (header.msg_type & MSG_ACK != 0 || header.has_data())
++        {
++            self.events_acked = header.ack.wrapping_sub(0x1000);
++            self.release_events();
++        }
+         if !header.has_data() || rest.is_empty() {
+             return;
+         }
+@@ -206,6 +230,34 @@ impl Pedal {
+         }
+     }
+ 
++    /// Send held notifications the window now has room for.
++    fn release_events(&mut self) {
++        while let Some(frame) = self.events_held.pop_front() {
++            if !self.events_fit(&frame) {
++                self.events_held.push_front(frame);
++                return;
++            }
++            self.send_event(frame);
++        }
++    }
++
++    /// Stream bytes in an encoded events frame: payload after the frame and
++    /// channel headers.
++    fn event_bytes(frame: &[u8]) -> u32 {
++        Frame::decode(frame).map_or(0, |f| (f.payload.len() - ChannelHeader::SIZE) as u32)
++    }
++
++    fn events_fit(&self, frame: &[u8]) -> bool {
++        self.events_window.is_none_or(|window| {
++            self.events_sent.wrapping_sub(self.events_acked) + Self::event_bytes(frame) <= window
++        })
++    }
++
++    fn send_event(&mut self, frame: Vec<u8>) {
++        self.events_sent = self.events_sent.wrapping_add(Self::event_bytes(&frame));
++        self.outbox.push_back(frame);
++    }
++
+     /// Queue one message for the host, on the channel `node` names.
+     fn reply(&mut self, node: u16, message: &Message) {
+         let body = Encoder::encode(&message.to_value());
+@@ -226,8 +278,14 @@ impl Pedal {
+             .iter()
+             .find(|channel| channel.device == node)
+             .map_or(0, |channel| channel.host);
+-        self.outbox
+-            .push_back(Frame::new(host, node, payload).encode().unwrap());
++        let frame = Frame::new(host, node, payload).encode().unwrap();
++        if node != ChannelId::EVENTS.device {
++            self.outbox.push_back(frame);
++        } else if self.events_held.is_empty() && self.events_fit(&frame) {
++            self.send_event(frame);
++        } else {
++            self.events_held.push_back(frame);
++        }
+     }
+ }
+ 
+diff --git a/crates/hx-usb/src/lib.rs b/crates/hx-usb/src/lib.rs
+index 2be67f5..4d5390e 100644
+--- a/crates/hx-usb/src/lib.rs
++++ b/crates/hx-usb/src/lib.rs
+@@ -1078,7 +1078,11 @@ impl Session {
+             }
+             .encode_into(&mut payload);
+             self.write(&Frame::new(id.device, id.host, payload))?;
+-            self.mark_acknowledged(id);
++            // The device does not pace its events channel by a keep-alive's
++            // acknowledgement (PROTOCOL.md), so that channel stays owed an ACK.
++            if id != ChannelId::EVENTS {
++                self.mark_acknowledged(id);
++            }
+         }
+         Ok(())
+     }
+-- 
+2.43.0
+

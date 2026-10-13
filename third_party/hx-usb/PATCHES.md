@@ -7,7 +7,9 @@ unchanged upstream copy (only `Cargo.toml`'s workspace keys made explicit), so
 in with `[patch."https://github.com/crmne/tonepush"]`. The `tonepush` CLI shipped in
 the Pi bundle is still built from upstream and does **not** have these patches.
 
-Drop this folder once upstream has an equivalent fix.
+Drop this folder once upstream has an equivalent fix. The patch prepared for
+upstream, against TonePush `main` (53a6a65), and its pull request text are in
+`upstream/`.
 
 ## 1. Acknowledge the events channel (2026-10-13)
 
