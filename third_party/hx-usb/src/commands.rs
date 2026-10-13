@@ -1,0 +1,1802 @@
+//! The operations an editor performs: presets, blocks, parameters, snapshots
+//! and impulse responses.
+//!
+//! Split from the transport deliberately. Everything here is a thin call onto
+//! `Session::request` - the interesting code is the channel protocol next door,
+//! and mixing the two made one file read as a protocol engine with a service
+//! catalogue stapled on.
+
+use std::collections::BTreeSet;
+use std::time::{Duration, Instant};
+
+use hx_proto::msgpack::Value;
+use hx_proto::rpc::Message;
+use hx_proto::{rpc, ChannelId, DeviceProfile, Preset};
+
+use crate::{
+    checksum, decode_message, non_negative, preset_index, retry_device_refusal, Error, Result,
+    Session,
+};
+
+fn assignment_source(reply: &Value) -> Result<Option<rpc::Source>> {
+    if matches!(reply, Value::Nil) {
+        return Ok(None);
+    }
+    if !matches!(reply, Value::Map(_)) {
+        return Err(Error::Protocol(
+            "the device returned an invalid assignment".into(),
+        ));
+    }
+    let ordinal = reply
+        .get(rpc::key::ASSIGN_SOURCE)
+        .and_then(Value::as_i64)
+        .ok_or_else(|| Error::Protocol("the assignment has no valid source".into()))?;
+    if ordinal == rpc::Source::NONE {
+        return Ok(None);
+    }
+    rpc::Source::from_ordinal(ordinal)
+        .map(Some)
+        .ok_or_else(|| Error::Protocol(format!("the assignment has unknown source {ordinal}")))
+}
+
+fn block_param(block: i64, param: i64) -> Result<()> {
+    non_negative(block, "block")?;
+    non_negative(param, "parameter index")
+}
+
+fn favourite_index(index: i64) -> Result<()> {
+    if !(0..16).contains(&index) {
+        return Err(Error::Protocol(format!(
+            "favourite index must be 0 to 15; got {index}"
+        )));
+    }
+    Ok(())
+}
+
+fn finite_value(value: &Value, name: &str) -> Result<()> {
+    let finite = match value {
+        Value::F32(number) => number.is_finite(),
+        Value::F64(number) => number.is_finite(),
+        _ => true,
+    };
+    if !finite {
+        return Err(Error::Protocol(format!("{name} must be a finite number")));
+    }
+    Ok(())
+}
+
+fn switch_index(profile: &DeviceProfile, switch: u8) -> Result<i64> {
+    if !(1..=profile.switches).contains(&switch) {
+        return Err(Error::Protocol(format!(
+            "{} has footswitches 1 to {}; {switch} is not one",
+            profile.name, profile.switches
+        )));
+    }
+    Ok(i64::from(switch - 1))
+}
+
+/// What controls a parameter, and over what part of its travel.
+///
+/// The ends are normalised: 0.0 is the parameter's own minimum and 1.0 its
+/// maximum, so an expression pedal set to sweep the middle third reads
+/// `min: 0.33, max: 0.66` whatever units the parameter is shown in.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Assignment {
+    pub source: rpc::Source,
+}
+
+/// A footswitch, as the pedal describes it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Switch {
+    /// One-based, the way it is printed on the pedal.
+    pub switch: u8,
+    /// Momentary holds while your foot is down; latching toggles.
+    pub momentary: bool,
+    /// A name typed for it, if one has been.
+    pub label: Option<String>,
+    /// A colour chosen for it. `None` is Auto Color, where the switch takes
+    /// the colour of whatever it controls.
+    pub colour: Option<i64>,
+    /// What it controls. Usually one thing, sometimes several.
+    pub carries: Vec<Carried>,
+}
+
+impl Switch {
+    /// What to call this switch: the name typed for it, or what it controls,
+    /// or nothing at all.
+    pub fn describes(&self) -> Option<&str> {
+        if let Some(label) = self.label.as_deref() {
+            return Some(label);
+        }
+        self.carries.first().map(|c| c.name.as_str())
+    }
+
+    /// The colour to light it: the one chosen, or the one its block wears.
+    pub fn lit(&self) -> Option<i64> {
+        self.colour
+            .or_else(|| self.carries.first().and_then(|c| c.colour))
+    }
+}
+
+/// One thing a footswitch controls.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Carried {
+    /// The block, as the device numbers them.
+    pub block: i64,
+    /// Its name, which the device sends along rather than making us look it up.
+    pub name: String,
+    /// The colour the device gives it, `0xRRGGBB`. This is the block's own
+    /// category colour, which is what makes an Auto Color switch match the
+    /// block it toggles.
+    pub colour: Option<i64>,
+    pub enabled: bool,
+}
+
+/// One entry of a switch's assignment list.
+fn carried(item: &Value, position: usize) -> Result<Carried> {
+    let invalid = |field: &str| {
+        Error::Protocol(format!(
+            "footswitch assignment {position} has no valid {field}"
+        ))
+    };
+    let target = item
+        .get(rpc::key::SWITCH_TARGET)
+        .ok_or_else(|| invalid("target"))?;
+    let block = target
+        .get(rpc::key::BLOCK)
+        .and_then(Value::as_i64)
+        .filter(|block| *block >= 0)
+        .ok_or_else(|| invalid("block"))?;
+    let name = target
+        .get(rpc::key::NAME)
+        .and_then(Value::as_str)
+        .filter(|name| !name.is_empty())
+        .ok_or_else(|| invalid("name"))?;
+    let colour = optional_non_negative_integer(item, rpc::key::LED_COLOUR)
+        .ok_or_else(|| invalid("colour"))?;
+    let enabled = item
+        .get(rpc::key::ENABLED)
+        .and_then(Value::as_bool)
+        .ok_or_else(|| invalid("enabled flag"))?;
+    Ok(Carried {
+        block,
+        name: name.to_owned(),
+        colour,
+        enabled,
+    })
+}
+
+fn optional_non_negative_integer(value: &Value, key: i64) -> Option<Option<i64>> {
+    match value.get(key) {
+        None | Some(Value::Nil) => Some(None),
+        Some(value) => value.as_i64().filter(|number| *number >= 0).map(Some),
+    }
+}
+
+fn optional_string(value: &Value, key: i64) -> Option<Option<String>> {
+    match value.get(key) {
+        None | Some(Value::Nil) => Some(None),
+        Some(Value::Str(text)) => Some(Some(text.clone())),
+        Some(_) => None,
+    }
+}
+
+fn decode_switch(switch: u8, reply: &Value) -> Result<Switch> {
+    let expected = i64::from(switch) - 1;
+    let answered = reply
+        .get(rpc::key::SWITCH)
+        .and_then(Value::as_i64)
+        .ok_or_else(|| Error::Protocol("footswitch reply has no valid switch index".into()))?;
+    if answered != expected {
+        return Err(Error::Protocol(format!(
+            "footswitch {switch} reply identifies zero-based switch {answered}"
+        )));
+    }
+    let momentary = reply
+        .get(rpc::key::MOMENTARY)
+        .and_then(Value::as_bool)
+        .ok_or_else(|| Error::Protocol("footswitch reply has no valid momentary flag".into()))?;
+    let label = optional_string(reply, rpc::key::NAME)
+        .ok_or_else(|| Error::Protocol("footswitch reply has an invalid label".into()))?;
+    let colour = optional_non_negative_integer(reply, rpc::key::LED_COLOUR)
+        .ok_or_else(|| Error::Protocol("footswitch reply has an invalid colour".into()))?;
+    let carries = match reply.get(rpc::key::SWITCH_ASSIGNED) {
+        None | Some(Value::Nil) => Vec::new(),
+        Some(Value::Array(items)) => items
+            .iter()
+            .enumerate()
+            .map(|(position, item)| carried(item, position))
+            .collect::<Result<_>>()?,
+        Some(_) => {
+            return Err(Error::Protocol(
+                "footswitch reply has an invalid assignment list".into(),
+            ));
+        }
+    };
+    Ok(Switch {
+        switch,
+        momentary,
+        label,
+        colour,
+        carries,
+    })
+}
+
+impl Session {
+    /// Every preset in a setlist, in order.
+    pub fn presets(&mut self, setlist: i64) -> Result<Vec<String>> {
+        non_negative(setlist, "setlist")?;
+        let result = self.request(
+            ChannelId::CONTROL,
+            rpc::op::LIST_PRESETS,
+            hx_proto::msgmap! {
+                rpc::key::SETLIST => Value::Int(setlist),
+                rpc::key::ARGS => Value::Int(2),
+            },
+        )?;
+        let Value::Array(entries) = result else {
+            return Err(Error::Protocol("preset list was not an array".into()));
+        };
+        // Each entry is a single-key map from preset index to its details, so
+        // the name is one level in regardless of what the index is.
+        entries
+            .into_iter()
+            .enumerate()
+            .map(|(position, entry)| match entry {
+                Value::Map(fields) => fields
+                    .first()
+                    .and_then(|(_, v)| v.get(rpc::key::NAME))
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+                    .ok_or_else(|| {
+                        Error::Protocol(format!(
+                            "preset list entry {position} has no readable name"
+                        ))
+                    }),
+                _ => Err(Error::Protocol(format!(
+                    "preset list entry {position} is not a map"
+                ))),
+            })
+            .collect()
+    }
+
+    /// Set one parameter on one block.
+    ///
+    /// The value is in the parameter's own units; `hx-catalog` knows the range
+    /// and how to display it.
+    pub fn set_param(&mut self, block: i64, index: i64, value: Value) -> Result<()> {
+        block_param(block, index)?;
+        finite_value(&value, "parameter value")?;
+        self.command(
+            ChannelId::DATA,
+            rpc::op::SET_PARAM,
+            hx_proto::msgmap! {
+                rpc::key::BLOCK => Value::Int(block),
+                rpc::key::COMMIT => Value::Bool(true),
+                rpc::key::PATH => Value::Int(0),
+                rpc::key::PARAM_INDEX => Value::Int(index),
+                rpc::key::VALUE => value,
+            },
+        )
+    }
+
+    /// Impulse response slots, as `(slot, name)`.
+    ///
+    /// Also the way to tell that an upload has finished: the device reports the
+    /// new name here once it has written it.
+    pub fn irs(&mut self) -> Result<Vec<(i64, String)>> {
+        let result = self.request(
+            ChannelId::CONTROL,
+            rpc::op::LIST_IRS,
+            hx_proto::msgmap! { rpc::key::ARGS => Value::Int(2) },
+        )?;
+        decode_irs(result)
+    }
+
+    /// Read an impulse response back off the device.
+    ///
+    /// The other half of [`upload_ir`](Self::upload_ir), and the piece a backup
+    /// needs: without it an IR that only ever existed on the pedal could not be
+    /// saved anywhere. Two opcodes, the way the editor's own export does it -
+    /// op12 for the descriptor and op11 for the samples.
+    ///
+    /// What comes back is what the device stores: 48 kHz mono `f32`, as many
+    /// samples as the upload declared. Rate conversion is a host-side concern;
+    /// [`crate::ir::prepare`] performs it before an ordinary WAV is uploaded.
+    /// `None` is an empty slot.
+    pub fn read_ir(&mut self, slot: i64) -> Result<Option<(String, Vec<f32>)>> {
+        non_negative(slot, "impulse response slot")?;
+        self.bootstrap()?;
+        let descriptor = self.request(
+            ChannelId::CONTROL,
+            rpc::op::IR_DESCRIPTOR,
+            hx_proto::msgmap! { rpc::key::IR_SLOT => Value::Int(slot) },
+        )?;
+        let Some(name) = descriptor.get(rpc::key::NAME).and_then(Value::as_str) else {
+            return Ok(None);
+        };
+        let name = name.to_owned();
+
+        let samples = self.request(
+            ChannelId::CONTROL,
+            rpc::op::IR_SAMPLES,
+            hx_proto::msgmap! {
+                rpc::key::IR_SLOT => Value::Int(slot),
+                rpc::key::ARGS => Value::Int(2),
+            },
+        )?;
+        let Some(bytes) = samples.as_raw() else {
+            return Err(Error::Protocol(
+                "the device returned invalid impulse response samples".into(),
+            ));
+        };
+        Ok(Some((name, decode_ir_samples(bytes)?)))
+    }
+
+    /// Rename an impulse response slot, leaving its samples alone.
+    pub fn rename_ir(&mut self, slot: i64, name: &str) -> Result<()> {
+        non_negative(slot, "impulse response slot")?;
+        self.bootstrap()?;
+        self.command(
+            ChannelId::CONTROL,
+            rpc::op::RENAME_IR,
+            hx_proto::msgmap! {
+                rpc::key::IR_SLOT => Value::Int(slot),
+                rpc::key::NAME => Value::Str(name.to_owned()),
+            },
+        )?;
+        self.settle_flash();
+        Ok(())
+    }
+
+    /// The device's favourite blocks, as `(index, name)`.
+    ///
+    /// A favourite is a block kept with its settings so it can be dropped into
+    /// any preset - the editor's own shelf, living on the pedal rather than in
+    /// this program. Distinct from TonePush's favourite *presets*, which are
+    /// a local file.
+    pub fn favourites(&mut self) -> Result<Vec<(i64, String)>> {
+        let result = self.request(ChannelId::DATA, rpc::op::LIST_FAVOURITES, Value::Nil)?;
+        decode_favourites(result)
+    }
+
+    /// Keep a block as a favourite, under a name.
+    ///
+    /// `block` is a position in the loaded chain; `index` is which favourite
+    /// slot to put it in. This is the one message the editor sends when you
+    /// choose "save as favourite", and it reads the block itself - there is
+    /// nothing to send but where it is and what to call it.
+    pub fn save_favourite(&mut self, block: i64, index: i64, name: &str) -> Result<()> {
+        non_negative(block, "block")?;
+        favourite_index(index)?;
+        self.bootstrap()?;
+        self.command(
+            ChannelId::CONTROL,
+            rpc::op::SAVE_FAVOURITE,
+            hx_proto::msgmap! {
+                rpc::key::BLOCK => Value::Int(block),
+                rpc::key::OBJECT_ID => Value::Int(index),
+                rpc::key::FAVOURITE_FLAG => Value::Bool(true),
+                rpc::key::NAME => Value::Str(name.to_owned()),
+            },
+        )?;
+        self.settle_flash();
+        Ok(())
+    }
+
+    /// Rename a favourite.
+    pub fn rename_favourite(&mut self, index: i64, name: &str) -> Result<()> {
+        favourite_index(index)?;
+        self.command(
+            ChannelId::DATA,
+            rpc::op::RENAME_FAVOURITE,
+            hx_proto::msgmap! {
+                rpc::key::OBJECT_ID => Value::Int(index),
+                rpc::key::NAME => Value::Str(name.to_owned()),
+            },
+        )?;
+        self.settle_flash();
+        Ok(())
+    }
+
+    /// Forget a favourite.
+    pub fn clear_favourite(&mut self, index: i64) -> Result<()> {
+        favourite_index(index)?;
+        self.command(
+            ChannelId::DATA,
+            rpc::op::CLEAR_FAVOURITE,
+            hx_proto::msgmap! { rpc::key::OBJECT_ID => Value::Int(index) },
+        )?;
+        self.settle_flash();
+        Ok(())
+    }
+
+    /// Bring the control channel up to the state HX Edit leaves it in.
+    ///
+    /// Opening the service is not enough: HX Edit follows it with a fixed
+    /// sequence - end, setlists, presets, ready, list IRs - and the device
+    /// will not service an IR upload without it. Cheap enough to do before any
+    /// control-channel work.
+    fn bootstrap(&mut self) -> Result<()> {
+        self.bootstrap_raw().map(drop)
+    }
+
+    /// [`bootstrap`](Self::bootstrap), keeping the IR list it reads on the
+    /// way: an upload needs to know what its slot holds before it starts,
+    /// and asking a second time would be traffic HX Edit does not send.
+    fn bootstrap_listing_irs(&mut self) -> Result<Vec<(i64, String)>> {
+        self.bootstrap_raw().and_then(decode_irs)
+    }
+
+    fn bootstrap_raw(&mut self) -> Result<Value> {
+        let c = ChannelId::CONTROL;
+        self.command(c, rpc::op::END, hx_proto::msgmap! {})?;
+        self.request(c, rpc::op::LIST_SETLISTS, Value::Nil)?;
+        self.request(
+            c,
+            rpc::op::LIST_PRESETS,
+            hx_proto::msgmap! {
+                rpc::key::SETLIST => Value::Int(0),
+                rpc::key::ARGS => Value::Int(2),
+            },
+        )?;
+        self.request(c, rpc::op::READY, Value::Nil)?;
+        let irs = self.request(
+            c,
+            rpc::op::LIST_IRS,
+            hx_proto::msgmap! { rpc::key::ARGS => Value::Int(2) },
+        )?;
+        self.command(c, rpc::op::BEGIN, hx_proto::msgmap! {})?;
+        Ok(irs)
+    }
+
+    /// Send an impulse response to a slot.
+    ///
+    /// Samples are mono `f32`. The IR is one RPC message on the control
+    /// channel - 4 KB of samples for a 1024-sample file - which the transport
+    /// then splits across frames like any other large message.
+    ///
+    /// The checksum field is reproduced from a capture and its algorithm is
+    /// unknown; if the device rejects an upload, that is the first thing to
+    /// suspect.
+    pub fn upload_ir(&mut self, slot: i64, name: &str, samples: &[f32]) -> Result<()> {
+        non_negative(slot, "impulse response slot")?;
+        if samples.iter().any(|sample| !sample.is_finite()) {
+            return Err(Error::Protocol(
+                "an impulse response contains a non-finite sample".into(),
+            ));
+        }
+        // The descriptor declares the stored length as 256 × 2^code samples
+        // (key 115; key 114 is a multiplier the editor always sends as 1).
+        // The device zero-pads shorter data to the declared length - but data
+        // *longer* than declared wedges its transfer state machine hard enough
+        // to need the 9V adapter pulled, so the length is checked here rather
+        // than discovered there.
+        let code = match samples.len() {
+            0 => return Err(Error::Protocol("an empty impulse response".into())),
+            1..=1024 => 2,
+            1025..=2048 => 3,
+            n => {
+                return Err(Error::Protocol(format!(
+                    "{n} samples will not fit; the device stores at most 2048"
+                )))
+            }
+        };
+
+        let held = self.bootstrap_listing_irs()?;
+        let holds = |irs: &[(i64, String)], wanted: &str| {
+            irs.iter()
+                .any(|(s, n)| *s == slot && n.trim() == wanted.trim())
+        };
+
+        // Completion is read off the slot list, so the list has to be able to
+        // show it. A slot already holding this name - a re-upload, or a
+        // restore onto a pedal that still has its IRs - looks finished before
+        // the write has even started, and returning then stacks the next
+        // flash write onto this one, which is what wedges the device. Empty
+        // it first, the way `clear_ir` does, and wait until the list says it
+        // is empty; then the name appearing below is a change only this
+        // upload can make.
+        if holds(&held, name) {
+            self.command(
+                ChannelId::CONTROL,
+                rpc::op::CLEAR_IR,
+                hx_proto::msgmap! { rpc::key::IR_SLOT => Value::Int(slot) },
+            )?;
+            self.command(ChannelId::CONTROL, rpc::op::END, hx_proto::msgmap! {})?;
+            if !self.wait_for_irs(|irs| !irs.iter().any(|(s, _)| *s == slot))? {
+                return Err(Error::Protocol(format!(
+                    "slot {} did not empty before the impulse response was sent again",
+                    slot + 1
+                )));
+            }
+            // And back into the state an upload starts from.
+            self.bootstrap()?;
+        }
+
+        let mut bytes = Vec::with_capacity(samples.len() * 4);
+        for s in samples {
+            bytes.extend_from_slice(&s.to_le_bytes());
+        }
+        self.command(
+            ChannelId::CONTROL,
+            rpc::op::UPLOAD_IR,
+            hx_proto::msgmap! {
+                rpc::key::IR_SLOT => Value::Int(slot),
+                rpc::key::IR_CHECKSUM => Value::UInt(checksum(&bytes)),
+                rpc::key::NAME => Value::Str(name.to_owned()),
+                rpc::key::IR_FORMAT_A => Value::Int(1),
+                rpc::key::IR_FORMAT_B => Value::Int(code),
+                123 => Value::Bool(false),
+                124 => Value::Bool(false),
+                125 => Value::Int(0),
+                rpc::key::IR_SAMPLES => Value::Bin(bytes, 2),
+            },
+        )?;
+
+        // Opcode 9 answers "accepted", not "done": the device writes the IR to
+        // flash afterwards and shows "transferring data" while it does. HX Edit
+        // closes the operation with an end marker and then re-reads the slot
+        // list, and doing the same is what takes the device out of that state -
+        // simply waiting does not.
+        self.command(ChannelId::CONTROL, rpc::op::END, hx_proto::msgmap! {})?;
+
+        // Poll the slot list until our name shows up. That is the only honest
+        // signal that the write finished rather than merely being accepted, and
+        // it is what the device's "transferring data" display is tracking -
+        // returning before it appears is what used to leave the unit stuck.
+        if self.wait_for_irs(|irs| holds(irs, name))? {
+            return Ok(());
+        }
+        Err(Error::Protocol(format!(
+            "the device accepted the impulse response but slot {} still does not show {name:?}; \
+             it may still be writing",
+            slot + 1
+        )))
+    }
+
+    /// Re-read the IR slot list until `done` is satisfied with it, for up to
+    /// 30 seconds. `false` is a list that never got there.
+    fn wait_for_irs(&mut self, done: impl Fn(&[(i64, String)]) -> bool) -> Result<bool> {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while Instant::now() < deadline {
+            if done(&self.irs()?) {
+                return Ok(true);
+            }
+            std::thread::sleep(Duration::from_millis(400));
+        }
+        Ok(false)
+    }
+
+    /// Empty an impulse response slot.
+    pub fn clear_ir(&mut self, slot: i64) -> Result<()> {
+        non_negative(slot, "impulse response slot")?;
+        self.bootstrap()?;
+        self.command(
+            ChannelId::CONTROL,
+            rpc::op::CLEAR_IR,
+            hx_proto::msgmap! { rpc::key::IR_SLOT => Value::Int(slot) },
+        )?;
+        self.command(ChannelId::CONTROL, rpc::op::END, hx_proto::msgmap! {})?;
+        self.irs()?;
+        Ok(())
+    }
+
+    /// Empty a slot, removing whatever block is in it.
+    ///
+    /// The device wants the editing cursor moved to the block first. Sending
+    /// the clear alone is answered as though it succeeded and changes nothing,
+    /// which is a quietly misleading combination - HX Edit always selects then
+    /// clears, and so do we.
+    pub fn clear_block(&mut self, block: i64) -> Result<()> {
+        non_negative(block, "block")?;
+        self.select_block(block)?;
+        self.command(
+            ChannelId::DATA,
+            rpc::op::CLEAR_BLOCK,
+            hx_proto::msgmap! { rpc::key::BLOCK => Value::Int(block) },
+        )
+    }
+
+    /// Switch to a snapshot, by zero-based index.
+    pub fn select_snapshot(&mut self, index: i64) -> Result<()> {
+        non_negative(index, "snapshot index")?;
+        self.command(
+            ChannelId::DATA,
+            rpc::op::SELECT_SNAPSHOT,
+            hx_proto::msgmap! { rpc::key::SNAPSHOT => Value::Int(index) },
+        )
+    }
+
+    /// Write a whole preset document back to the device, and do not return
+    /// until it has demonstrably landed.
+    ///
+    /// Several operations - reordering blocks, switching snapshots, pasting a
+    /// preset - have no dedicated opcode. This is how HX Edit performs its
+    /// undo, and it is the general mechanism for anything the opcode table does
+    /// not cover.
+    ///
+    /// The commit is verified by reading the chain back, because acceptance is
+    /// not landing: the completion notification is sometimes missed, and the
+    /// device answers other questions happily while the commit is still in
+    /// flight. A session that closes in that window - any one-shot CLI
+    /// command - leaves the device holding a half-committed document, and it
+    /// resolves that by wiping the edit buffer. Verified against the
+    /// hardware; the read-back loop is what makes a write safe to be the
+    /// last thing a process does.
+    pub fn write_preset(&mut self, preset: &Preset) -> Result<()> {
+        // An empty branch must go out the way the device itself would keep
+        // it - attach points zeroed - or the document contradicts itself in a
+        // way the device settles by wiping the edit buffer. Normalised here,
+        // at the one place every document leaves through.
+        let mut settled = Preset::parse(&preset.encode())
+            .ok_or_else(|| Error::Protocol("the document to write does not re-parse".into()))?;
+        settled.settle_branches();
+        let preset = &settled;
+
+        // Deferred: the device accepts the document and then commits it. The
+        // next operation must wait for the completion notification, or the
+        // commits pile up and the device eventually stops taking writes.
+        self.command_deferred(
+            ChannelId::DATA,
+            rpc::op::WRITE_PRESET,
+            hx_proto::msgmap! { rpc::key::DOCUMENT => Value::Bin(preset.encode(), 2) },
+        )?;
+
+        // What the document should read back as once it lands: everything a
+        // write can be for, not only which blocks are where. Comparing kinds
+        // and models alone passed at once for a tempo, a snapshot name, a
+        // copied snapshot, a restore, or a block copied over one of the same
+        // model, whether or not the device had applied anything.
+        let active = active_snapshot(preset);
+        let want = Landed::of(preset, active);
+        let deadline = Instant::now() + Duration::from_secs(4);
+        loop {
+            match retry_device_refusal(self.read_preset()) {
+                Ok(Some(back)) => {
+                    if Landed::of(&back, active) == want {
+                        return Ok(());
+                    }
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    self.poisoned = Some(format!(
+                        "the session was lost while verifying a preset write: {error}"
+                    ));
+                    return Err(error);
+                }
+            }
+            if Instant::now() >= deadline {
+                return Err(Error::Protocol(
+                    "the device accepted a document and never showed it back".into(),
+                ));
+            }
+            std::thread::sleep(Duration::from_millis(250));
+        }
+    }
+
+    /// Give a flash write time to commit before the next one is sent.
+    ///
+    /// Rename and save are flash writes: the device replies at once but commits
+    /// a moment later, and firing the next flash write into that window stacks
+    /// racing commits until the transfer state machine jams. That is not a
+    /// theoretical edge - a burst of renames once corrupted a whole setlist past
+    /// what a power cycle could clear, and only a factory reset recovered it. A
+    /// pause here paces flash writes the way HX Edit's own gaps do. Captured
+    /// commits take about 300 ms; this is generous over that. Verifying by
+    /// reading the result back, the way [`write_preset`](Self::write_preset)
+    /// does, is stronger still and is the next step once the command transcript
+    /// can be re-captured against hardware.
+    pub(crate) fn settle_flash(&self) {
+        std::thread::sleep(Duration::from_millis(750));
+    }
+
+    /// Commit the edit buffer to a preset slot.
+    ///
+    /// Everything else in this API edits the device's *edit buffer*: change a
+    /// parameter and the device sounds different immediately, but reload the
+    /// preset and the change is gone. This is the operation that makes an edit
+    /// permanent, and it is HX Edit's File > Save Preset.
+    pub fn save_preset(&mut self, setlist: i64, index: i64, name: &str) -> Result<()> {
+        non_negative(setlist, "setlist")?;
+        preset_index(&self.profile, index)?;
+        self.command(
+            ChannelId::DATA,
+            rpc::op::SAVE_PRESET,
+            hx_proto::msgmap! {
+                rpc::key::SETLIST => Value::Int(setlist),
+                rpc::key::PRESET_INDEX => Value::Int(index),
+                rpc::key::NAME => Value::Str(name.to_owned()),
+            },
+        )?;
+        // A save landing back-to-back with the next slot's save - as a restore
+        // writes preset after preset - must not stack its commit onto this one.
+        self.settle_flash();
+        Ok(())
+    }
+
+    /// Read one device object - a global setting, by numeric id.
+    pub fn object(&mut self, id: i64) -> Result<Value> {
+        non_negative(id, "object id")?;
+        let v = self.request(
+            ChannelId::DATA,
+            rpc::op::FETCH_OBJECT,
+            hx_proto::msgmap! { rpc::key::OBJECT_ID => Value::Int(id) },
+        )?;
+        v.get(rpc::key::VALUE)
+            .cloned()
+            .ok_or_else(|| Error::Protocol(format!("object {id} answered without a value")))
+    }
+
+    /// Write one device object.
+    ///
+    /// Global settings live in a flat numbered namespace rather than a
+    /// structured document: 147 of the first 160 ids answer on an HX Stomp.
+    /// The value's type has to match what the device holds - sending a float
+    /// where it wants a boolean is refused with error -3.
+    pub fn set_object(&mut self, id: i64, value: Value) -> Result<()> {
+        non_negative(id, "object id")?;
+        finite_value(&value, "object value")?;
+        self.command(
+            ChannelId::DATA,
+            rpc::op::SET_OBJECT,
+            hx_proto::msgmap! {
+                rpc::key::OBJECT_ID => Value::Int(id),
+                rpc::key::VALUE => value,
+            },
+        )
+    }
+
+    /// Whether the tempo is currently driven by external MIDI clock.
+    ///
+    /// HX Edit replaces its BPM readout with "[External]" when this is true,
+    /// which is how the flag was identified: patching the reply to true in
+    /// flight changed that display, and sending real MIDI beat clock to the
+    /// device flips it for as long as the clock runs.
+    pub fn tempo_is_external(&mut self) -> Result<bool> {
+        let v = self.request(
+            ChannelId::DATA,
+            rpc::op::TEMPO_IS_EXTERNAL,
+            hx_proto::msgmap! {},
+        )?;
+        decode_external_tempo(&v)
+    }
+
+    /// Point an input or output somewhere else - opcode 42, `{98: slot, 51:
+    /// destination}`. The destination indexes the same menu the preset stores
+    /// under the slot's routing key; changing it through a document write is
+    /// ignored, and this opcode, captured from HX Edit's own routing clicks,
+    /// is the way that works.
+    pub fn set_routing(&mut self, block: i64, to: i64) -> Result<()> {
+        non_negative(block, "block")?;
+        non_negative(to, "routing destination")?;
+        self.command(
+            ChannelId::DATA,
+            rpc::op::SET_ROUTING,
+            hx_proto::msgmap! {
+                rpc::key::BLOCK => Value::Int(block),
+                rpc::key::ROUTING => Value::Int(to),
+            },
+        )
+    }
+
+    /// Rename a preset.
+    ///
+    /// This is a flash write, and an unpaced one is what corrupted a setlist
+    /// into needing a factory reset: the GUI fired a rename and immediately read
+    /// the list and the document back, and a burst of them stacked commits until
+    /// the device jammed. So the write is paced - see [`settle_flash`] - and the
+    /// caller must not follow it with a document reload; a rename changes a
+    /// slot's label, never its tone.
+    ///
+    /// [`settle_flash`]: Self::settle_flash
+    pub fn rename_preset(&mut self, setlist: i64, index: i64, name: &str) -> Result<()> {
+        non_negative(setlist, "setlist")?;
+        preset_index(&self.profile, index)?;
+        self.command(
+            ChannelId::DATA,
+            rpc::op::RENAME_PRESET,
+            hx_proto::msgmap! {
+                rpc::key::SETLIST => Value::Int(setlist),
+                rpc::key::PRESET_INDEX => Value::Int(index),
+                rpc::key::NAME => Value::Str(name.to_owned()),
+            },
+        )?;
+        self.settle_flash();
+        Ok(())
+    }
+
+    /// Change what a block is.
+    ///
+    /// Like clearing, this needs the editing cursor on the block first - see
+    /// [`Session::clear_block`] for why that matters.
+    pub fn set_model(&mut self, block: i64, model: u32) -> Result<()> {
+        self.set_model_ref(block, model, None)
+    }
+
+    /// Make a block an Amp+Cab: an amp with its cab riding along in the same
+    /// slot, each keeping its own parameters.
+    ///
+    /// The pairing is the amp's, not a free choice - `amp.models` gives every
+    /// amp a `cablink`, and `hx_catalog::Catalog::paired_cab` resolves it.
+    pub fn set_model_pair(&mut self, block: i64, amp: u32, cab: u32) -> Result<()> {
+        self.set_model_ref(block, amp, Some(cab))
+    }
+
+    fn set_model_ref(&mut self, block: i64, model: u32, paired: Option<u32>) -> Result<()> {
+        self.select_block(block)?;
+        self.command(
+            ChannelId::DATA,
+            rpc::op::SET_MODEL,
+            hx_proto::msgmap! {
+                rpc::key::BLOCK => Value::Int(block),
+                rpc::key::MODEL_REF => hx_proto::msgmap! {
+                    rpc::key::PAIRED => Value::Bool(paired.is_some()),
+                    rpc::key::MODEL => Value::Int(model as i64),
+                    rpc::key::PAIRED_MODEL => Value::Int(paired.map_or(-1, |p| p as i64)),
+                },
+            },
+        )
+    }
+
+    /// Move the editing cursor, which the device's own screen follows.
+    pub fn select_block(&mut self, block: i64) -> Result<()> {
+        non_negative(block, "block")?;
+        self.command(
+            ChannelId::DATA,
+            rpc::op::SELECT_BLOCK,
+            hx_proto::msgmap! {
+                rpc::key::BLOCK => Value::Int(block),
+                rpc::key::PATH => Value::Int(0),
+            },
+        )
+    }
+
+    /// Put a block's bypass under MIDI, or take it back off.
+    ///
+    /// Put a block's bypass under a MIDI CC, and say which one.
+    ///
+    /// HX Edit's assign page gives MIDI its own row rather than a place in the
+    /// source list, and this is that row. `None` takes the row off.
+    ///
+    /// **Key 71 is the CC number here**, which took two captures to see. It
+    /// reads as a constant 4 in every capture that only ever switches the row
+    /// on, because 4 is the CC the pedal picks by default - so it was written
+    /// down as an on switch. `mac-cc-capture.log` sets the row to 42, then 43,
+    /// 44, 45 and 46, and sends exactly those under key 71. Taking the row off
+    /// sends 0.
+    ///
+    /// A *parameter* works the other way round: its assignment carries the on
+    /// switch at key 71 and its CC number goes through
+    /// [`Session::set_assign_cc`].
+    pub fn assign_bypass_midi(&mut self, block: i64, cc: Option<i64>) -> Result<()> {
+        /// What is being controlled: this block's bypass.
+        const BYPASS_TARGET: i64 = 5;
+        /// Constant across every captured assignment.
+        const SCOPE: i64 = 300;
+
+        non_negative(block, "block")?;
+        if cc.is_some_and(|cc| !(0..=127).contains(&cc)) {
+            return Err(Error::Protocol("a MIDI CC is 0 to 127".into()));
+        }
+        self.command(
+            ChannelId::DATA,
+            rpc::op::ASSIGN_CONTROLLER,
+            hx_proto::msgmap! {
+                rpc::key::BLOCK => Value::Int(block),
+                rpc::key::ASSIGN_TARGET => Value::Int(BYPASS_TARGET),
+                rpc::key::ASSIGN_SCOPE => Value::Int(SCOPE),
+                rpc::key::ASSIGN_FLAGS => Value::Int(rpc::Source::NONE),
+                rpc::key::ASSIGN_KIND => Value::Int(cc.unwrap_or(0)),
+            },
+        )
+    }
+
+    /// Which MIDI CC drives a parameter that is already assigned to one.
+    ///
+    /// Two messages, not one: [`Session::assign_parameter`] with
+    /// [`rpc::Source::MIDI`] says a controller exists, and this says which CC.
+    /// HX Edit sends one of these per intermediate value while the field is
+    /// spun, so a single call is the same thing arriving in one step.
+    ///
+    /// The bypass row is the other way round - see
+    /// [`Session::assign_bypass_midi`], where the number rides the assignment
+    /// itself.
+    pub fn set_assign_cc(&mut self, block: i64, param: i64, cc: i64) -> Result<()> {
+        block_param(block, param)?;
+        if !(0..=127).contains(&cc) {
+            return Err(Error::Protocol("a MIDI CC is 0 to 127".into()));
+        }
+        self.command(
+            ChannelId::DATA,
+            rpc::op::SET_ASSIGN_CC,
+            hx_proto::msgmap! {
+                rpc::key::BLOCK => Value::Int(block),
+                rpc::key::COMMIT => Value::Bool(true),
+                rpc::key::PATH => Value::Int(0),
+                rpc::key::PARAM_INDEX => Value::Int(param),
+                rpc::key::CC => Value::Int(cc),
+            },
+        )
+    }
+
+    /// Put a parameter under a controller - an expression pedal, a footswitch,
+    /// a MIDI CC.
+    ///
+    /// Captured from HX Edit's Bypass/Controller Assign page by scrolling its
+    /// source menu, which is how those custom-drawn dropdowns can be driven at
+    /// all: they ignore synthetic clicks. The ordinal under key 74 is the
+    /// source, keys 72 and 73 the ends of its travel.
+    /// `None` takes the assignment off.
+    ///
+    /// Key 71 is not the constant it looks like: it is the assignment's on
+    /// switch, `4` when one is made and `0` when it is removed, and removing
+    /// sends `{74: 0, 71: 0}` through this same opcode rather than one of its
+    /// own.
+    pub fn assign_parameter(
+        &mut self,
+        block: i64,
+        param: i64,
+        source: Option<rpc::Source>,
+    ) -> Result<()> {
+        block_param(block, param)?;
+        let (flags, kind) = match source {
+            Some(source) => (source.ordinal(), 4),
+            None => (rpc::Source::NONE, 0),
+        };
+        self.command(
+            ChannelId::DATA,
+            rpc::op::ASSIGN_CONTROLLER,
+            hx_proto::msgmap! {
+                rpc::key::BLOCK => Value::Int(block),
+                rpc::key::PATH => Value::Int(0),
+                rpc::key::PARAM_INDEX => Value::Int(param),
+                rpc::key::COMMIT => Value::Bool(true),
+                rpc::key::ASSIGN_FLAGS => Value::Int(flags),
+                rpc::key::ASSIGN_KIND => Value::Int(kind),
+                rpc::key::ASSIGN_EXTRA => Value::Bool(false),
+            },
+        )
+    }
+
+    /// One end of a controller's travel, normalised to 0.0–1.0.
+    ///
+    /// Min and Max are their own opcodes; keys 72 and 73 are what a read
+    /// returns, not what a write takes.
+    pub fn set_assign_range(
+        &mut self,
+        block: i64,
+        param: i64,
+        value: f32,
+        high_end: bool,
+    ) -> Result<()> {
+        block_param(block, param)?;
+        if !value.is_finite() || !(0.0..=1.0).contains(&value) {
+            return Err(Error::Protocol(
+                "an assignment endpoint must be between 0 and 1".into(),
+            ));
+        }
+        let op = if high_end {
+            rpc::op::ASSIGN_MAX_OP
+        } else {
+            rpc::op::ASSIGN_MIN_OP
+        };
+        self.command(
+            ChannelId::DATA,
+            op,
+            hx_proto::msgmap! {
+                rpc::key::BLOCK => Value::Int(block),
+                rpc::key::PATH => Value::Int(0),
+                rpc::key::PARAM_INDEX => Value::Int(param),
+                rpc::key::COMMIT => Value::Bool(true),
+                rpc::key::VALUE => Value::F32(value),
+            },
+        )
+    }
+
+    /// What controls a parameter now, and over what travel.
+    ///
+    /// `None` for a parameter nothing controls - which the device reports as
+    /// source ordinal 0, the same "None" the assign page offers.
+    pub fn read_assignment_raw(&mut self, block: i64, param: i64) -> Result<Value> {
+        block_param(block, param)?;
+        self.request(
+            ChannelId::DATA,
+            rpc::op::READ_ASSIGNMENT,
+            hx_proto::msgmap! {
+                rpc::key::BLOCK => Value::Int(block),
+                rpc::key::COMMIT => Value::Bool(true),
+                rpc::key::PATH => Value::Int(0),
+                rpc::key::PARAM_INDEX => Value::Int(param),
+            },
+        )
+    }
+
+    pub fn read_assignment(&mut self, block: i64, param: i64) -> Result<Option<Assignment>> {
+        block_param(block, param)?;
+        let reply = self.request(
+            ChannelId::DATA,
+            rpc::op::READ_ASSIGNMENT,
+            hx_proto::msgmap! {
+                rpc::key::BLOCK => Value::Int(block),
+                rpc::key::COMMIT => Value::Bool(true),
+                rpc::key::PATH => Value::Int(0),
+                rpc::key::PARAM_INDEX => Value::Int(param),
+            },
+        )?;
+        // The reply does not use the key the request did: opcode 37 takes the
+        // source at 74, opcode 36 answers with it at 0. Reading 74 here meant
+        // every parameter came back unassigned, which is why an assignment that
+        // the pedal had certainly made showed nothing at all in the editor.
+        //
+        assignment_source(&reply).map(|source| source.map(|source| Assignment { source }))
+    }
+
+    /// Make a footswitch toggle a block in and out.
+    ///
+    /// Bypass is a switch, so only a footswitch or a MIDI CC can drive it -
+    /// HX Edit lists expression pedals for it but steps over them.
+    pub fn assign_bypass_footswitch(&mut self, block: i64, switch: u8) -> Result<()> {
+        non_negative(block, "block")?;
+        let switch = switch_index(&self.profile, switch)?;
+        self.command(
+            ChannelId::DATA,
+            rpc::op::ASSIGN_FOOTSWITCH,
+            hx_proto::msgmap! {
+                rpc::key::BLOCK => Value::Int(block),
+                rpc::key::SWITCH => Value::Int(switch),
+            },
+        )
+    }
+
+    /// What a footswitch is set to.
+    ///
+    /// Opcode 33 counts from **one** on the way in and answers with a
+    /// **zero-based** index in key 102, which is the opposite of opcodes 56 and
+    /// 57. That was an open question in the protocol notes and is now settled by
+    /// asking the pedal: `read_switch(1)` comes back `{102: 0}`, and so on up.
+    /// The one-based number goes in here so a caller says "footswitch 3" and
+    /// means it.
+    pub fn read_switch(&mut self, switch: u8) -> Result<Switch> {
+        switch_index(&self.profile, switch)?;
+        let reply = self.request(
+            ChannelId::DATA,
+            rpc::op::FOOTSWITCH_CONFIG,
+            hx_proto::msgmap! {
+                rpc::key::SWITCH => Value::Int(i64::from(switch)),
+            },
+        )?;
+        decode_switch(switch, &reply)
+    }
+
+    /// Every footswitch a device has, in order.
+    pub fn switches(&mut self) -> Result<Vec<Switch>> {
+        (1..=self.profile.switches)
+            .map(|switch| self.read_switch(switch))
+            .collect()
+    }
+
+    /// Latching, which toggles, or momentary, which holds while your foot is
+    /// down.
+    pub fn set_switch_momentary(&mut self, switch: u8, momentary: bool) -> Result<()> {
+        let switch = switch_index(&self.profile, switch)?;
+        self.command(
+            ChannelId::DATA,
+            rpc::op::SWITCH_TYPE,
+            hx_proto::msgmap! {
+                rpc::key::SWITCH => Value::Int(switch),
+                rpc::key::MOMENTARY => Value::Bool(momentary),
+            },
+        )
+    }
+
+    /// Write a name under a footswitch, or clear it back to whatever it
+    /// carries. Clearing is its own opcode rather than an empty string.
+    pub fn set_switch_label(&mut self, switch: u8, label: Option<&str>) -> Result<()> {
+        let switch = Value::Int(switch_index(&self.profile, switch)?);
+        match label {
+            Some(label) => self.command(
+                ChannelId::DATA,
+                rpc::op::SWITCH_LABEL,
+                hx_proto::msgmap! {
+                    rpc::key::SWITCH => switch,
+                    rpc::key::NAME => Value::Str(label.to_owned()),
+                },
+            ),
+            None => self.command(
+                ChannelId::DATA,
+                rpc::op::SWITCH_LABEL_CLEAR,
+                hx_proto::msgmap! { rpc::key::SWITCH => switch },
+            ),
+        }
+    }
+
+    /// Light a footswitch a chosen colour, or `None` for Auto Color, where it
+    /// takes the colour of whatever it controls.
+    ///
+    /// The colour is an index into HX Edit's `footswitchLED` list, not an RGB
+    /// value: the capture sets White by sending `66: 1`. Auto Color is index 0
+    /// of that list and has an opcode to itself.
+    pub fn set_switch_colour(&mut self, switch: u8, colour: Option<i64>) -> Result<()> {
+        let switch = Value::Int(switch_index(&self.profile, switch)?);
+        if colour.is_some_and(|colour| colour < 1) {
+            return Err(Error::Protocol(
+                "a chosen footswitch colour must be 1 or greater; use None for Auto Color".into(),
+            ));
+        }
+        match colour {
+            Some(colour) => self.command(
+                ChannelId::DATA,
+                rpc::op::SWITCH_COLOUR,
+                hx_proto::msgmap! {
+                    rpc::key::SWITCH => switch,
+                    rpc::key::LED_COLOUR => Value::Int(colour),
+                },
+            ),
+            None => self.command(
+                ChannelId::DATA,
+                rpc::op::SWITCH_COLOUR_AUTO,
+                hx_proto::msgmap! { rpc::key::SWITCH => switch },
+            ),
+        }
+    }
+
+    /// Take a block's bypass off a footswitch again.
+    pub fn unassign_bypass_footswitch(&mut self, block: i64, switch: u8) -> Result<()> {
+        non_negative(block, "block")?;
+        let switch = switch_index(&self.profile, switch)?;
+        self.command(
+            ChannelId::DATA,
+            rpc::op::UNASSIGN_FOOTSWITCH,
+            hx_proto::msgmap! {
+                rpc::key::BLOCK => Value::Int(block),
+                rpc::key::SWITCH => Value::Int(switch),
+            },
+        )
+    }
+
+    /// Change the tempo of the loaded preset.
+    ///
+    /// No opcode carries tempo on its own, so this edits the preset document
+    /// and writes it back.
+    pub fn set_tempo(&mut self, bpm: f32) -> Result<()> {
+        if !bpm.is_finite() || !(40.0..=240.0).contains(&bpm) {
+            return Err(Error::Protocol(
+                "tempo must be between 40 and 240 BPM".into(),
+            ));
+        }
+        let mut preset = self.read_preset()?;
+        if !preset.set_tempo(bpm) {
+            return Err(Error::Protocol("this preset has no tempo field".into()));
+        }
+        self.write_preset(&preset)
+    }
+
+    /// Rename a snapshot, by zero-based index.
+    ///
+    /// An empty name is refused before anything is sent. The document has
+    /// nowhere to put one, and finding that out after reading the preset
+    /// reported it as a missing snapshot - and, with traffic already on the
+    /// wire, cost the editor its connection over a typo.
+    pub fn rename_snapshot(&mut self, index: usize, name: &str) -> Result<()> {
+        if name.is_empty() {
+            return Err(Error::Protocol("a snapshot name cannot be empty".into()));
+        }
+        let mut preset = self.read_preset()?;
+        if !preset.set_snapshot_name(index, name) {
+            return Err(Error::Protocol(format!("no snapshot {}", index + 1)));
+        }
+        self.write_preset(&preset)
+    }
+
+    /// Setlist names.
+    pub fn setlists(&mut self) -> Result<Vec<String>> {
+        let result = self.request(ChannelId::CONTROL, rpc::op::LIST_SETLISTS, Value::Nil)?;
+        let Value::Array(entries) = result else {
+            return Err(Error::Protocol("setlist list was not an array".into()));
+        };
+        // A setlist entry is a single-pair map from index to name - `{0:
+        // 'PRESETS'}` - rather than the keyed record the preset list uses.
+        entries
+            .into_iter()
+            .enumerate()
+            .map(|(position, entry)| match entry {
+                Value::Map(fields) => fields
+                    .first()
+                    .and_then(|(_, v)| v.as_str())
+                    .map(str::to_owned)
+                    .ok_or_else(|| {
+                        Error::Protocol(format!("setlist entry {position} has no readable name"))
+                    }),
+                Value::Str(name) => Ok(name),
+                _ => Err(Error::Protocol(format!(
+                    "setlist entry {position} has no readable name"
+                ))),
+            })
+            .collect()
+    }
+
+    /// Switch a block in or out of the signal path.
+    pub fn set_enabled(&mut self, block: i64, enabled: bool) -> Result<()> {
+        non_negative(block, "block")?;
+        self.command(
+            ChannelId::DATA,
+            rpc::op::SET_ENABLED,
+            hx_proto::msgmap! {
+                rpc::key::BLOCK => Value::Int(block),
+                rpc::key::ENABLED => Value::Bool(enabled),
+            },
+        )
+    }
+
+    /// Setlist, index and name of the preset currently loaded.
+    ///
+    /// The name is not part of the preset document itself, so it comes from
+    /// this separate metadata call rather than from `read_preset`.
+    pub fn preset_info(&mut self) -> Result<(i64, i64, String)> {
+        let v = self.request(ChannelId::DATA, rpc::op::PRESET_INFO, Value::Nil)?;
+        let setlist = v
+            .get(rpc::key::SETLIST)
+            .and_then(Value::as_i64)
+            .filter(|value| *value >= 0)
+            .ok_or_else(|| Error::Protocol("preset info has no valid setlist".into()))?;
+        let index = v
+            .get(rpc::key::PRESET_INDEX)
+            .and_then(Value::as_i64)
+            .filter(|value| *value >= 0)
+            .ok_or_else(|| Error::Protocol("preset info has no valid slot".into()))?;
+        let name = v
+            .get(rpc::key::NAME)
+            .and_then(Value::as_str)
+            .ok_or_else(|| Error::Protocol("preset info has no name".into()))?;
+        Ok((setlist, index, name.to_owned()))
+    }
+
+    /// Fetch an object by id.
+    pub fn fetch(&mut self, id: i64) -> Result<Value> {
+        non_negative(id, "object id")?;
+        self.request(
+            ChannelId::DATA,
+            rpc::op::FETCH_OBJECT,
+            hx_proto::msgmap! { rpc::key::OBJECT_ID => Value::Int(id) },
+        )
+    }
+
+    /// Any notifications the device has pushed since the last call.
+    pub fn poll_notifications(&mut self) -> Result<Vec<(i64, Value)>> {
+        self.read_available(Duration::from_millis(20))?;
+        let mut out = Vec::new();
+        for ch in self.channels.values_mut() {
+            for sm in ch
+                .reader
+                .take_messages()
+                .map_err(|error| Error::Protocol(error.to_string()))?
+            {
+                let message = decode_message(sm.body)?;
+                if let Message::Notification { event, args } = message {
+                    out.push((event, args));
+                }
+            }
+        }
+        Ok(out)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn assignment_replies_distinguish_none_from_malformed() {
+        assert_eq!(assignment_source(&Value::Nil).unwrap(), None);
+        assert_eq!(
+            assignment_source(&hx_proto::msgmap! {
+                rpc::key::ASSIGN_SOURCE => Value::Int(0),
+            })
+            .unwrap(),
+            None
+        );
+        assert_eq!(
+            assignment_source(&hx_proto::msgmap! {
+                rpc::key::ASSIGN_SOURCE => Value::Int(1),
+            })
+            .unwrap(),
+            Some(rpc::Source::Expression(1))
+        );
+
+        assert!(assignment_source(&Value::Map(Vec::new())).is_err());
+        assert!(assignment_source(&hx_proto::msgmap! {
+            rpc::key::ASSIGN_SOURCE => Value::Int(99),
+        })
+        .is_err());
+        assert!(assignment_source(&Value::Bool(false)).is_err());
+    }
+}
+
+/// What a written document has to read back as for the write to count as
+/// landed.
+///
+/// Fields rather than bytes. A document read back after a restore is
+/// byte-identical on hardware, but some fields are the device's own to keep:
+/// the routing (a document write is ignored for it - see `set_routing`), a
+/// slot's engine class, and the active snapshot, which the device keeps in
+/// step with the preset. The recorded session shows that last one: a tempo
+/// write reads back with the active snapshot's tempo changed to match. So a
+/// write is judged on what it carries - every slot's model, cab, bypass and
+/// values, the tempo, every snapshot's name, and the other snapshots' tempo
+/// and bypass states - and not on what the device derives from it.
+#[derive(Debug, PartialEq)]
+struct Landed {
+    slots: Vec<LandedSlot>,
+    tempo: Option<u32>,
+    snapshots: Vec<(String, Option<SnapshotState>)>,
+}
+
+/// A snapshot's tempo (as bits) and bypass states: the part of it the
+/// device keeps for itself while it is the active one.
+type SnapshotState = (Option<u32>, Vec<Option<bool>>);
+
+/// One slot of [`Landed`]. Values compare by their bits, so a NaN that went
+/// out reads back as the same NaN rather than as a write that never landed.
+#[derive(Debug, PartialEq)]
+struct LandedSlot {
+    kind: hx_proto::preset::Kind,
+    model: Option<u32>,
+    paired: Option<u32>,
+    enabled: bool,
+    values: Vec<u32>,
+    paired_values: Vec<u32>,
+}
+
+impl Landed {
+    /// `active` is the snapshot whose tempo and bypass states the device
+    /// keeps for itself; taken from the document written, so both sides of
+    /// the comparison leave out the same one. `None` leaves out all of them.
+    fn of(preset: &Preset, active: Option<usize>) -> Landed {
+        let bits = |values: &[f32]| values.iter().map(|v| v.to_bits()).collect();
+        Landed {
+            slots: preset
+                .slots
+                .iter()
+                .map(|slot| LandedSlot {
+                    kind: slot.kind,
+                    model: slot.model,
+                    paired: slot.paired,
+                    enabled: slot.enabled,
+                    values: bits(&slot.values),
+                    paired_values: bits(&slot.paired_values),
+                })
+                .collect(),
+            tempo: preset.tempo().map(f32::to_bits),
+            snapshots: preset
+                .snapshot_details()
+                .into_iter()
+                .enumerate()
+                .map(|(index, s)| {
+                    let own = active
+                        .is_some_and(|active| active != index)
+                        .then(|| (s.tempo.map(f32::to_bits), s.enabled));
+                    (s.name, own)
+                })
+                .collect(),
+        }
+    }
+}
+
+/// Which snapshot a document has active: key 6 of the snapshot section
+/// (key 10), as the pedal's own buffer reads after one is picked.
+fn active_snapshot(preset: &Preset) -> Option<usize> {
+    preset
+        .tone
+        .get(10)?
+        .get(6)?
+        .as_i64()
+        .and_then(|index| usize::try_from(index).ok())
+}
+
+fn decode_irs(result: Value) -> Result<Vec<(i64, String)>> {
+    let entries = match result {
+        Value::Array(entries) => entries,
+        // The captured device response for no occupied slots is nil rather
+        // than an empty array.
+        Value::Nil => return Ok(Vec::new()),
+        _ => {
+            return Err(Error::Protocol(
+                "the device returned an invalid impulse response list".into(),
+            ))
+        }
+    };
+    let mut seen = BTreeSet::new();
+    entries
+        .into_iter()
+        .enumerate()
+        .map(|(position, entry)| {
+            let slot = entry
+                .get(rpc::key::IR_SLOT)
+                .and_then(Value::as_i64)
+                .ok_or_else(|| Error::Protocol(format!("IR list entry {position} has no slot")))?;
+            let name = entry
+                .get(rpc::key::NAME)
+                .and_then(Value::as_str)
+                .ok_or_else(|| Error::Protocol(format!("IR list entry {position} has no name")))?;
+            if slot < 0 || !seen.insert(slot) {
+                return Err(Error::Protocol(format!(
+                    "IR list entry {position} has an invalid or duplicate slot {slot}"
+                )));
+            }
+            Ok((slot, name.to_owned()))
+        })
+        .collect()
+}
+
+fn decode_ir_samples(bytes: &[u8]) -> Result<Vec<f32>> {
+    if !bytes.len().is_multiple_of(4) {
+        return Err(Error::Protocol(
+            "the device's impulse response ends partway through an f32 sample".into(),
+        ));
+    }
+    let samples: Vec<f32> = bytes
+        .chunks_exact(4)
+        .map(|word| f32::from_le_bytes([word[0], word[1], word[2], word[3]]))
+        .collect();
+    if samples.is_empty()
+        || samples.len() > 2048
+        || samples.iter().any(|sample| !sample.is_finite())
+    {
+        return Err(Error::Protocol(
+            "the device returned an invalid impulse response".into(),
+        ));
+    }
+    Ok(samples)
+}
+
+fn decode_external_tempo(value: &Value) -> Result<bool> {
+    value
+        .get(rpc::key::IN_EFFECT)
+        .and_then(Value::as_bool)
+        .ok_or_else(|| Error::Protocol("the external-clock reply has no valid flag".into()))
+}
+
+fn decode_favourites(value: Value) -> Result<Vec<(i64, String)>> {
+    let entries = match value {
+        Value::Array(entries) => entries,
+        // Like the IR list, an empty favourites shelf is nil rather than an
+        // empty array on the device.
+        Value::Nil => return Ok(Vec::new()),
+        _ => {
+            return Err(Error::Protocol(
+                "the device returned an invalid favourite list".into(),
+            ))
+        }
+    };
+    let mut seen = BTreeSet::new();
+    entries
+        .into_iter()
+        .enumerate()
+        .map(|(position, entry)| {
+            let index = entry
+                .get(rpc::key::OBJECT_ID)
+                .and_then(Value::as_i64)
+                .filter(|index| (0..16).contains(index))
+                .ok_or_else(|| {
+                    Error::Protocol(format!("favourite entry {position} has no valid slot"))
+                })?;
+            let name = entry
+                .get(rpc::key::NAME)
+                .and_then(Value::as_str)
+                .ok_or_else(|| {
+                    Error::Protocol(format!("favourite entry {position} has no name"))
+                })?;
+            if !seen.insert(index) {
+                return Err(Error::Protocol(format!(
+                    "favourite entry {position} repeats slot {index}"
+                )));
+            }
+            Ok((index, name.to_owned()))
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod validation_tests {
+    use super::*;
+
+    #[test]
+    fn non_finite_wire_values_are_rejected() {
+        assert!(finite_value(&Value::F32(f32::NAN), "value").is_err());
+        assert!(finite_value(&Value::F32(f32::INFINITY), "value").is_err());
+        assert!(finite_value(&Value::F64(f64::NEG_INFINITY), "value").is_err());
+        assert!(finite_value(&Value::F32(0.5), "value").is_ok());
+    }
+
+    #[test]
+    fn footswitches_are_checked_against_the_device_profile() {
+        assert_eq!(switch_index(&hx_proto::HX_STOMP, 1).unwrap(), 0);
+        assert_eq!(switch_index(&hx_proto::HX_STOMP, 5).unwrap(), 4);
+        assert!(switch_index(&hx_proto::HX_STOMP, 0).is_err());
+        assert!(switch_index(&hx_proto::HX_STOMP, 6).is_err());
+    }
+
+    #[test]
+    fn protocol_addresses_cannot_be_negative() {
+        assert!(block_param(0, 0).is_ok());
+        assert!(block_param(-1, 0).is_err());
+        assert!(block_param(0, -1).is_err());
+    }
+
+    #[test]
+    fn preset_indexes_are_checked_against_the_device_profile() {
+        assert!(preset_index(&hx_proto::HX_STOMP, 0).is_ok());
+        assert!(preset_index(&hx_proto::HX_STOMP, 125).is_ok());
+        assert!(preset_index(&hx_proto::HX_STOMP, -1).is_err());
+        assert!(preset_index(&hx_proto::HX_STOMP, 126).is_err());
+    }
+
+    #[test]
+    fn favourite_indexes_match_the_sixteen_device_slots() {
+        assert!(favourite_index(0).is_ok());
+        assert!(favourite_index(15).is_ok());
+        assert!(favourite_index(-1).is_err());
+        assert!(favourite_index(16).is_err());
+    }
+
+    #[test]
+    fn malformed_device_ir_samples_are_not_silently_shortened() {
+        assert_eq!(decode_ir_samples(&0.5f32.to_le_bytes()).unwrap(), vec![0.5]);
+        assert!(decode_ir_samples(&[0, 1, 2]).is_err());
+        assert!(decode_ir_samples(&f32::NAN.to_le_bytes()).is_err());
+        assert!(decode_ir_samples(&[]).is_err());
+    }
+
+    #[test]
+    fn malformed_external_clock_replies_are_not_reported_as_internal() {
+        let external = hx_proto::msgmap! { rpc::key::IN_EFFECT => Value::Bool(true) };
+        assert!(decode_external_tempo(&external).unwrap());
+        assert!(decode_external_tempo(&Value::Nil).is_err());
+        assert!(
+            decode_external_tempo(&hx_proto::msgmap! { rpc::key::IN_EFFECT => Value::Int(0) })
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn footswitch_replies_are_decoded_without_hiding_bad_assignments() {
+        let unassigned = hx_proto::msgmap! {
+            rpc::key::SWITCH => Value::Int(0),
+            rpc::key::MOMENTARY => Value::Bool(false),
+            rpc::key::NAME => Value::Nil,
+            rpc::key::LED_COLOUR => Value::Nil,
+            rpc::key::SWITCH_ASSIGNED => Value::Nil,
+        };
+        assert_eq!(
+            decode_switch(1, &unassigned).unwrap(),
+            Switch {
+                switch: 1,
+                momentary: false,
+                label: None,
+                colour: None,
+                carries: Vec::new(),
+            }
+        );
+
+        let assigned = hx_proto::msgmap! {
+            rpc::key::SWITCH => Value::Int(1),
+            rpc::key::MOMENTARY => Value::Bool(true),
+            rpc::key::NAME => Value::Str("Drive".into()),
+            rpc::key::LED_COLOUR => Value::Int(2),
+            rpc::key::SWITCH_ASSIGNED => Value::Array(vec![hx_proto::msgmap! {
+                rpc::key::ENABLED => Value::Bool(true),
+                rpc::key::LED_COLOUR => Value::Int(0xff_00_03),
+                rpc::key::SWITCH_TARGET => hx_proto::msgmap! {
+                    rpc::key::NAME => Value::Str("Minotaur".into()),
+                    rpc::key::BLOCK => Value::Int(4),
+                },
+            }]),
+        };
+        assert_eq!(
+            decode_switch(2, &assigned).unwrap().carries,
+            vec![Carried {
+                block: 4,
+                name: "Minotaur".into(),
+                colour: Some(0xff_00_03),
+                enabled: true,
+            }]
+        );
+
+        let wrong_index = hx_proto::msgmap! {
+            rpc::key::SWITCH => Value::Int(2),
+            rpc::key::MOMENTARY => Value::Bool(false),
+        };
+        assert!(decode_switch(1, &wrong_index).is_err());
+
+        let bad_list = hx_proto::msgmap! {
+            rpc::key::SWITCH => Value::Int(0),
+            rpc::key::MOMENTARY => Value::Bool(false),
+            rpc::key::SWITCH_ASSIGNED => Value::Bool(false),
+        };
+        assert!(decode_switch(1, &bad_list).is_err());
+
+        let bad_entry = hx_proto::msgmap! {
+            rpc::key::SWITCH => Value::Int(0),
+            rpc::key::MOMENTARY => Value::Bool(false),
+            rpc::key::SWITCH_ASSIGNED => Value::Array(vec![hx_proto::msgmap! {
+                rpc::key::ENABLED => Value::Bool(true),
+                rpc::key::SWITCH_TARGET => hx_proto::msgmap! {
+                    rpc::key::BLOCK => Value::Int(4),
+                },
+            }]),
+        };
+        assert!(decode_switch(1, &bad_entry).is_err());
+    }
+
+    #[test]
+    fn malformed_device_favourites_are_not_silently_dropped() {
+        let valid = Value::Array(vec![hx_proto::msgmap! {
+            rpc::key::OBJECT_ID => Value::Int(3),
+            rpc::key::NAME => Value::Str("Lead".into()),
+        }]);
+        assert_eq!(decode_favourites(valid).unwrap(), vec![(3, "Lead".into())]);
+        assert!(decode_favourites(Value::Nil).unwrap().is_empty());
+
+        let missing_name = Value::Array(vec![hx_proto::msgmap! {
+            rpc::key::OBJECT_ID => Value::Int(3),
+        }]);
+        assert!(decode_favourites(missing_name).is_err());
+        assert!(decode_favourites(Value::Bool(false)).is_err());
+    }
+}
+
+#[cfg(test)]
+mod pedal_tests {
+    use super::*;
+    use crate::fake::{self, Pedal};
+
+    const SAMPLES: [f32; 4] = [0.5, -0.25, 0.125, 0.0];
+
+    fn sum_of(samples: &[f32]) -> u64 {
+        let bytes: Vec<u8> = samples.iter().flat_map(|s| s.to_le_bytes()).collect();
+        checksum(&bytes)
+    }
+
+    /// A slot that already holds an IR of the same name used to count as
+    /// done the moment the upload was accepted, before anything had been
+    /// written. It is emptied first now, and the upload waited for from there.
+    #[test]
+    fn re_uploading_over_a_same_named_ir_waits_for_the_new_samples() {
+        for held in [0xdead_beef, sum_of(&SAMPLES)] {
+            let pedal = Pedal::new();
+            let mut session = fake::session(&pedal);
+            {
+                let mut pedal = pedal.lock().unwrap();
+                pedal.irs.insert(3, ("Cab".into(), held));
+                pedal.ir_delay = 3;
+            }
+
+            session
+                .upload_ir(3, "Cab", &SAMPLES)
+                .expect("the upload lands");
+
+            let pedal = pedal.lock().unwrap();
+            let opcodes = pedal.opcodes();
+            let clear = opcodes.iter().position(|&o| o == rpc::op::CLEAR_IR);
+            let upload = opcodes.iter().position(|&o| o == rpc::op::UPLOAD_IR);
+            assert!(
+                matches!((clear, upload), (Some(c), Some(u)) if c < u),
+                "cleared before uploading: {opcodes:?}"
+            );
+            assert!(
+                pedal.writing_ir.is_none(),
+                "returned before the write landed"
+            );
+            assert_eq!(pedal.irs[&3], ("Cab".into(), sum_of(&SAMPLES)));
+        }
+    }
+
+    /// A slot that is empty, or holds another name, shows the upload by
+    /// changing, so it needs no clearing first.
+    #[test]
+    fn an_ir_upload_that_changes_the_slot_list_sends_no_clear() {
+        for before in [None, Some(("Room".to_owned(), 7))] {
+            let pedal = Pedal::new();
+            let mut session = fake::session(&pedal);
+            {
+                let mut pedal = pedal.lock().unwrap();
+                if let Some(ir) = before {
+                    pedal.irs.insert(0, ir);
+                }
+                pedal.ir_delay = 2;
+            }
+
+            session
+                .upload_ir(0, "Cab", &SAMPLES)
+                .expect("the upload lands");
+
+            let pedal = pedal.lock().unwrap();
+            assert!(!pedal.opcodes().contains(&rpc::op::CLEAR_IR));
+            assert!(
+                pedal.writing_ir.is_none(),
+                "returned before the write landed"
+            );
+            assert_eq!(pedal.irs[&0], ("Cab".into(), sum_of(&SAMPLES)));
+        }
+    }
+
+    /// A pedal that accepts a document and never applies it. The chain reads
+    /// back with the same blocks either way, which used to pass; the tempo
+    /// that was asked for is what has to be seen.
+    #[test]
+    fn a_tempo_the_pedal_never_applied_is_not_reported_as_written() {
+        let pedal = Pedal::new();
+        let mut session = fake::session(&pedal);
+        let before = session.read_preset().unwrap().tempo().unwrap();
+        let wanted = if before == 100.0 { 101.0 } else { 100.0 };
+        pedal.lock().unwrap().applies_writes = false;
+
+        let result = session.set_tempo(wanted);
+
+        assert!(
+            matches!(result, Err(Error::Protocol(ref why)) if why.contains("never showed it back")),
+            "{result:?}"
+        );
+    }
+
+    /// The same for a snapshot name: the blocks never change, so only the
+    /// name reading back proves the write.
+    #[test]
+    fn a_snapshot_name_lands_only_when_it_reads_back() {
+        let pedal = Pedal::new();
+        let mut session = fake::session(&pedal);
+        session
+            .rename_snapshot(0, "Verse")
+            .expect("an applied write lands");
+        assert_eq!(session.read_preset().unwrap().snapshots()[0], "Verse");
+
+        pedal.lock().unwrap().applies_writes = false;
+        assert!(session.rename_snapshot(0, "Chorus").is_err());
+    }
+
+    /// An empty snapshot name is its own error, raised before anything
+    /// reaches the wire, so the editor can say so and keep the pedal.
+    #[test]
+    fn an_empty_snapshot_name_is_refused_before_any_traffic() {
+        let pedal = Pedal::new();
+        let mut session = fake::session(&pedal);
+        let before = session.channel_stats();
+        let sent = pedal.lock().unwrap().requests.len();
+
+        let result = session.rename_snapshot(0, "");
+
+        assert!(
+            matches!(result, Err(Error::Protocol(ref why)) if why.contains("empty")),
+            "{result:?}"
+        );
+        assert_eq!(session.channel_stats(), before, "nothing was sent");
+        assert_eq!(pedal.lock().unwrap().requests.len(), sent);
+    }
+
+    /// The device keeps the active snapshot's tempo in step with the
+    /// preset's (the recorded session shows it), so that one is not held
+    /// against a write; any other snapshot's is.
+    #[test]
+    fn only_the_active_snapshot_is_left_to_the_device() {
+        let written = Preset::parse(include_bytes!("../../hx-proto/tests/preset.bin")).unwrap();
+        let active = active_snapshot(&written).expect("the fixture names its active snapshot");
+        let other = (active + 1) % written.snapshot_details().len();
+        let want = Landed::of(&written, Some(active));
+
+        let snapshot_tempo = |index: usize, tempo: f32| {
+            let mut back = Preset::parse(&written.encode()).unwrap();
+            let snapshots = back.tone.get_mut(10).and_then(|s| s.get_mut(10)).unwrap();
+            let Value::Array(entries) = snapshots else {
+                panic!("snapshots are an array")
+            };
+            *entries[index].get_mut(5).unwrap() = Value::F32(tempo);
+            back
+        };
+        let kept = snapshot_tempo(active, 97.0);
+        assert_eq!(kept.snapshot_details()[active].tempo, Some(97.0));
+        assert_eq!(Landed::of(&kept, Some(active)), want);
+        let lost = snapshot_tempo(other, 97.0);
+        assert_ne!(Landed::of(&lost, Some(active)), want);
+    }
+}

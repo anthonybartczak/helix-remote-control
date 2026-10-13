@@ -391,7 +391,6 @@ source = "git+https://github.com/crmne/tonepush?tag=v0.9.0#5e44812c53afddf36b2bc
 [[package]]
 name = "hx-usb"
 version = "0.9.0"
-source = "git+https://github.com/crmne/tonepush?tag=v0.9.0#5e44812c53afddf36b2bc38d2355e75341049659"
 dependencies = [
  "atomic-write-file",
  "hx-proto",
