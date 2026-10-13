@@ -76,8 +76,10 @@ Total time: about 45 minutes, most of it flashing the SD card and the first boot
    ```
    The iPad asks for the token on the first write and keeps it in Safari. The log line
    `helix-bridge listening … writes="on"` confirms it (`journalctl -u helix-bridge -n 5`).
-10. **Turn on live sync (about 2 minutes, optional).** Switches to the `usb` backend: one
-    held USB session, pedal changes appear on the iPad within about 1 s.
+10. **Turn on live sync (experimental, about 2 minutes).** Switches to the `usb` backend:
+    one held USB session, pedal changes appear on the iPad within about 1 s. **Known
+    problem:** the pedal stops sending changes after a minute or two of footswitch use
+    and needs a power cycle (docs/hx-effects-notifications.md). Leave on `cli` for playing.
     ```sh
     sudo sed -i 's/^HELIX_BACKEND=.*/HELIX_BACKEND=usb/' /etc/helix-bridge/helix-bridge.env
     sudo systemctl restart helix-bridge

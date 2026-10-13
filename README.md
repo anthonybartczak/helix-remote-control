@@ -26,10 +26,12 @@ preset, block on/off, parameter value, rename, save, behind a shared token
 (`HELIX_TOKEN`). **Not yet run on the HX Effects.** First write on hardware needs your
 confirmation (AGENTS.md 6).
 
-Live sync (2026-10-13, cloud only): new `usb` backend links TonePush's `hx-usb` library,
-holds one USB session, and pushes pedal changes (footswitches, knobs, preset switches)
-to the iPad over a WebSocket. Tested on the fake backend; **not yet run on the HX
-Effects**.
+Live sync (2026-10-13): `usb` backend links TonePush's `hx-usb` library, holds one USB
+session, and pushes pedal changes to the iPad over a WebSocket. **Experimental:** on the
+HX Effects the pedal stops sending notifications after a minute or two of footswitch
+use, also with TonePush's own `tonepush watch`, and needs a power cycle
+([docs/hx-effects-notifications.md](docs/hx-effects-notifications.md)). Use `cli` (the
+default) until that is solved. Writes and the updater are verified on the Pi 4.
 
 ## Running tonepush on Windows (dev machine)
 
