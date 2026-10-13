@@ -127,7 +127,12 @@ impl Pedal {
         if frame.dst == ChannelId::EVENTS.device
             && (header.msg_type & MSG_ACK != 0 || header.has_data())
         {
-            self.events_acked = header.ack.wrapping_sub(0x1000);
+            // Acknowledgements are cumulative: an older one (a stale or
+            // handshake header) must not move the window back.
+            let acked = header.ack.wrapping_sub(0x1000);
+            if (acked.wrapping_sub(self.events_acked) as i32) > 0 {
+                self.events_acked = acked;
+            }
             self.release_events();
         }
         if !header.has_data() || rest.is_empty() {
@@ -247,12 +252,15 @@ impl Pedal {
         Frame::decode(frame).map_or(0, |f| (f.payload.len() - ChannelHeader::SIZE) as u32)
     }
 
+    /// Whether sending `frame` keeps the unacknowledged bytes within the
+    /// window. Always true without one.
     fn events_fit(&self, frame: &[u8]) -> bool {
         self.events_window.is_none_or(|window| {
             self.events_sent.wrapping_sub(self.events_acked) + Self::event_bytes(frame) <= window
         })
     }
 
+    /// Put an events frame on the wire and count its bytes as unacknowledged.
     fn send_event(&mut self, frame: Vec<u8>) {
         self.events_sent = self.events_sent.wrapping_add(Self::event_bytes(&frame));
         self.outbox.push_back(frame);

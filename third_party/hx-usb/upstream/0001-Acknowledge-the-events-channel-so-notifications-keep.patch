@@ -1,4 +1,4 @@
-From 9f6a9392b9e530df8b7ede81ca6795d2884c2362 Mon Sep 17 00:00:00 2001
+From bf1abc943d8411c34c2cf08e673649fa1fb0ebcb Mon Sep 17 00:00:00 2001
 From: anthonybartczak <to0oni456@gmail.com>
 Date: Tue, 13 Oct 2026 19:15:21 +0000
 Subject: [PATCH] Acknowledge the events channel so notifications keep flowing
@@ -29,11 +29,11 @@ then silence; with this change 1095, still flowing.
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ---
- PROTOCOL.md                   | 14 ++++++++
- crates/hx-usb/src/commands.rs | 54 +++++++++++++++++++++++++++++
- crates/hx-usb/src/fake.rs     | 64 +++++++++++++++++++++++++++++++++--
- crates/hx-usb/src/lib.rs      |  6 +++-
- 4 files changed, 134 insertions(+), 4 deletions(-)
+ PROTOCOL.md                   | 14 +++++++
+ crates/hx-usb/src/commands.rs | 54 ++++++++++++++++++++++++++
+ crates/hx-usb/src/fake.rs     | 72 +++++++++++++++++++++++++++++++++--
+ crates/hx-usb/src/lib.rs      |  6 ++-
+ 4 files changed, 142 insertions(+), 4 deletions(-)
 
 diff --git a/PROTOCOL.md b/PROTOCOL.md
 index be0b1a2..43be0ae 100644
@@ -135,7 +135,7 @@ index 9f49c08..1f18628 100644
  
      fn sum_of(samples: &[f32]) -> u64 {
 diff --git a/crates/hx-usb/src/fake.rs b/crates/hx-usb/src/fake.rs
-index 1d96a69..94f3c6d 100644
+index 1d96a69..1bbeb7b 100644
 --- a/crates/hx-usb/src/fake.rs
 +++ b/crates/hx-usb/src/fake.rs
 @@ -11,7 +11,7 @@ use std::collections::{BTreeMap, VecDeque};
@@ -179,20 +179,25 @@ index 1d96a69..94f3c6d 100644
              inbox: BTreeMap::new(),
              seq: BTreeMap::new(),
          }))
-@@ -106,6 +124,12 @@ impl Pedal {
+@@ -106,6 +124,17 @@ impl Pedal {
          let Some((header, rest)) = ChannelHeader::decode(&frame.payload) else {
              return;
          };
 +        if frame.dst == ChannelId::EVENTS.device
 +            && (header.msg_type & MSG_ACK != 0 || header.has_data())
 +        {
-+            self.events_acked = header.ack.wrapping_sub(0x1000);
++            // Acknowledgements are cumulative: an older one (a stale or
++            // handshake header) must not move the window back.
++            let acked = header.ack.wrapping_sub(0x1000);
++            if (acked.wrapping_sub(self.events_acked) as i32) > 0 {
++                self.events_acked = acked;
++            }
 +            self.release_events();
 +        }
          if !header.has_data() || rest.is_empty() {
              return;
          }
-@@ -206,6 +230,34 @@ impl Pedal {
+@@ -206,6 +235,37 @@ impl Pedal {
          }
      }
  
@@ -213,12 +218,15 @@ index 1d96a69..94f3c6d 100644
 +        Frame::decode(frame).map_or(0, |f| (f.payload.len() - ChannelHeader::SIZE) as u32)
 +    }
 +
++    /// Whether sending `frame` keeps the unacknowledged bytes within the
++    /// window. Always true without one.
 +    fn events_fit(&self, frame: &[u8]) -> bool {
 +        self.events_window.is_none_or(|window| {
 +            self.events_sent.wrapping_sub(self.events_acked) + Self::event_bytes(frame) <= window
 +        })
 +    }
 +
++    /// Put an events frame on the wire and count its bytes as unacknowledged.
 +    fn send_event(&mut self, frame: Vec<u8>) {
 +        self.events_sent = self.events_sent.wrapping_add(Self::event_bytes(&frame));
 +        self.outbox.push_back(frame);
@@ -227,7 +235,7 @@ index 1d96a69..94f3c6d 100644
      /// Queue one message for the host, on the channel `node` names.
      fn reply(&mut self, node: u16, message: &Message) {
          let body = Encoder::encode(&message.to_value());
-@@ -226,8 +278,14 @@ impl Pedal {
+@@ -226,8 +286,14 @@ impl Pedal {
              .iter()
              .find(|channel| channel.device == node)
              .map_or(0, |channel| channel.host);
