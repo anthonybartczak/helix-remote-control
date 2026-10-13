@@ -315,6 +315,9 @@ impl Worker {
             }
         }
         self.count(transfers, events.len());
+        if !events.is_empty() && !self.acknowledge() {
+            return;
+        }
         let mut patched = false;
         for (event, args) in &events {
             let Some(cause) = notice(*event, args) else {
@@ -334,6 +337,42 @@ impl Worker {
             let kept = session.keepalive();
             let _ = self.check(kept);
         }
+    }
+
+    /// Tell the pedal its notifications arrived, and catch a preset it
+    /// loaded by itself.
+    ///
+    /// The pedal stops sending once enough notification bytes go
+    /// unacknowledged; on the Pi it went silent after about 200 (debug log,
+    /// 2026-10-13). The keep-alive's acknowledgement did not release it.
+    /// hx-usb sends a real ACK on the events channel before every request
+    /// (`drain_pending`), so a cheap read-only request does it: `preset_info`,
+    /// the same question the session's liveness check asks. False if the
+    /// session was lost.
+    fn acknowledge(&mut self) -> bool {
+        let Some(session) = self.session.as_mut() else {
+            return false;
+        };
+        let asked = session.preset_info();
+        let info = match asked {
+            Ok(info) => Some(info),
+            // A pedal mid-load may refuse; the ACK went out regardless.
+            Err(hx_usb::Error::Device(_)) => None,
+            Err(e) => {
+                let _ = self.check::<()>(Err(e));
+                return false;
+            }
+        };
+        let switched = match (&info, self.doc.as_ref().and_then(|d| d.info.as_ref())) {
+            (Some((setlist, index, _)), Some((was_setlist, was_index, _))) => {
+                (setlist, index) != (was_setlist, was_index)
+            }
+            _ => false,
+        };
+        if switched {
+            self.want_reload(Cause::Preset);
+        }
+        true
     }
 
     fn count(&mut self, transfers: u32, events: usize) {
