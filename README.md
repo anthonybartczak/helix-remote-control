@@ -26,12 +26,12 @@ preset, block on/off, parameter value, rename, save, behind a shared token
 (`HELIX_TOKEN`). **Not yet run on the HX Effects.** First write on hardware needs your
 confirmation (AGENTS.md 6).
 
-Live sync (2026-10-13): `usb` backend links TonePush's `hx-usb` library, holds one USB
-session, and pushes pedal changes to the iPad over a WebSocket. **Experimental:** on the
-HX Effects the pedal stops sending notifications after a minute or two of footswitch
-use, also with TonePush's own `tonepush watch`, and needs a power cycle
-([docs/hx-effects-notifications.md](docs/hx-effects-notifications.md)). Use `cli` (the
-default) until that is solved. Writes and the updater are verified on the Pi 4.
+Live sync verified 2026-10-13 on the Pi 4 with the HX Effects 3.80: the `usb` backend
+holds one USB session and pushes pedal changes (footswitches, knobs, preset switches) to
+the iPad over a WebSocket. It needed a fix to TonePush's `hx-usb`, which stalled the
+pedal's notifications after 195 (A/B tested: upstream 195, patched 1095 in 3 min). The
+patched copy lives in `third_party/hx-usb` ([PATCHES.md](third_party/hx-usb/PATCHES.md)).
+Writes and the updater (`sudo helix-bridge-update`) are verified on the Pi 4 too.
 
 ## Running tonepush on Windows (dev machine)
 
@@ -73,7 +73,7 @@ HTTP API over the device. Endpoints: [docs/api.md](docs/api.md). Writes need
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `HELIX_BACKEND` | `fake` | `usb` = real device, one held USB session, live updates (recommended); `cli` = real device via the `tonepush` binary, one session per call; `fake` = replay `server/fixtures/` |
+| `HELIX_BACKEND` | `fake` | `usb` = real device, one held USB session, live updates (recommended, the Pi default); `cli` = real device via the `tonepush` binary, one session per call; `fake` = replay `server/fixtures/` |
 | `HELIX_BIND` | `0.0.0.0:8080` | Listen address. LAN only (AGENTS.md 5.7) |
 | `HELIX_TONEPUSH` | `tonepush` | `cli` only: path to the `tonepush` binary |
 | `HELIX_TONEPUSH_TIMEOUT_SECS` | `30` | Kill a `tonepush` call that runs longer |

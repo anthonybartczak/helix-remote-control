@@ -50,9 +50,10 @@ in our patched copy of hx-usb: `third_party/hx-usb/PATCHES.md`. Verify on the pe
 with `sudo systemctl stop helix-bridge && sudo /opt/helix-bridge/bin/helix-bridge
 watch 180` after a power cycle: the 10 s counts should stay above 0 for 3 minutes.
 
-Consequences: the `usb` backend's live updates are **experimental** and stop after a
-minute or two of pedal activity; once stalled, power-cycle the pedal. The `cli`
-backend never holds a session open and is unaffected.
+With the patch, the bridge's `usb` backend ran 2–3 minutes of footswitch use at
+131–188 notifications per 10 s without a gap (2026-10-13). Upstream `tonepush` (still
+shipped in the bundle for the `cli` backend) keeps the bug; if it is used for a long
+`watch`, the pedal needs a power cycle afterwards.
 
 ### Draft upstream report (crmne/tonepush)
 
