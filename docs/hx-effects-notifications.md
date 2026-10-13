@@ -55,7 +55,9 @@ With the patch, the bridge's `usb` backend ran 2–3 minutes of footswitch use a
 shipped in the bundle for the `cli` backend) keeps the bug; if it is used for a long
 `watch`, the pedal needs a power cycle afterwards.
 
-### Draft upstream report (crmne/tonepush)
+Fix submitted upstream: https://github.com/crmne/tonepush/pull/25.
+
+### Draft upstream report (crmne/tonepush, superseded by PR #25)
 
 > **`tonepush watch` stops receiving notifications after ~200 on HX Effects 3.80**
 >
