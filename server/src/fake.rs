@@ -15,13 +15,17 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::Duration;
 
-use crate::device::{Command, Device, DeviceError, Result};
+use tokio::sync::broadcast;
+
+use crate::device::{Cause, Command, Device, DeviceError, Live, Result};
 use crate::parse;
 
 pub struct FakeDevice {
     dir: PathBuf,
     delay: Duration,
     state: Mutex<State>,
+    /// Writes are echoed here, as the real pedal echoes them.
+    live: broadcast::Sender<Live>,
 }
 
 /// What the writes changed, on top of the fixtures.
@@ -48,6 +52,7 @@ impl FakeDevice {
             dir: dir.into(),
             delay: Duration::ZERO,
             state: Mutex::default(),
+            live: broadcast::channel(16).0,
         }
     }
 
@@ -70,6 +75,28 @@ impl FakeDevice {
             .map_err(|e| DeviceError::Spawn(format!("{}: {e}", path.display())))
     }
 
+    async fn chain(&self) -> Result<String> {
+        let chain = parse::chain(&self.fixture("chain.txt").await?)?;
+        let presets = parse::presets(&self.fixture("presets.txt").await?)?;
+        let state = self.state();
+        let p = state.loaded_entry(&presets)?;
+        let chain = state.apply_chain(chain, &p.label, state.name(p));
+        Ok(render_chain(&chain))
+    }
+
+    /// Publish the chain after a write, like the USB backend does.
+    async fn echo(&self, cmd: &Command) {
+        let cause = match cmd {
+            Command::Select { .. } => Cause::Preset,
+            Command::Enable { .. } | Command::Set { .. } => Cause::Edit,
+            Command::Rename { .. } => Cause::Other,
+            _ => return,
+        };
+        if let Ok(text) = self.chain().await {
+            let _ = self.live.send(Live::Chain { text, cause });
+        }
+    }
+
     fn state(&self) -> std::sync::MutexGuard<'_, State> {
         // A panic while holding the lock leaves plain data; keep using it.
         self.state.lock().unwrap_or_else(|e| e.into_inner())
@@ -85,6 +112,21 @@ impl Device for FakeDevice {
         if !self.delay.is_zero() {
             tokio::time::sleep(self.delay).await;
         }
+        let echo = cmd.is_write().then(|| cmd.clone());
+        let out = self.reply(cmd).await;
+        if let (Ok(_), Some(cmd)) = (&out, echo) {
+            self.echo(&cmd).await;
+        }
+        out
+    }
+
+    fn subscribe(&self) -> Option<broadcast::Receiver<Live>> {
+        Some(self.live.subscribe())
+    }
+}
+
+impl FakeDevice {
+    async fn reply(&self, cmd: Command) -> Result<String> {
         match cmd {
             Command::List => self.fixture("list.txt").await,
             Command::Info => self.fixture("info.txt").await,
@@ -107,14 +149,7 @@ impl Device for FakeDevice {
                     p.index
                 ))
             }
-            Command::Chain => {
-                let chain = parse::chain(&self.fixture("chain.txt").await?)?;
-                let presets = parse::presets(&self.fixture("presets.txt").await?)?;
-                let state = self.state();
-                let p = state.loaded_entry(&presets)?;
-                let chain = state.apply_chain(chain, &p.label, state.name(p));
-                Ok(render_chain(&chain))
-            }
+            Command::Chain => self.chain().await,
             Command::Select { setlist: 0, index } => {
                 let presets = parse::presets(&self.fixture("presets.txt").await?)?;
                 let label = &entry(&presets, index)?.label;

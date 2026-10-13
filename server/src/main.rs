@@ -3,6 +3,7 @@ use std::time::Duration;
 
 use helix_bridge::api::{self, AppState};
 use helix_bridge::device::{CliDevice, Device, FakeDevice};
+use helix_bridge::usb::UsbDevice;
 use tracing_subscriber::EnvFilter;
 
 /// Configuration from the environment. See README for the variables.
@@ -85,6 +86,13 @@ async fn main() {
             )
             .await
         }
+        "usb" => {
+            let device = UsbDevice::start();
+            let closer = device.closer();
+            let result = serve(device, config.bind, config.token).await;
+            closer.close();
+            result
+        }
         "fake" => {
             let fake = match &config.fixtures {
                 Some(dir) => FakeDevice::new(dir),
@@ -98,7 +106,7 @@ async fn main() {
             .await
         }
         other => {
-            tracing::error!("HELIX_BACKEND must be \"cli\" or \"fake\", got {other:?}");
+            tracing::error!("HELIX_BACKEND must be \"usb\", \"cli\" or \"fake\", got {other:?}");
             std::process::exit(2);
         }
     };

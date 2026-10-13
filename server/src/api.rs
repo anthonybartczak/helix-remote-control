@@ -3,6 +3,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
+use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{FromRequestParts, Path, Query, State};
 use axum::http::request::Parts;
 use axum::http::{header, HeaderMap, StatusCode};
@@ -12,7 +13,9 @@ use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use crate::device::{Command, Device, DeviceError};
+use tokio::sync::broadcast;
+
+use crate::device::{Cause, Command, Device, DeviceError, Live};
 use crate::parse;
 
 /// Shared by every request.
@@ -23,6 +26,8 @@ pub struct AppState<D> {
     /// True after a bypass or parameter change through the bridge, until the
     /// next load or save. Edits made on the pedal itself are not seen.
     unsaved: AtomicBool,
+    /// JSON messages for `/api/live` clients.
+    live: broadcast::Sender<String>,
 }
 
 impl<D: Device> AppState<D> {
@@ -31,13 +36,20 @@ impl<D: Device> AppState<D> {
             device,
             token: token.filter(|t| !t.is_empty()),
             unsaved: AtomicBool::new(false),
+            live: broadcast::channel(16).0,
         }
     }
 }
 
 type Shared<D> = State<Arc<AppState<D>>>;
 
+/// Build the app. Must run inside a Tokio runtime: a backend that reports
+/// device changes gets a task relaying them to `/api/live`.
 pub fn router<D: Device>(state: AppState<D>) -> Router {
+    let state = Arc::new(state);
+    if let Some(changes) = state.device.subscribe() {
+        tokio::spawn(relay(state.clone(), changes));
+    }
     Router::new()
         .route("/api/health", get(health::<D>))
         .route("/api/device", get(device_info::<D>))
@@ -52,10 +64,11 @@ pub fn router<D: Device>(state: AppState<D>) -> Router {
         )
         .route("/api/presets/{index}/rename", post(rename::<D>))
         .route("/api/save", post(save::<D>))
+        .route("/api/live", get(live::<D>))
         .route("/", get(index))
         .route("/app.css", get(app_css))
         .route("/app.js", get(app_js))
-        .with_state(Arc::new(state))
+        .with_state(state)
 }
 
 // The UI is compiled into the binary so the Pi gets one file to deploy.
@@ -169,6 +182,8 @@ struct Health {
     version: &'static str,
     /// Whether the server takes write requests (a token is configured).
     writes: bool,
+    /// Whether `/api/live` reports device changes (the `usb` backend does).
+    live: bool,
 }
 
 /// Server liveness only; does not touch the device.
@@ -178,6 +193,7 @@ async fn health<D: Device>(State(app): Shared<D>) -> Json<Health> {
         backend: app.device.kind(),
         version: env!("CARGO_PKG_VERSION"),
         writes: app.token.is_some(),
+        live: app.device.subscribe().is_some(),
     })
 }
 
@@ -426,6 +442,70 @@ async fn save<D: Device>(State(app): Shared<D>, access: WriteAccess) -> ApiResul
     write(&app, access, Command::Save).await
 }
 
+// ---------- Live updates ----------
+
+/// Turn device changes into client messages, keeping `unsaved` current:
+/// a footswitch or knob on the pedal edits the buffer as much as we do.
+async fn relay<D: Device>(app: Arc<AppState<D>>, mut changes: broadcast::Receiver<Live>) {
+    loop {
+        let msg = match changes.recv().await {
+            Ok(Live::Chain { text, cause }) => {
+                match cause {
+                    Cause::Preset => app.unsaved.store(false, Ordering::Relaxed),
+                    Cause::Edit => app.unsaved.store(true, Ordering::Relaxed),
+                    Cause::Other => {}
+                }
+                match parse::chain(&text) {
+                    Ok(chain) => json!({
+                        "type": "chain",
+                        "chain": ChainView {
+                            chain,
+                            unsaved: app.unsaved.load(Ordering::Relaxed),
+                        },
+                    }),
+                    Err(e) => {
+                        tracing::warn!("live chain unreadable: {e}");
+                        continue;
+                    }
+                }
+            }
+            Ok(Live::Connected(connected)) => json!({ "type": "device", "connected": connected }),
+            Err(broadcast::error::RecvError::Lagged(_)) => continue,
+            Err(broadcast::error::RecvError::Closed) => return,
+        };
+        // No listeners is fine.
+        let _ = app.live.send(msg.to_string());
+    }
+}
+
+/// `GET /api/live`: WebSocket of `{type: "chain", chain}` and
+/// `{type: "device", connected}` messages. Read-only, so no token.
+async fn live<D: Device>(State(app): Shared<D>, ws: WebSocketUpgrade) -> Response {
+    let messages = app.live.subscribe();
+    ws.on_upgrade(move |socket| live_client(socket, messages))
+}
+
+async fn live_client(mut socket: WebSocket, mut messages: broadcast::Receiver<String>) {
+    loop {
+        tokio::select! {
+            msg = messages.recv() => match msg {
+                Ok(text) => {
+                    if socket.send(Message::Text(text.into())).await.is_err() {
+                        return;
+                    }
+                }
+                // Missed some: the next message carries the whole chain anyway.
+                Err(broadcast::error::RecvError::Lagged(_)) => {}
+                Err(broadcast::error::RecvError::Closed) => return,
+            },
+            incoming = socket.recv() => match incoming {
+                None | Some(Err(_)) | Some(Ok(Message::Close(_))) => return,
+                Some(Ok(_)) => {}
+            },
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -666,6 +746,51 @@ mod tests {
         // Malformed body: axum's own 4xx.
         let (status, _) = post(&app, "/api/select", t, json!({ "index": "x" })).await;
         assert!(status.is_client_error());
+    }
+
+    /// A write from one client reaches every `/api/live` listener.
+    #[tokio::test]
+    async fn live_echoes_writes() {
+        use futures_util::StreamExt;
+        use tokio_tungstenite::tungstenite::Message as WsMessage;
+
+        let app = app();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = app.clone();
+        tokio::spawn(async move { axum::serve(listener, server).await });
+        let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/api/live"))
+            .await
+            .unwrap();
+
+        let (_, health) = send(
+            &app,
+            Request::get("/api/health").body(Body::empty()).unwrap(),
+        )
+        .await;
+        assert_eq!(health["live"], true);
+
+        post(
+            &app,
+            "/api/blocks/2/enabled",
+            Some(TOKEN),
+            json!({ "enabled": true }),
+        )
+        .await;
+        let next = async {
+            loop {
+                if let Some(Ok(WsMessage::Text(t))) = ws.next().await {
+                    return serde_json::from_str::<Value>(&t).unwrap();
+                }
+            }
+        };
+        let msg = tokio::time::timeout(std::time::Duration::from_secs(5), next)
+            .await
+            .expect("live message");
+        assert_eq!(msg["type"], "chain");
+        assert_eq!(msg["chain"]["blocks"][0]["enabled"], true);
+        assert_eq!(msg["chain"]["unsaved"], true);
+        assert_eq!(msg["chain"]["label"], "01C");
     }
 
     #[test]

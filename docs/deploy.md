@@ -76,6 +76,14 @@ Total time: about 45 minutes, most of it flashing the SD card and the first boot
    ```
    The iPad asks for the token on the first write and keeps it in Safari. The log line
    `helix-bridge listening … writes="on"` confirms it (`journalctl -u helix-bridge -n 5`).
+10. **Turn on live sync (about 2 minutes, optional).** Switches to the `usb` backend: one
+    held USB session, pedal changes appear on the iPad within about 1 s.
+    ```sh
+    sudo sed -i 's/^HELIX_BACKEND=.*/HELIX_BACKEND=usb/' /etc/helix-bridge/helix-bridge.env
+    sudo systemctl restart helix-bridge
+    sudo journalctl -u helix-bridge -n 5 --no-pager   # expect "USB session open"
+    ```
+    Back to the old behaviour: same with `HELIX_BACKEND=cli`.
 
 ## Updating
 
@@ -100,6 +108,7 @@ HX_EDIT_RESOURCES=/opt/helix-bridge/vendor/res /opt/helix-bridge/bin/tonepush in
 | Device calls time out | HX Edit is open somewhere, or the pedal is wedged. Close HX Edit. If still stuck, pull the pedal's **power adapter** (a USB replug does not help, PROTOCOL.md) |
 | No model names, `FX` everywhere | `vendor/res` missing, wrong folder, or unreadable. `ls -ld /opt/helix-bridge/vendor/res` must show `drwxr-xr-x`; fix with `sudo chmod -R a+rX /opt/helix-bridge/vendor/res`, or re-run `install.sh` |
 | Service does not start | `journalctl -u helix-bridge -n 50` |
+| `usb` backend: "cannot open the pedal" in the log | HX Edit or a hand-run `tonepush` holds the interface. Close it; the server retries by itself (5 s, backing off to 60 s) |
 | Write buttons dashed, "Writes are off" | No `HELIX_TOKEN` in the settings file. See step 9 |
 | iPad keeps asking for the token | Token typed wrong, or changed on the Pi. Re-type it; the UI asks again after each refusal |
 

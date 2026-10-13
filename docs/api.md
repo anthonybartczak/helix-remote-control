@@ -8,7 +8,7 @@ one. `/api/device` is cached after the first success (cleared when the device is
 
 | Method | Path | Device command | Returns |
 |---|---|---|---|
-| GET | `/api/health` | none | `{status, backend, version}` |
+| GET | `/api/health` | none | `{status, backend, version, writes, live}` |
 | GET | `/api/device` | `tonepush info` | `{name, presets, device_id, firmware, build}` |
 | GET | `/api/presets?setlist=0` | `tonepush presets --setlist=N` | `{setlist, presets: [{index, label, name, loaded}]}` |
 | GET | `/api/preset` | `tonepush preset` | `{setlist, index, label, name, firmware, build}` |
@@ -82,6 +82,23 @@ Device errors carry a stable `code` so clients need not parse messages:
 
 "could not claim interface" failures are retried 3 times (after 1 s, 3 s, 8 s) before
 returning 502.
+
+## Live updates: `GET /api/live` (WebSocket)
+
+With `HELIX_BACKEND=usb` (and `fake`, which echoes its own writes) `/api/health` reports
+`live: true` and this socket pushes JSON messages. Read-only: no token.
+
+| Message | When |
+|---|---|
+| `{"type": "chain", "chain": {…same as /api/chain…}}` | The loaded preset's chain changed: footswitch, knob, preset or snapshot switch on the pedal, or any client's write |
+| `{"type": "device", "connected": true\|false}` | The USB session came up or was lost |
+
+How the `usb` backend sees changes: it reads the pedal's notifications every 700 ms
+(TonePush's own pace) and re-reads the chain 250 ms after a burst settles (at most 1 s
+after it starts). Ids follow TonePush `docs/_reference/opcodes.md` section 3; any event
+not known to be noise triggers a re-read. Only real changes are sent; a preset load
+always is. `unsaved` turns true on a pedal edit (events 30, 49) and false on a preset
+load (4, 8, 22/object 28).
 
 ## Web UI
 

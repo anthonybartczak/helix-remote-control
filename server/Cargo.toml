@@ -7,7 +7,11 @@ license = "MIT"
 publish = false
 
 [dependencies]
-axum = { version = "0.8", default-features = false, features = ["http1", "json", "query", "tokio", "tracing"] }
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "query", "tokio", "tracing", "ws"] }
+# TonePush libraries, pinned to the same tag as the CLI (AGENTS.md 3). MIT.
+hx-catalog = { git = "https://github.com/crmne/tonepush", tag = "v0.9.0" }
+hx-proto = { git = "https://github.com/crmne/tonepush", tag = "v0.9.0" }
+hx-usb = { git = "https://github.com/crmne/tonepush", tag = "v0.9.0" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "process", "sync", "time", "fs", "signal"] }
@@ -15,7 +19,9 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "env-filter", "ansi"] }
 
 [dev-dependencies]
+futures-util = { version = "0.3", default-features = false }
 http-body-util = "0.1"
+tokio-tungstenite = { version = "0.29", default-features = false, features = ["connect"] }
 tower = { version = "0.5", features = ["util"] }
 
 [profile.release]

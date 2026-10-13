@@ -26,6 +26,11 @@ preset, block on/off, parameter value, rename, save, behind a shared token
 (`HELIX_TOKEN`). **Not yet run on the HX Effects.** First write on hardware needs your
 confirmation (AGENTS.md 6).
 
+Live sync (2026-10-13, cloud only): new `usb` backend links TonePush's `hx-usb` library,
+holds one USB session, and pushes pedal changes (footswitches, knobs, preset switches)
+to the iPad over a WebSocket. Tested on the fake backend; **not yet run on the HX
+Effects**.
+
 ## Running tonepush on Windows (dev machine)
 
 Uses the official TonePush v0.9.0 release binary (building from source needs the
@@ -66,9 +71,9 @@ HTTP API over the device. Endpoints: [docs/api.md](docs/api.md). Writes need
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `HELIX_BACKEND` | `fake` | `cli` = real device via `tonepush`; `fake` = replay `server/fixtures/` |
+| `HELIX_BACKEND` | `fake` | `usb` = real device, one held USB session, live updates (recommended); `cli` = real device via the `tonepush` binary, one session per call; `fake` = replay `server/fixtures/` |
 | `HELIX_BIND` | `0.0.0.0:8080` | Listen address. LAN only (AGENTS.md 5.7) |
-| `HELIX_TONEPUSH` | `tonepush` | Path to the `tonepush` binary |
+| `HELIX_TONEPUSH` | `tonepush` | `cli` only: path to the `tonepush` binary |
 | `HELIX_TONEPUSH_TIMEOUT_SECS` | `30` | Kill a `tonepush` call that runs longer |
 | `HELIX_FIXTURES` | bundled `server/fixtures` | Fixture directory for `fake` |
 | `HELIX_SESSION_COOLDOWN_MS` | `3000` | `cli` only: gap between two `tonepush` sessions. 3 s was needed on Windows; try `500` on the Pi |
@@ -76,7 +81,11 @@ HTTP API over the device. Endpoints: [docs/api.md](docs/api.md). Writes need
 | `HELIX_TOKEN` | unset | Shared token for writes. Unset or empty = read-only. Keep it in `.env` or the Pi's settings file, never in git |
 | `RUST_LOG` | `info` | Log filter |
 
-`HX_EDIT_RESOURCES` is read by `tonepush` itself, not by the server; set it for model names.
+`HX_EDIT_RESOURCES` points at HX Edit's data for model names. `usb` reads it in the
+server process; `cli` passes it on to `tonepush`.
+
+The `usb` backend holds the pedal's USB interface while the server runs, as HX Edit
+does: stop the service before using HX Edit or `tonepush` by hand.
 
 ## Web UI (`web/`)
 
@@ -101,9 +110,9 @@ in the browser):
 Without a token, write controls are dashed and inert. Tap tempo stays dashed (not
 built). Known limits:
 
-- **No live updates.** The UI reads the device on open, when the iPad returns to the page,
-  and on "Refresh from device" (tap the connection dots). No polling: each read is a USB
-  session on the pedal.
+- **Live updates need `HELIX_BACKEND=usb`.** Then the server pushes each change over
+  `/api/live` within about 1 s. With `cli`, the UI reads the device on open, when the iPad
+  returns to the page, and on "Refresh from device" (tap the connection dots).
 - **Block categories are guessed** from the model name (`CATEGORY_RULES` in `app.js`);
   unknown models show grey `FX`. Real categories need the HX Edit catalog on the server.
 - **Slider fill only for `%` values.** The API sends display strings, so other scales are
@@ -111,7 +120,7 @@ built). Known limits:
 - **Active snapshot is not shown.** `tonepush chain` does not report it.
 - **Parameters are typed, not dragged.** A slider needs each parameter's range, which
   the API does not send yet.
-- **Unsaved flag covers bridge edits only.** Changes made on the pedal are not seen.
+- **Unsaved flag:** with `usb`, pedal edits count too; with `cli`, only bridge edits.
 
 ## Deploying to the Pi (`deploy/`)
 

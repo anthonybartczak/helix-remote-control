@@ -4,6 +4,8 @@
 // Phase 6 writes: load preset, block on/off, parameter value, rename, save.
 // They need the server's shared token (HELIX_TOKEN), asked for once and kept
 // in this browser.
+// Live updates: with the usb backend the server pushes the chain over a
+// WebSocket (/api/live) whenever the pedal changes, footswitches included.
 'use strict';
 
 const SLOTS = 9; // HX Effects block slots. Slot = chain position - 1 (position 1 is the input).
@@ -56,6 +58,7 @@ const state = {
   browser: { open: false, filter: '', selected: null },
   connOpen: false,
   writes: false, // server takes writes (/api/health .writes)
+  live: false, // server pushes device changes (/api/health .live)
   unsaved: false, // edits made through the bridge since the last load or save
   busy: null, // write in progress: short label, e.g. 'Saving…'
 };
@@ -120,7 +123,10 @@ async function doRefresh(full) {
   if (!state.blocked && state.device !== 'ok') state.device = 'checking';
   render();
   try {
-    state.writes = !!(await api('/api/health')).writes;
+    const health = await api('/api/health');
+    state.writes = !!health.writes;
+    state.live = !!health.live;
+    connectLive();
     state.server = 'ok';
     render();
 
@@ -183,6 +189,51 @@ function handleError(e) {
     if (state.device === 'checking') state.device = 'unknown';
   }
   if (state.blocked) retryTimer = setTimeout(refresh, RETRY_MS);
+}
+
+// ---------- Live updates ----------
+
+const LIVE_RETRY_MS = 3000;
+let liveSocket = null;
+let liveTimer = null;
+let liveWasOpen = false;
+
+function connectLive() {
+  if (!state.live || liveSocket) return;
+  clearTimeout(liveTimer);
+  const scheme = location.protocol === 'https:' ? 'wss' : 'ws';
+  let ws;
+  try { ws = new WebSocket(`${scheme}://${location.host}/api/live`); } catch { return; }
+  liveSocket = ws;
+  ws.onopen = () => {
+    // Changes made while the socket was down were missed: read once.
+    if (liveWasOpen) refresh({ full: false });
+    liveWasOpen = true;
+  };
+  ws.onmessage = (e) => {
+    let msg;
+    try { msg = JSON.parse(e.data); } catch { return; }
+    if (msg.type === 'chain') applyLiveChain(msg.chain);
+    else if (msg.type === 'device') {
+      if (msg.connected) refresh();
+      else handleError(new ApiError(503, 'no_device', 'The pedal disconnected.'));
+      render();
+    }
+  };
+  ws.onclose = () => {
+    if (liveSocket === ws) liveSocket = null;
+    // Safari closes sockets when the iPad sleeps; visibilitychange reconnects.
+    if (document.visibilityState === 'visible') liveTimer = setTimeout(connectLive, LIVE_RETRY_MS);
+  };
+}
+
+function applyLiveChain(chain) {
+  state.chain = chain;
+  state.unsaved = !!chain.unsaved;
+  state.device = 'ok';
+  keepSelection();
+  syncLoaded();
+  render();
 }
 
 // ---------- Writes ----------
@@ -721,7 +772,9 @@ document.addEventListener('keydown', (e) => {
 // Re-read when the iPad comes back to the page (screen lock, app switch).
 // No polling: each read is a USB session on the pedal.
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible' && Date.now() - lastRefresh > RETRY_MS) refresh({ full: false });
+  if (document.visibilityState !== 'visible') return;
+  if (Date.now() - lastRefresh > RETRY_MS) refresh({ full: false });
+  connectLive();
 });
 
 render();

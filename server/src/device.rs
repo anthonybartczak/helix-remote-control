@@ -10,7 +10,7 @@ use std::process::Stdio;
 use std::time::{Duration, Instant};
 
 use tokio::process::Command as Process;
-use tokio::sync::Mutex;
+use tokio::sync::{broadcast, Mutex};
 
 pub use crate::fake::FakeDevice;
 
@@ -161,6 +161,32 @@ pub trait Device: Send + Sync + 'static {
 
     /// Run one command and return its stdout.
     fn run(&self, cmd: Command) -> impl Future<Output = Result<String>> + Send;
+
+    /// Changes the device reports by itself (footswitches, knobs, our own
+    /// writes echoed back). `None` for a backend that cannot see them.
+    fn subscribe(&self) -> Option<broadcast::Receiver<Live>> {
+        None
+    }
+}
+
+/// Something that changed on the device without the client asking.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Live {
+    /// The loaded preset's chain, in `tonepush chain` format, after a change.
+    Chain { text: String, cause: Cause },
+    /// The device session came up (`true`) or was lost (`false`).
+    Connected(bool),
+}
+
+/// Why the chain changed, as far as the device's notifications say.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Cause {
+    /// Anything else: snapshot, an event never captured.
+    Other,
+    /// A parameter or bypass changed: the edit buffer now differs from storage.
+    Edit,
+    /// A preset was loaded: edits are gone.
+    Preset,
 }
 
 /// The real device, through the `tonepush` CLI.

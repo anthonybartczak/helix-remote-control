@@ -4,3 +4,4 @@ pub mod api;
 pub mod device;
 mod fake;
 pub mod parse;
+pub mod usb;
