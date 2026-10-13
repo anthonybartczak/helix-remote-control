@@ -11,7 +11,7 @@ use std::collections::{BTreeMap, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
-use hx_proto::frame::{ChannelHeader, MSG_DATA};
+use hx_proto::frame::{ChannelHeader, MSG_ACK, MSG_DATA};
 use hx_proto::msgpack::{Encoder, Value};
 use hx_proto::rpc::{key, op, Message, StreamReader};
 use hx_proto::{ChannelId, Frame};
@@ -50,6 +50,20 @@ pub struct Pedal {
     pub frames_in: usize,
     /// Every transfer received, data or not.
     pub transfers_in: usize,
+    /// Bytes the events channel may have unacknowledged before the pedal
+    /// stops sending on it. `None` sends without limit.
+    ///
+    /// An HX Effects (3.80) stopped after 195 ticks of 21 bytes - 4095 bytes -
+    /// whether or not keep-alives were going out, and HX Edit sends an ACK
+    /// frame for almost every notification it receives (PATCHES.md). This
+    /// models that: only ACK and data frames move the window.
+    pub events_window: Option<u32>,
+    /// Data bytes sent on the events channel, after the channel header.
+    events_sent: u32,
+    /// What the host has acknowledged of them through ACK or data frames.
+    events_acked: u32,
+    /// Notifications waiting for the window to open.
+    events_held: VecDeque<Vec<u8>>,
     inbox: BTreeMap<u16, StreamReader>,
     seq: BTreeMap<u16, u16>,
 }
@@ -70,6 +84,10 @@ impl Pedal {
             fail_next_send: None,
             frames_in: 0,
             transfers_in: 0,
+            events_window: None,
+            events_sent: 0,
+            events_acked: 0,
+            events_held: VecDeque::new(),
             inbox: BTreeMap::new(),
             seq: BTreeMap::new(),
         }))
@@ -106,6 +124,12 @@ impl Pedal {
         let Some((header, rest)) = ChannelHeader::decode(&frame.payload) else {
             return;
         };
+        if frame.dst == ChannelId::EVENTS.device
+            && (header.msg_type & MSG_ACK != 0 || header.has_data())
+        {
+            self.events_acked = header.ack.wrapping_sub(0x1000);
+            self.release_events();
+        }
         if !header.has_data() || rest.is_empty() {
             return;
         }
@@ -206,6 +230,34 @@ impl Pedal {
         }
     }
 
+    /// Send held notifications the window now has room for.
+    fn release_events(&mut self) {
+        while let Some(frame) = self.events_held.pop_front() {
+            if !self.events_fit(&frame) {
+                self.events_held.push_front(frame);
+                return;
+            }
+            self.send_event(frame);
+        }
+    }
+
+    /// Stream bytes in an encoded events frame: payload after the frame and
+    /// channel headers.
+    fn event_bytes(frame: &[u8]) -> u32 {
+        Frame::decode(frame).map_or(0, |f| (f.payload.len() - ChannelHeader::SIZE) as u32)
+    }
+
+    fn events_fit(&self, frame: &[u8]) -> bool {
+        self.events_window.is_none_or(|window| {
+            self.events_sent.wrapping_sub(self.events_acked) + Self::event_bytes(frame) <= window
+        })
+    }
+
+    fn send_event(&mut self, frame: Vec<u8>) {
+        self.events_sent = self.events_sent.wrapping_add(Self::event_bytes(&frame));
+        self.outbox.push_back(frame);
+    }
+
     /// Queue one message for the host, on the channel `node` names.
     fn reply(&mut self, node: u16, message: &Message) {
         let body = Encoder::encode(&message.to_value());
@@ -226,8 +278,14 @@ impl Pedal {
             .iter()
             .find(|channel| channel.device == node)
             .map_or(0, |channel| channel.host);
-        self.outbox
-            .push_back(Frame::new(host, node, payload).encode().unwrap());
+        let frame = Frame::new(host, node, payload).encode().unwrap();
+        if node != ChannelId::EVENTS.device {
+            self.outbox.push_back(frame);
+        } else if self.events_held.is_empty() && self.events_fit(&frame) {
+            self.send_event(frame);
+        } else {
+            self.events_held.push_back(frame);
+        }
     }
 }
 

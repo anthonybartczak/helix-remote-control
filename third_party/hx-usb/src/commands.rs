@@ -1263,8 +1263,23 @@ impl Session {
     }
 
     /// Any notifications the device has pushed since the last call.
+    ///
+    /// Acknowledges the events channel with an ACK frame whenever it has
+    /// unacknowledged bytes, as HX Edit does after almost every notification.
+    /// The device sends at most 4 KB of notifications unacknowledged and does
+    /// not count a keep-alive's acknowledgement; without this an HX Effects
+    /// went silent after 195 notifications until power-cycled (helix-bridge
+    /// PATCHES.md). No host transaction ever runs on the events channel, so
+    /// this cannot land mid-transaction.
     pub fn poll_notifications(&mut self) -> Result<Vec<(i64, Value)>> {
         self.read_available(Duration::from_millis(20))?;
+        let behind = self
+            .channels
+            .get(&ChannelId::EVENTS.device)
+            .is_some_and(|c| c.rx_bytes != c.acked);
+        if behind {
+            self.ack_channel(ChannelId::EVENTS)?;
+        }
         let mut out = Vec::new();
         for ch in self.channels.values_mut() {
             for sm in ch
@@ -1650,6 +1665,44 @@ mod validation_tests {
 mod pedal_tests {
     use super::*;
     use crate::fake::{self, Pedal};
+
+    /// The pedal's tick, `{82: 0, 68: 10, 121: 27, 106: nil}`: 21 bytes on
+    /// the events channel, about six a second on an idle HX Effects.
+    fn tick() -> Value {
+        hx_proto::msgmap! {
+            82 => Value::Int(0),
+            68 => Value::Int(10),
+            121 => Value::Int(27),
+            106 => Value::Nil,
+        }
+    }
+
+    /// `tonepush watch`'s loop, against a pedal that stops sending once 4 KB
+    /// of notifications go unacknowledged: every notification must arrive.
+    /// Without an ACK on the events channel this stopped at 195, as the HX
+    /// Effects did (PATCHES.md).
+    #[test]
+    fn watching_keeps_the_events_channel_flowing() {
+        let pedal = Pedal::new();
+        let mut session = fake::session(&pedal);
+        // Whatever the handshake left behind.
+        session.poll_notifications().unwrap();
+        pedal.lock().unwrap().events_window = Some(4096);
+        let mut seen = 0;
+        for round in 0..100 {
+            {
+                let mut pedal = pedal.lock().unwrap();
+                for _ in 0..6 {
+                    pedal.notify(22, tick());
+                }
+            }
+            for _ in 0..8 {
+                seen += session.poll_notifications().unwrap().len();
+            }
+            session.keepalive().unwrap();
+            assert_eq!(seen, 6 * (round + 1), "stalled after {seen} notifications");
+        }
+    }
 
     const SAMPLES: [f32; 4] = [0.5, -0.25, 0.125, 0.0];
 

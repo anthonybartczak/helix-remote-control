@@ -1078,7 +1078,11 @@ impl Session {
             }
             .encode_into(&mut payload);
             self.write(&Frame::new(id.device, id.host, payload))?;
-            self.mark_acknowledged(id);
+            // The device does not pace its events channel by a keep-alive's
+            // acknowledgement (PATCHES.md), so that channel stays owed an ACK.
+            if id != ChannelId::EVENTS {
+                self.mark_acknowledged(id);
+            }
         }
         Ok(())
     }

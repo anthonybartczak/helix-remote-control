@@ -39,9 +39,14 @@ pulled. Requests on the data channel keep working.
 | Bridge `usb`, keep-alive only (`ff00de7`, `7c986a0`) | ~190, then 0 |
 | Bridge `usb`, plus a `preset_info` request after each poll with data (`f5ec3d9`) | ~1300 in 90 s, then 0 |
 
-So it reproduces with TonePush alone. Likely the events channel's flow control: the
-keep-alive's header acknowledgement does not release it, a real ACK (sent by hx-usb
-before each request) delays the stall but does not prevent it. Not understood yet.
+So it reproduces with TonePush alone.
+
+**Cause (found in TonePush's own HX Edit captures):** the pedal sends at most 4 KB
+of notifications without an ACK frame (195 ticks × 21 bytes = 4095). HX Edit ACKs
+almost every notification; hx-usb only sends keep-alives, which do not count. Fixed
+in our patched copy of hx-usb: `third_party/hx-usb/PATCHES.md`. Verify on the pedal
+with `sudo systemctl stop helix-bridge && sudo /opt/helix-bridge/bin/helix-bridge
+watch 180` after a power cycle: the 10 s counts should stay above 0 for 3 minutes.
 
 Consequences: the `usb` backend's live updates are **experimental** and stop after a
 minute or two of pedal activity; once stalled, power-cycle the pedal. The `cli`

@@ -43,6 +43,8 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --locked --all-targets -- -D warnings
       - run: cargo test --locked
+      # Our patched TonePush hx-usb (third_party/hx-usb/PATCHES.md).
+      - run: cargo test --locked -p hx-usb
       - name: shellcheck deploy scripts
         working-directory: .
         run: shellcheck deploy/*.sh

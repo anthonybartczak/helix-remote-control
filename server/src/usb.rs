@@ -315,9 +315,6 @@ impl Worker {
             }
         }
         self.count(transfers, events.len());
-        if !events.is_empty() && !self.acknowledge() {
-            return;
-        }
         let mut patched = false;
         for (event, args) in &events {
             let Some(cause) = notice(*event, args) else {
@@ -337,42 +334,6 @@ impl Worker {
             let kept = session.keepalive();
             let _ = self.check(kept);
         }
-    }
-
-    /// Tell the pedal its notifications arrived, and catch a preset it
-    /// loaded by itself.
-    ///
-    /// The pedal stops sending once enough notification bytes go
-    /// unacknowledged; on the Pi it went silent after about 200 (debug log,
-    /// 2026-10-13). The keep-alive's acknowledgement did not release it.
-    /// hx-usb sends a real ACK on the events channel before every request
-    /// (`drain_pending`), so a cheap read-only request does it: `preset_info`,
-    /// the same question the session's liveness check asks. False if the
-    /// session was lost.
-    fn acknowledge(&mut self) -> bool {
-        let Some(session) = self.session.as_mut() else {
-            return false;
-        };
-        let asked = session.preset_info();
-        let info = match asked {
-            Ok(info) => Some(info),
-            // A pedal mid-load may refuse; the ACK went out regardless.
-            Err(hx_usb::Error::Device(_)) => None,
-            Err(e) => {
-                let _ = self.check::<()>(Err(e));
-                return false;
-            }
-        };
-        let switched = match (&info, self.doc.as_ref().and_then(|d| d.info.as_ref())) {
-            (Some((setlist, index, _)), Some((was_setlist, was_index, _))) => {
-                (setlist, index) != (was_setlist, was_index)
-            }
-            _ => false,
-        };
-        if switched {
-            self.want_reload(Cause::Preset);
-        }
-        true
     }
 
     fn count(&mut self, transfers: u32, events: usize) {
@@ -735,6 +696,45 @@ impl Worker {
             self.label(index)
         ))
     }
+}
+
+/// `helix-bridge watch [SECONDS]`: print every notification with a time
+/// stamp, and a count every 10 s, the way `tonepush watch` does but through
+/// the patched hx-usb (third_party/hx-usb/PATCHES.md). For checking on the
+/// pedal that notifications keep flowing. Stop the service first.
+pub fn watch(seconds: u64) -> std::result::Result<(), String> {
+    let found = hx_usb::list().map_err(|e| e.to_string())?;
+    let device = found.first().ok_or(NO_DEVICE)?;
+    let mut session = device.open().map_err(|e| e.to_string())?;
+    println!(
+        "watching {} for {seconds} s; ctrl-c to stop",
+        session.profile.name
+    );
+    let start = Instant::now();
+    let (mut window, mut count, mut total) = (Instant::now(), 0u32, 0u32);
+    while start.elapsed() < Duration::from_secs(seconds) {
+        for (event, args) in session.poll_notifications().map_err(|e| e.to_string())? {
+            count += 1;
+            total += 1;
+            if event != 22 || args.get(121).and_then(Value::as_i64) != Some(27) {
+                println!(
+                    "{:>6.1}s event {event}: {args:?}",
+                    start.elapsed().as_secs_f32()
+                );
+            }
+        }
+        if window.elapsed() >= STATS_EVERY {
+            println!(
+                "{:>6.1}s {count} notifications in the last 10 s",
+                start.elapsed().as_secs_f32()
+            );
+            (window, count) = (Instant::now(), 0);
+        }
+        thread::sleep(POLL);
+        session.keepalive().map_err(|e| e.to_string())?;
+    }
+    println!("total: {total} notifications in {seconds} s");
+    Ok(())
 }
 
 /// `list_devices`, HX part.
