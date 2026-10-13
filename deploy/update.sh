@@ -57,7 +57,14 @@ for tool in curl python3 sha256sum tar; do
 done
 
 info_field() { # BUILD_INFO key
-    [ -r "$PREFIX/BUILD_INFO" ] && sed -n "s/^$1=//p" "$PREFIX/BUILD_INFO" | tail -n 1 || true
+    if [ -r "$PREFIX/BUILD_INFO" ]; then
+        sed -n "s/^$1=//p" "$PREFIX/BUILD_INFO" | tail -n 1
+    fi
+}
+
+cached() { # cached bundles, newest first
+    find "$CACHE" -maxdepth 1 -name 'helix-bridge-*.tar.gz' -printf '%T@ %p\n' 2>/dev/null |
+        sort -rn | cut -d' ' -f2-
 }
 
 installed_version=$(info_field version)
@@ -74,7 +81,7 @@ install_bundle() { # path/to/helix-bridge-*.tar.gz
 
 if [ "$mode" = rollback ]; then
     # Newest first; the first one is what is installed now.
-    previous=$(ls -1t "$CACHE"/helix-bridge-*.tar.gz 2>/dev/null | sed -n 2p)
+    previous=$(cached | sed -n 2p)
     [ -n "$previous" ] || die "no previous bundle in $CACHE (it keeps the last $KEEP updates)"
     say "Rolling back to $(basename "$previous" .tar.gz)"
     touch "$previous"
@@ -126,7 +133,11 @@ say "Available: $(printf %.7s "$commit") on $BRANCH, built $built"
 say "           $title"
 
 if [ "$mode" = check ]; then
-    [ "$commit" = "$installed_commit" ] && say "Up to date." || say "Update available: sudo helix-bridge-update"
+    if [ "$commit" = "$installed_commit" ]; then
+        say "Up to date."
+    else
+        say "Update available: sudo helix-bridge-update"
+    fi
     exit 0
 fi
 if [ "$commit" = "$installed_commit" ] && [ "$force" -eq 0 ] && [ "$mode" = update ]; then
@@ -159,7 +170,7 @@ cp "$tarball" "$CACHE/"
 saved="$CACHE/$(basename "$tarball")"
 touch "$saved"
 # Keep the newest $KEEP for --rollback.
-ls -1t "$CACHE"/helix-bridge-*.tar.gz | sed -n "$((KEEP + 1)),\$p" | while IFS= read -r old; do
+cached | sed -n "$((KEEP + 1)),\$p" | while IFS= read -r old; do
     rm -f "$old"
 done
 
