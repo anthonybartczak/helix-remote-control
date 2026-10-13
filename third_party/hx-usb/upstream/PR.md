@@ -29,3 +29,7 @@ HX Edit does it differently. In `captures/mac-library-capture.log` the device se
 - Hardware, HX Effects 3.80 on a Raspberry Pi 4, power cycle before each run, pedal untouched, 3 minutes. Upstream `tonepush watch`: 195, then silence. The same hx-usb code with this change, run through a small client that does exactly what `watch` does (poll, sleep 700 ms, keep-alive): 1095 and 1096 in two runs, 64 to 66 every 10 s throughout. The `tonepush` binary itself was not rebuilt and run on the device with this change.
 - The same client with footswitches in use for 2 to 3 minutes: 131 to 188 notifications every 10 s, no gaps.
 - Not tested on an HX Stomp or any other device.
+- HX Edit's own captures in this repository (`mac-library-capture.log`, `02-ui-actions.log`) are from an HX Stomp (`0e41:4246`), and there HX Edit sends an ACK for almost every notification, so this change makes hx-usb send what the Stomp already receives from HX Edit. The keep-alive frames themselves are unchanged.
+- Raw logs from the HX Effects runs are attached: `watch-idle.txt` (upstream `tonepush watch`, 195 then silence) and `ab-patched.txt` (patched, 1095).
+
+I only have an HX Effects. Could you run this against your HX Stomp (`cargo test -p hx-usb --test device -- --ignored`) before merging?
