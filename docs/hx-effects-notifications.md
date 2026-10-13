@@ -26,7 +26,7 @@ other line is as printed.
 | 49 | (0, 5, 17) | `{98: block, 59: enabled}` | Bypass changed. `98` is the slot index (`chain` position − 1) |
 | 39 | (1, 3, 19) | `{98: block, 26: path}` | Selected block changed. Nothing visible |
 
-## Known problem: notifications stop after ~200 (open)
+## Notifications stopped after ~200 (fixed in our hx-usb patch)
 
 On the HX Effects 3.80 the pedal stops sending notifications on the events channel
 after about 200 of them, and stays silent across new sessions until its power is
@@ -35,6 +35,7 @@ pulled. Requests on the data channel keep working.
 | Test (2026-10-13, Pi 4) | Notifications before silence |
 |---|---|
 | `tonepush watch` alone, right after a power cycle, **pedal untouched**, 3 min | 195 in ~35 s (14, 62, 59, 61 per 10 s), then 0 for the rest |
+| **`helix-bridge watch 180` with patched hx-usb**, same conditions | **1096**: 64–66 every 10 s for the full 3 min. Fixed |
 | `tonepush watch` alone, footswitches pressed for 3 min | ~190 in 40 s, then 0; 4 of many presses arrived |
 | Bridge `usb`, keep-alive only (`ff00de7`, `7c986a0`) | ~190, then 0 |
 | Bridge `usb`, plus a `preset_info` request after each poll with data (`f5ec3d9`) | ~1300 in 90 s, then 0 |

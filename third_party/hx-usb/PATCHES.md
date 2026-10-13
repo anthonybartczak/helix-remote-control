@@ -39,4 +39,6 @@ frames move it). `commands::pedal_tests::watching_keeps_the_events_channel_flowi
 runs `tonepush watch`'s loop for 600 notifications: unpatched it stops at exactly
 195, patched all arrive. Upstream's unit and replay tests still pass.
 
-**On hardware:** pending (`helix-bridge watch 180`, docs/hx-effects-notifications.md).
+**On hardware: verified** 2026-10-13, HX Effects 3.80, Pi 4. After a power cycle,
+pedal untouched, `helix-bridge watch 180`: 53, then 64–66 notifications every 10 s
+for the full 3 minutes, 1096 in total (unpatched: 195, then silence).
