@@ -20,6 +20,15 @@ mkdir -p "$dir/bin" "$dir/deploy" "$dir/licenses"
 install -m 755 "$bridge_bin" "$dir/bin/helix-bridge"
 install -m 755 "$tonepush_bin" "$dir/bin/tonepush"
 install -m 755 "$repo/deploy/install.sh" "$dir/install.sh"
+install -m 755 "$repo/deploy/update.sh" "$dir/deploy/update.sh"
+# What this bundle is, for helix-bridge-update. GITHUB_* are set in Actions.
+{
+    echo "version=$version"
+    echo "commit=${GITHUB_SHA:-$(git -C "$repo" rev-parse HEAD 2>/dev/null || echo unknown)}"
+    if [ "${GITHUB_REF_TYPE:-branch}" = branch ]; then
+        echo "ref=${GITHUB_REF_NAME:-$(git -C "$repo" rev-parse --abbrev-ref HEAD 2>/dev/null)}"
+    fi
+} > "$dir/BUILD_INFO"
 for f in helix-bridge.service helix-bridge.env 70-helix-bridge.rules avahi-helix-bridge.service; do
     install -m 644 "$repo/deploy/$f" "$dir/deploy/$f"
 done

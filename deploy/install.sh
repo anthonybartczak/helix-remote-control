@@ -48,7 +48,8 @@ if [ "$uninstall" -eq 1 ]; then
     systemctl daemon-reload
     udevadm control --reload-rules || true
     systemctl reload avahi-daemon 2>/dev/null || true
-    rm -rf "${PREFIX:?}/bin" "${PREFIX:?}/fixtures" "${PREFIX:?}/licenses"
+    rm -rf "${PREFIX:?}/bin" "${PREFIX:?}/fixtures" "${PREFIX:?}/licenses" "${PREFIX:?}/BUILD_INFO"
+    rm -f /usr/local/sbin/helix-bridge-update
     say "Removed. Kept: $CONF_DIR, $PREFIX/vendor, /var/lib/helix-bridge, user $SVC_USER"
     exit 0
 fi
@@ -85,6 +86,12 @@ if [ -d "$here/fixtures" ]; then
 fi
 if [ -d "$here/licenses" ]; then
     cp -R "$here/licenses" "$PREFIX/licenses"
+fi
+if [ -e "$here/BUILD_INFO" ]; then
+    install -m 644 "$here/BUILD_INFO" "$PREFIX/BUILD_INFO"
+fi
+if [ -e "$here/deploy/update.sh" ]; then
+    install -m 755 "$here/deploy/update.sh" /usr/local/sbin/helix-bridge-update
 fi
 
 # 3. Settings: installed once, never overwritten.

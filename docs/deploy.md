@@ -87,7 +87,39 @@ Total time: about 45 minutes, most of it flashing the SD card and the first boot
 
 ## Updating
 
-Repeat steps 2–4 with the new tarball. Settings and `vendor/` are kept.
+One command on the Pi, once set up: `sudo helix-bridge-update`. It takes the newest
+**green** build of your branch from GitHub Actions, checks its SHA-256, runs
+`install.sh` (settings and `vendor/` are kept) and restarts the service.
+
+| Command | Does |
+|---|---|
+| `sudo helix-bridge-update --check` | Show installed vs newest build, change nothing |
+| `sudo helix-bridge-update` | Install the newest build if it is newer |
+| `sudo helix-bridge-update --rollback` | Reinstall the previous bundle (last 3 kept in `/var/cache/helix-bridge-update`) |
+| `sudo helix-bridge-update --branch NAME` | Follow another branch from now on |
+| `sudo helix-bridge-update --force` | Reinstall even if current |
+
+Builds are kept by GitHub for 90 days; older ones cannot be downloaded.
+
+### One-time setup (about 10 minutes)
+
+1. **Install a bundle that has the updater** (one that contains `deploy/update.sh`), the manual
+   way: steps 2–4 above. It installs `/usr/local/sbin/helix-bridge-update`.
+2. **Make a read-only GitHub token.** github.com → Settings → Developer settings →
+   Personal access tokens → **Fine-grained tokens** → Generate new token:
+   - Repository access: **Only select repositories** → `helix-remote-control`
+   - Permissions → Repository → **Actions: Read-only** (Metadata read-only is added
+     automatically). Nothing else.
+   - Expiration: your choice; the updater says when it has expired.
+3. **Store it on the Pi** (never in git, AGENTS.md 6):
+   ```sh
+   sudo sh -c 'umask 077; cat > /etc/helix-bridge/github-token'
+   ```
+   Paste the token, press Enter, then Ctrl+D.
+4. **Check:** `sudo helix-bridge-update --check`. It names the installed build and the
+   newest one. The branch comes from the installed build; change it with `--branch`.
+
+Manual way still works: repeat steps 2–4 with the new tarball.
 
 ## Running `tonepush` by hand on the Pi
 
@@ -109,6 +141,7 @@ HX_EDIT_RESOURCES=/opt/helix-bridge/vendor/res /opt/helix-bridge/bin/tonepush in
 | No model names, `FX` everywhere | `vendor/res` missing, wrong folder, or unreadable. `ls -ld /opt/helix-bridge/vendor/res` must show `drwxr-xr-x`; fix with `sudo chmod -R a+rX /opt/helix-bridge/vendor/res`, or re-run `install.sh` |
 | Service does not start | `journalctl -u helix-bridge -n 50` |
 | `usb` backend: "cannot open the pedal" in the log | HX Edit or a hand-run `tonepush` holds the interface. Close it; the server retries by itself (5 s, backing off to 60 s) |
+| `helix-bridge-update`: "GitHub API request failed" | Token expired, mistyped, or lacks Actions: read. Make a new one (Updating, step 2) |
 | Write buttons dashed, "Writes are off" | No `HELIX_TOKEN` in the settings file. See step 9 |
 | iPad keeps asking for the token | Token typed wrong, or changed on the Pi. Re-type it; the UI asks again after each refusal |
 

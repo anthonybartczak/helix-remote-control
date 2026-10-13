@@ -131,7 +131,8 @@ also creates a GitHub release with the tarball.
 
 Install steps, paths and troubleshooting: [docs/deploy.md](docs/deploy.md). In short:
 copy the tarball to the Pi, unpack, `sudo ./install.sh --hostname helix-bridge`, open
-`http://helix-bridge.local`.
+`http://helix-bridge.local`. Later updates: `sudo helix-bridge-update` on the Pi
+(`deploy/update.sh`; needs a read-only GitHub token, see docs/deploy.md "Updating").
 
 Build the bundle locally (Linux or WSL, needs `zig` and `cargo-zigbuild`):
 
