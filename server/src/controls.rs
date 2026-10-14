@@ -17,8 +17,10 @@ use serde::Serialize;
 const MAX_STEPS: f32 = 150.0;
 /// Positions on a logarithmic grid (frequencies, times spanning decades).
 const LOG_STEPS: u32 = 200;
-/// A range whose ends are at least this far apart (as a ratio) is logarithmic.
-const LOG_RATIO: f32 = 100.0;
+/// A range whose ends are at least this far apart (as a ratio) is logarithmic:
+/// frequencies (Damping 500 Hz..20 kHz, Low Cut 20 Hz..1 kHz) and decay times.
+/// Linear steps there were 200 Hz wide at the low end (Pi, 2026-10-14).
+const LOG_RATIO: f32 = 20.0;
 /// Longest menu sent; longer ones fall back to typing.
 const MAX_MENU: f32 = 256.0;
 
@@ -144,12 +146,30 @@ pub fn describe(
         Some((scale, steps)) => (kind, scale, steps),
         None => (Kind::Text, Scale::Linear, 0),
     };
-    let labels = match kind {
+    let mut labels: Vec<String> = match kind {
         Kind::Text => Vec::new(),
         _ => (0..=steps)
             .map(|i| format(native_at(scale, steps, min, max, i)))
             .collect(),
     };
+    let (mut min, mut max, mut steps) = (min, max, steps);
+    if kind == Kind::Menu {
+        // HX Edit's range can run past its list of names: 70s Chorus Note
+        // Sync is 1..=19 with names for 1..=18, so 19 printed as a bare
+        // number. Leave unnamed values off the ends of a menu of names.
+        let unnamed = |l: &String| l.trim().parse::<f32>().is_ok();
+        if labels.iter().any(|l| !unnamed(l)) {
+            while labels.last().is_some_and(unnamed) {
+                labels.pop();
+                max -= 1.0;
+            }
+            while labels.first().is_some_and(unnamed) {
+                labels.remove(0);
+                min += 1.0;
+            }
+            steps = labels.len() as u32 - 1;
+        }
+    }
     ParamInfo {
         index,
         name: name.to_owned(),
@@ -227,11 +247,21 @@ mod tests {
             grid(Kind::Continuous, -24.0, 24.0),
             Some((Scale::Linear, 96))
         );
-        // Frequencies span decades.
-        assert_eq!(
-            grid(Kind::Continuous, 20.0, 20000.0),
-            Some((Scale::Log, 200))
-        );
+        // Frequencies and decay times span decades.
+        for (min, max) in [
+            (20.0, 20000.0),
+            (500.0, 20000.0),
+            (19.9, 1000.0),
+            (0.1, 3.0),
+        ] {
+            assert_eq!(
+                grid(Kind::Continuous, min, max),
+                Some((Scale::Log, 200)),
+                "{min}..{max}"
+            );
+        }
+        // A predelay from 0 cannot be logarithmic.
+        assert_eq!(grid(Kind::Continuous, 0.0, 0.1), Some((Scale::Linear, 100)));
         assert_eq!(grid(Kind::Menu, 0.0, 11.0), Some((Scale::Linear, 11)));
         assert_eq!(grid(Kind::Switch, 0.0, 1.0), Some((Scale::Linear, 1)));
         for (kind, min, max) in [
@@ -275,6 +305,19 @@ mod tests {
             format!("{v:+}")
         });
         assert_eq!(interval.labels, ["-2", "-1", "+0", "+1", "+2"]);
+
+        // Unnamed values at the ends of a named menu are left off (Note
+        // Sync: 1..=19, names for 1..=18); all-number menus stay whole.
+        let names = ["", "1/2 Dotted", "1/2", "1/64 Triplet"];
+        let sync = describe(0, "Note Sync", Kind::Menu, 0.0, 4.0, 1.0, &|v| {
+            names
+                .get(v as usize)
+                .filter(|n| !n.is_empty())
+                .map_or_else(|| format!("{v}"), |n| n.to_string())
+        });
+        assert_eq!(sync.labels, ["1/2 Dotted", "1/2", "1/64 Triplet"]);
+        assert_eq!((sync.min, sync.max, sync.steps), (1.0, 3.0, 2));
+        assert_eq!(interval.labels.len(), 5);
 
         let toggle = describe(1, "Type", Kind::Switch, 0.0, 1.0, 0.0, &|v| {
             if v >= 0.5 { "Limit" } else { "Compress" }.to_owned()

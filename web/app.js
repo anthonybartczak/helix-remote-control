@@ -389,7 +389,10 @@ function controlOf(b, p) {
   const m = state.models.get(b.model_id);
   if (!m || m === MODEL_PENDING || typeof p.native !== 'number') return null;
   const c = m.params.find((x) => x.index === p.index);
-  return c && c.kind !== 'text' && c.labels.length === c.steps + 1 ? c : null;
+  if (!c || c.kind === 'text' || c.labels.length !== c.steps + 1) return null;
+  // A menu value without a name (left off the list) is typed, not shown as its neighbour.
+  if (c.kind === 'menu' && (p.native < c.min - 0.5 || p.native > c.max + 0.5)) return null;
+  return c;
 }
 
 /** Native value at grid position i; the server has the same formula (controls.rs). */

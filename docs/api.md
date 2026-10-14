@@ -112,10 +112,11 @@ and keep it: it never changes while the server runs.
 - `kind`: `continuous` (slider), `menu` (picker), `switch` (toggle) or `text` (no control,
   type the value).
 - Grid position `i` (0..=`steps`) is the native value `min + i/steps·(max−min)`, or
-  `min·(max/min)^(i/steps)` when `scale` is `log` (ranges spanning 100× or more, such as
-  frequencies). `labels[i]` is what HX Edit shows there, so a UI can show the value under
-  the finger without a request. Menus: `labels[i]` is the value `min + i`. Switches:
-  `labels` is `[off, on]`.
+  `min·(max/min)^(i/steps)` when `scale` is `log` (ranges spanning 20× or more: frequencies,
+  decay times). `labels[i]` is what HX Edit shows there, so a UI can show the value under
+  the finger without a request. Menus: `labels[i]` is the value `min + i`; values HX Edit
+  has no name for are left off the ends (`min`/`max` narrowed; 70s Chorus Note Sync
+  1..19 has names for 1..18). Switches: `labels` is `[off, on]`.
 - Steps: 0.01 on a 0..1 knob, 1 dB on −120..+12 dB, 200 log steps; at most about 150 linear
   steps. Values between grid positions stay reachable by typing.
 - `synthetic: true` marks the fake backend's made-up ranges (`server/src/fake.rs`,
