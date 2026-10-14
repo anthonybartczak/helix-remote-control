@@ -42,6 +42,12 @@ const STATS_EVERY: Duration = Duration::from_secs(10);
 const SETTLE: Duration = Duration::from_millis(250);
 /// Re-read at the latest this long after the first notification of a burst.
 const SETTLE_MAX: Duration = Duration::from_secs(1);
+/// After an open whose events channel did not answer, open again this much
+/// later. The HX Effects keeps sending to a closed session for up to ~4 KB of
+/// notifications: about 30 s of idle ticks, 15 s with footswitches in use.
+const REOPEN_DEAF: Duration = Duration::from_secs(40);
+/// Give up reopening for live updates after this many deaf opens in a row.
+const DEAF_RETRIES: u32 = 3;
 /// With no session, look for the pedal this often (only USB enumeration).
 const RECONNECT: Duration = Duration::from_secs(5);
 /// After a failed open of a pedal that is present, wait longer each time, up
@@ -186,6 +192,12 @@ struct Worker {
     reload_retries: u32,
     /// When the last slider write went out, for [`PARAM_GAP`].
     last_param_write: Option<Instant>,
+    /// The session's events channel did not answer: open it again then.
+    reopen: Option<Instant>,
+    /// Opens in a row whose events channel did not answer.
+    deaf_opens: u32,
+    /// `Session::events_skipped` when last looked at.
+    skipped: u64,
 }
 
 struct Doc {
@@ -222,6 +234,9 @@ impl Worker {
             stats: (Instant::now(), 0, 0, 0),
             reload_retries: 0,
             last_param_write: None,
+            reopen: None,
+            deaf_opens: 0,
+            skipped: 0,
         }
     }
 
@@ -263,7 +278,9 @@ impl Worker {
 
     fn next_wake(&self) -> Instant {
         let poll = match self.session {
-            Some(_) => self.last_poll + POLL,
+            Some(_) => self
+                .reopen
+                .map_or(self.last_poll + POLL, |t| t.min(self.last_poll + POLL)),
             None => self
                 .last_connect
                 .map_or(Instant::now(), |t| t + self.reconnect_delay()),
@@ -285,6 +302,13 @@ impl Worker {
                 // Quietly: a missing pedal is the normal state until plugged in.
                 let _ = self.connect();
             }
+            return;
+        }
+        if self.reopen.is_some_and(|t| now >= t) {
+            self.reopen = None;
+            tracing::info!("opening the USB session again for live updates");
+            self.close();
+            let _ = self.connect();
             return;
         }
         if now >= self.last_poll + POLL {
@@ -320,12 +344,48 @@ impl Worker {
             })?;
             self.open_failures = 0;
             tracing::info!(device = session.profile.name, "USB session open");
+            self.check_events(&session);
+            self.skipped = session.events_skipped();
             self.session = Some(session);
             self.last_poll = Instant::now();
             self.shown = None;
             let _ = self.live.send(Live::Connected(true));
         }
         Ok(self.session.as_mut().expect("just opened"))
+    }
+
+    /// A session whose events channel did not answer works, but no live
+    /// update reaches it. The HX Effects does that when a session opens while
+    /// it is still sending notifications to the previous one, which it keeps
+    /// doing for up to half a minute after that session ends (PATCHES.md 2).
+    /// Keep this session for requests and open again once it has gone quiet.
+    fn check_events(&mut self, session: &Session) {
+        self.reopen = None;
+        if session.events_answered() {
+            self.deaf_opens = 0;
+            return;
+        }
+        self.deaf_opens += 1;
+        if self.deaf_opens > DEAF_RETRIES {
+            tracing::warn!(
+                "the pedal's events channel still does not answer after {DEAF_RETRIES} reopens; \
+                 live updates are off until the service restarts"
+            );
+            return;
+        }
+        tracing::warn!(
+            "the pedal's events channel did not answer, so live updates will not arrive; \
+             opening again in {} s, once it stops sending to the previous session",
+            REOPEN_DEAF.as_secs()
+        );
+        self.reopen = Some(Instant::now() + REOPEN_DEAF);
+    }
+
+    /// End the session on purpose, keeping nothing that belonged to it.
+    fn close(&mut self) {
+        self.session = None;
+        self.reload = None;
+        self.doc = None;
     }
 
     /// Drop a session after an error that leaves its state unknown.
@@ -364,6 +424,16 @@ impl Worker {
             }
         }
         self.count(transfers, events.len());
+        if let Some(session) = self.session.as_ref() {
+            let skipped = session.events_skipped();
+            if skipped > self.skipped {
+                tracing::warn!(
+                    bytes = skipped - self.skipped,
+                    "the pedal sent an events frame out of order; one notification lost"
+                );
+                self.skipped = skipped;
+            }
+        }
         let mut patched = false;
         for (event, args) in &events {
             let Some(cause) = notice(*event, args) else {
@@ -848,6 +918,13 @@ pub fn watch(seconds: u64) -> std::result::Result<(), String> {
         "watching {} for {seconds} s; ctrl-c to stop",
         session.profile.name
     );
+    if !session.events_answered() {
+        println!(
+            "warning: the events channel did not answer its handshake, so no notification \
+             will arrive; wait 40 s for the pedal to stop sending to the previous session, \
+             then run this again"
+        );
+    }
     let start = Instant::now();
     let (mut window, mut count, mut total) = (Instant::now(), 0u32, 0u32);
     while start.elapsed() < Duration::from_secs(seconds) {
@@ -872,6 +949,10 @@ pub fn watch(seconds: u64) -> std::result::Result<(), String> {
         session.keepalive().map_err(|e| e.to_string())?;
     }
     println!("total: {total} notifications in {seconds} s");
+    let skipped = session.events_skipped();
+    if skipped > 0 {
+        println!("skipped {skipped} bytes of events sent out of order");
+    }
     Ok(())
 }
 

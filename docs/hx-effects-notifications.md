@@ -73,6 +73,29 @@ Fixed upstream: https://github.com/crmne/tonepush/pull/25, merged 2026-10-14 (`7
 > notifications before the same silence. Is there an acknowledgement on the events
 > channel (0x1002) that `keepalive` does not provide?
 
+## Live updates stop after a restart or a lost session (2026-10-14)
+
+Symptom: the server logs `notifications=0` every 10 s while `helix-bridge watch`
+gets ~60. Not the poll loop: `HX_DEBUG=1` captures of both show two device
+faults (details and fix: `third_party/hx-usb/PATCHES.md` section 2).
+
+1. **Out-of-order frame.** One events frame carried a tick with its first 4 bytes
+   moved behind its body. The stream reader lost step, and the session ended with
+   "stream message declares 1779853698 bytes". HX Edit's own HX Stomp capture has
+   the same frame. Fixed: the events stream re-aligns and loses one notification.
+2. **Deaf events channel.** After any session ends, the pedal keeps sending
+   notifications into it for 15-30 s. A session opened in that window (a service
+   restart, or the server reconnecting 4 s after a lost session) may get no
+   answer to its events handshake and then no notification at all. Fixed: the
+   server notices, keeps the session for requests and reopens 40 s later.
+
+Checked and ruled out the same evening: no USB errors in `dmesg`, `vcgencmd
+get_throttled` = `0x0`, USB autosuspend off for the pedal (`power/control=on`),
+no package changes.
+
+For a clean manual test, wait 40 s after stopping the service (or another
+`watch`) before starting the next session.
+
 ## Not recorded yet
 
 Knob turn (expected event 30), preset switch (8 then 4), snapshot switch (42/46). The
