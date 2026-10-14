@@ -33,7 +33,7 @@ jobs:
       run:
         working-directory: server
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -57,8 +57,8 @@ jobs:
   pi-bundle:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
+      - uses: actions/checkout@v5
         with:
           repository: crmne/tonepush
           ref: ${{ env.TONEPUSH_TAG }}
@@ -82,7 +82,7 @@ jobs:
       # build tools: cache it under exactly those (saves 1.5 min a build).
       - name: Restore tonepush
         id: tonepush-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: tonepush/target/${{ env.TARGET }}/release/tonepush
           key: tonepush-${{ env.TONEPUSH_COMMIT }}-${{ env.TARGET }}.${{ env.GLIBC }}-zig${{ env.ZIG_VERSION }}-zigbuild${{ env.ZIGBUILD_VERSION }}
@@ -105,7 +105,7 @@ jobs:
             "tonepush/target/$TARGET/release/tonepush" \
             tonepush dist
           ls -l dist
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: pi-bundle
           path: dist/*
@@ -118,7 +118,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v5
         with:
           name: pi-bundle
           path: dist
