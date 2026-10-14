@@ -37,13 +37,13 @@ and `docs/_reference/opcodes.md`. Bridge side: `docs/api.md`, `web/app.js`,
 | Live sync of front-panel changes | CLI `watch`, GUI | have (patched hx-usb) | confirmed | R | low | – |
 | **Parameter metadata** (kind, min, max, default, menu choices) | GUI knobs, menus, switches (`pane.rs`) | missing | catalog data, device-independent | R | none (catalog only) | 2 h |
 | **Set parameter by native value** (slider, op30 via `Kind::wire`) | GUI dial drag | missing | op30 confirmed; menus need Int (#7, fixed 0.7.0) | W | low; device wedges if hammered | 3 h with rate limit |
-| **Snapshot switch** (op88 `{92: n}`) | CLI `snapshot`, GUI snapshot bar | missing | unverified | W (edit buffer) | low: one opcode, out-of-range answers -46 | 2 h |
-| **Active snapshot shown** (doc `10.6`, events 42/46) | GUI | partial: names only, none lit | unverified (events 42/46 not yet recorded, `hx-effects-notifications.md`) | R | none | 1 h |
+| **Snapshot switch** (op88 `{92: n}`) | CLI `snapshot`, GUI snapshot bar | have (2026-10-14, not yet on hardware) | unverified | W (edit buffer) | low: one opcode, out-of-range answers -46 | 2 h |
+| **Active snapshot shown** (doc `10.6`, events 42/46) | GUI | have with `usb` (2026-10-14, not yet on hardware) | unverified (events 42/46 not yet recorded, `hx-effects-notifications.md`) | R | none | 1 h |
 | Snapshot rename | CLI `snapshot-name`, GUI | missing | unverified | W | doc write | 2 h |
 | Copy snapshot over another | CLI `copy-snapshot`, GUI matrix | missing | unverified | W | doc write | 3 h |
 | Snapshot matrix (what each snapshot turns on) | GUI (`snapshot_details`) | missing | unverified (4 snapshots in fixture) | R | none | 3 h |
-| **Tempo set** (doc `5.16`, 40–240 BPM) | CLI `tempo`, GUI | partial: shown, read-only | unverified | W | doc write | 2 h |
-| **Tap tempo** (client side: last 5 taps, reset after 2 s) | GUI (`shell.rs` `tap`) | missing | n/a (sends a tempo write) | W | doc write per tap burst; send once taps settle | 1 h after tempo set |
+| **Tempo set** (doc `5.16`, 40–240 BPM) | CLI `tempo`, GUI | have (2026-10-14, not yet on hardware) | unverified | W | doc write | 2 h |
+| **Tap tempo** (client side: last 5 taps, reset after 2 s) | GUI (`shell.rs` `tap`) | have (2026-10-14) | n/a (sends a tempo write) | W | doc write per tap burst; send once taps settle | 1 h after tempo set |
 | Tempo under external MIDI clock (op99) | GUI shows `[External]` | missing | unverified | R | low | 1 h |
 | **Model categories, colours, short names, artwork** | GUI board tiles (`Catalog::category`, `artwork`) | partial: category guessed from model name (`app.js` `CATEGORY_RULES`) | catalog data | R | none; artwork is Line 6 data, serve from `/vendor` only | 3 h |
 | Topology: parallel paths, split/join, lanes | CLI `topology`, GUI board | missing (fixture recorded) | confirmed read (`fixtures/topology.txt`) | R | none | 1 evening |

@@ -8,6 +8,8 @@
 // iPad landscape and portrait sizes, and checks: controls are >= 44 px tall,
 // at most one write is in flight, writes start >= 75 ms apart, the slider
 // never jumps back under the finger, and the server ends on the value shown.
+// Also: a snapshot tap lights it and the server agrees; four TAPs 400 ms
+// apart send one tempo write of about 150 BPM.
 // SHOTS=dir saves screenshots.
 import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
@@ -38,9 +40,10 @@ async function waitForServer() {
 
 /** Watch slider writes: start times and the most in flight at once. */
 function watchWrites(page) {
-  const w = { starts: [], bodies: [], inflight: 0, maxInflight: 0 };
+  const w = { starts: [], bodies: [], urls: [], inflight: 0, maxInflight: 0 };
   const isWrite = (r) => r.method() === 'POST' && /\/api\/blocks\/\d+\/params\/\d+$/.test(r.url());
   page.on('request', (r) => {
+    if (r.method() === 'POST') w.urls.push(r.url());
     if (!isWrite(r)) return;
     w.starts.push(Date.now());
     w.bodies.push(JSON.parse(r.postData()));
@@ -56,6 +59,17 @@ function watchWrites(page) {
 async function settle(w) {
   for (let i = 0; i < 100 && w.inflight > 0; i++) await sleep(50);
   await sleep(400);
+}
+
+async function chainJson() {
+  return (await fetch(`${base}/api/chain`)).json();
+}
+
+async function waitFor(check, message, ms = 5000) {
+  for (const end = Date.now() + ms; Date.now() < end; await sleep(100)) {
+    if (await check()) return;
+  }
+  throw new Error(message);
 }
 
 async function chainParam(position, index) {
@@ -135,7 +149,34 @@ async function run(browser, name, viewport) {
   assert.equal((await chainParam(5, 3)).value, before === 'true' ? 'Off' : 'On');
   if (process.env.SHOTS) await page.screenshot({ path: path.join(process.env.SHOTS, `${name}-switch.png`) });
 
-  console.log(`ok ${name}: ${w.starts.length} writes for ${seen.length} move steps, max 1 in flight`);
+  // Snapshots: one not active yet lights up and the server agrees.
+  const target = (((await chainJson()).snapshot ?? 0) + 1) % 4;
+  const snap = page.locator(`[data-snapshot="${target}"]:visible`);
+  assert.ok((await snap.boundingBox()).height >= 44, `${name}: snapshot button too small`);
+  await snap.click();
+  await waitFor(async () => (await chainJson()).snapshot === target, `${name}: snapshot ${target + 1} not active`);
+  await waitFor(async () => (await snap.getAttribute('aria-pressed')) === 'true', `${name}: snapshot ${target + 1} not lit`);
+
+  // Tap tempo: four taps 400 ms apart are 150 BPM; one write once they pause.
+  const tapBtn = page.locator('#tap-btn');
+  const tapBox = await tapBtn.boundingBox();
+  assert.ok(tapBox.height >= 44, `${name}: TAP ${tapBox.height}px tall`);
+  const tempoWrites = () => w.urls.filter((u) => u.endsWith('/api/tempo')).length;
+  const tempoBefore = tempoWrites();
+  for (let i = 0; i < 4; i++) {
+    await page.mouse.move(tapBox.x + tapBox.width / 2, tapBox.y + tapBox.height / 2);
+    await page.mouse.down();
+    await page.mouse.up();
+    if (i < 3) await sleep(400);
+  }
+  await waitFor(async () => tempoWrites() > tempoBefore, `${name}: no tempo write`);
+  await settle(w);
+  assert.equal(tempoWrites() - tempoBefore, 1, `${name}: one tempo write per tap series`);
+  const tempo = (await chainJson()).tempo;
+  assert.ok(tempo >= 140 && tempo <= 160, `${name}: tapped ${tempo} BPM, expected about 150`);
+  assert.equal(Number(await page.locator('#tempo').textContent()), tempo);
+
+  console.log(`ok ${name}: ${w.starts.length} writes for ${seen.length} move steps, max 1 in flight; snapshot ${target + 1}; tapped ${tempo} BPM`);
   await context.close();
 }
 

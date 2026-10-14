@@ -444,3 +444,17 @@ button.tile:disabled { opacity: .6; }
 }
 .switch[aria-pressed="true"] .switch-knob { background: var(--c); }
 .switch[aria-pressed="true"] .switch-knob::after { left: 19px; }
+
+/* ---------- Snapshots and tempo ---------- */
+
+button.snap:not(:disabled):active { background: var(--surface-2); }
+button.snap:disabled { opacity: .6; }
+.snap.active { background: var(--ink); color: var(--bg); }
+.snap.active .snap-name { opacity: 1; }
+.tempo-readout:disabled { cursor: default; }
+.tempo-readout:not(:disabled):active { background: var(--surface-2); }
+.tempo-readout.pending .tempo-bpm { color: var(--warn); }
+.tap { display: grid; place-items: center; }
+.tap.flash { animation: tap-flash .15s ease-out; }
+@keyframes tap-flash { from { background: var(--ink); color: var(--bg); } to { background: none; } }
+@media (prefers-reduced-motion: reduce) { .tap.flash { animation: none; } }

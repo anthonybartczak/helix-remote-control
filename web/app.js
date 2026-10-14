@@ -6,6 +6,9 @@
 // in this browser.
 // Live updates: with the usb backend the server pushes the chain over a
 // WebSocket (/api/live) whenever the pedal changes, footswitches included.
+// Snapshots: tap one to switch (the active one is lit when the server reads
+// the preset document: usb, fake). Tempo: TAP sets it from your taps, tapping
+// the BPM types it; one write once the taps pause.
 // Parameter controls: with HX Edit data on the server, continuous parameters
 // are sliders, menus pickers and switches toggles (/api/models/{id}); writes
 // go out by native value through LatestSender (latest.js), at most one in
@@ -67,6 +70,7 @@ const state = {
   busy: null, // write in progress: short label, e.g. 'Saving…'
   models: new Map(), // model_id -> /api/models/{id} | MODEL_PENDING | null (no data: type values)
   drag: null, // slider under a finger: { key, el, pointer, x0, i0, i, started, ctx }
+  tempoPending: null, // BPM tapped or typed, not yet confirmed by the server
 };
 
 // ---------- API ----------
@@ -456,19 +460,7 @@ const sender = new LatestSender(
     onError(key, v, e) {
       sender.cancel(key);
       pins.delete(key);
-      const err = e instanceof ApiError ? e : new ApiError(0, 'client', String(e));
-      if (err.code === 'unauthorized') {
-        sessionToken = '';
-        storeToken('');
-        state.banner = { message: 'Token not accepted.', context: 'Touch the control again to enter it.' };
-      } else if (err.code === 'unreachable' || err.code === 'no_device') {
-        handleError(err);
-      } else {
-        if (err.code === 'writes_disabled') state.writes = false;
-        state.banner = { message: err.message, context: 'Value not set.' };
-        if (err.code === 'stale') refresh({ full: false });
-      }
-      if (!state.drag) render(); else renderBanner();
+      controlError(e, 'Value not set.');
     },
     onIdle(key) {
       const pin = pins.get(key);
@@ -478,6 +470,23 @@ const sender = new LatestSender(
     },
   },
 );
+
+/** Show a failed control write (slider, tempo) without blocking the screen. */
+function controlError(e, context) {
+  const err = e instanceof ApiError ? e : new ApiError(0, 'client', String(e));
+  if (err.code === 'unauthorized') {
+    sessionToken = '';
+    storeToken('');
+    state.banner = { message: 'Token not accepted.', context: 'Touch the control again to enter it.' };
+  } else if (err.code === 'unreachable' || err.code === 'no_device') {
+    handleError(err);
+  } else {
+    if (err.code === 'writes_disabled') state.writes = false;
+    state.banner = { message: err.message, context };
+    if (err.code === 'stale') refresh({ full: false });
+  }
+  if (!state.drag) render(); else renderBanner();
+}
 
 /** The token for a control write, asking once if none is known. */
 function controlToken() {
@@ -610,6 +619,87 @@ function savePreset() {
   write('Saving…', '/api/save', {});
 }
 
+// ---------- Snapshots and tempo ----------
+
+const TAP_RESET_MS = 2000; // a longer gap starts a new series of taps (as TonePush)
+const TAP_KEEP = 5; // the last five taps count
+const TAP_SEND_MS = 1500; // send the tapped tempo once the taps pause this long
+const taps = [];
+let tapTimer = null;
+
+function selectSnapshot(index) {
+  if (!state.chain || state.chain.snapshot === index) return;
+  // The server pushes the new chain (blocks on/off, values) over /api/live;
+  // without live updates, read it.
+  write(`Snapshot ${index + 1}…`, '/api/snapshot', { index },
+    state.live ? () => { state.chain.snapshot = index; } : 'chain');
+}
+
+/** BPM from the taps so far, once there are two; null before. */
+function tappedBpm(now) {
+  if (taps.length && now - taps[taps.length - 1] > TAP_RESET_MS) taps.length = 0;
+  taps.push(now);
+  if (taps.length > TAP_KEEP) taps.shift();
+  if (taps.length < 2) return null;
+  const bpm = (60000 * (taps.length - 1)) / (now - taps[0]);
+  return Math.round(Math.min(240, Math.max(40, bpm)) * 10) / 10;
+}
+
+function tap() {
+  if (!state.chain || !controlReady()) return;
+  const bpm = tappedBpm(performance.now());
+  const btn = $('tap-btn');
+  btn.classList.remove('flash');
+  void btn.offsetWidth; // restart the flash animation
+  btn.classList.add('flash');
+  if (bpm == null) return;
+  state.tempoPending = bpm;
+  renderPresetBar();
+  clearTimeout(tapTimer);
+  // One write per tap series: the tempo rewrites the whole preset document.
+  tapTimer = setTimeout(() => setTempo(bpm), TAP_SEND_MS);
+}
+
+function typeTempo() {
+  if (!state.chain || !controlReady()) return;
+  const now = state.chain.tempo;
+  const text = window.prompt(`Tempo in BPM, 40 to 240. Now ${now ?? '–'}:`, now ?? '');
+  if (text == null || !text.trim()) return;
+  const bpm = Number(text.trim().replace(',', '.'));
+  if (!Number.isFinite(bpm) || bpm < 40 || bpm > 240) {
+    state.banner = { message: `${text.trim()} is not a tempo between 40 and 240 BPM.`, context: 'Tempo not set.' };
+    renderBanner();
+    return;
+  }
+  setTempo(Math.round(bpm * 10) / 10);
+}
+
+const tempoSender = new LatestSender(
+  (key, bpm) => api('/api/tempo', { method: 'POST', body: { bpm }, token: sessionToken }),
+  {
+    gap: SLIDE_GAP_MS,
+    onResult(key, bpm, res) {
+      storeToken(sessionToken);
+      state.unsaved = !!res.unsaved;
+      if (state.chain) state.chain.tempo = bpm;
+      if (state.tempoPending === bpm) state.tempoPending = null;
+      renderPresetBar();
+      renderControls();
+    },
+    onError(key, bpm, e) {
+      tempoSender.cancel(key);
+      state.tempoPending = null;
+      controlError(e, 'Tempo not set.');
+    },
+  },
+);
+
+function setTempo(bpm) {
+  state.tempoPending = bpm;
+  renderPresetBar();
+  tempoSender.push('tempo', bpm);
+}
+
 // ---------- Derived data ----------
 
 function loadedPreset() {
@@ -677,6 +767,9 @@ function renderControls() {
   const ready = canWrite() && !!loadedPreset();
   for (const el of document.querySelectorAll('[data-step]')) setControl(el, ready);
   setControl($('rename-btn'), ready);
+  const tempoReady = canWrite() && !!state.chain;
+  setControl($('tap-btn'), tempoReady);
+  $('tempo-btn').disabled = !tempoReady;
   const save = $('save-btn');
   setControl(save, ready);
   save.classList.toggle('hot', state.writes && state.unsaved);
@@ -723,14 +816,22 @@ function renderPresetBar() {
   $('namebar').classList.toggle('unsaved', state.unsaved);
 
   const names = state.chain?.snapshots?.length ? state.chain.snapshots : ['', '', '', ''];
-  // The API does not say which snapshot is active, so none is highlighted.
-  const snaps = names.map((n, i) =>
-    `<div class="snap${state.chain ? '' : ' idle'}" title="${esc(n)}"><span>${i + 1}</span><span class="snap-name">${esc(n)}</span></div>`).join('');
+  // Lit only when the server knows (usb, fake); `cli` cannot tell.
+  const active = state.chain?.snapshot;
+  const live = canWrite();
+  const snaps = names.map((n, i) => {
+    const cls = ['snap', state.chain ? '' : 'idle', i === active ? 'active' : ''].join(' ');
+    const inner = `<span>${i + 1}</span><span class="snap-name">${esc(n)}</span>`;
+    return state.writes && state.chain
+      ? `<button class="${cls}" type="button" data-snapshot="${i}" aria-pressed="${i === active}" aria-label="Snapshot ${i + 1}: ${esc(n)}" title="${esc(n)}"${live ? '' : ' disabled'}>${inner}</button>`
+      : `<div class="${cls}" title="${esc(n)}">${inner}</div>`;
+  }).join('');
   $('snaps-inline').innerHTML = snaps;
   $('snaps-row').innerHTML = snaps;
 
-  const tempo = state.chain?.tempo;
+  const tempo = state.tempoPending ?? state.chain?.tempo;
   $('tempo').textContent = tempo == null ? '–' : (Number.isInteger(tempo) ? String(tempo) : tempo.toFixed(1));
+  $('tempo-btn').classList.toggle('pending', state.tempoPending != null);
 }
 
 function renderBanner() {
@@ -1017,6 +1118,10 @@ document.addEventListener('click', (e) => {
     editParam(Number(t.dataset.param));
   } else if (t.matches('[data-switch]')) {
     switchToggle(t);
+  } else if (t.matches('[data-snapshot]')) {
+    selectSnapshot(Number(t.dataset.snapshot));
+  } else if (t.id === 'tempo-btn') {
+    typeTempo();
   } else if (t.id === 'rename-btn') {
     renamePreset();
   } else if (t.id === 'save-btn') {
@@ -1036,6 +1141,13 @@ paramsEl.addEventListener('pointercancel', sliderUp);
 paramsEl.addEventListener('lostpointercapture', sliderUp);
 paramsEl.addEventListener('keydown', sliderKey);
 paramsEl.addEventListener('change', menuChange);
+
+// Taps count on touch-down, not on release: closer to the beat.
+$('tap-btn').addEventListener('pointerdown', (e) => {
+  if (e.button !== 0 || $('tap-btn').disabled) return;
+  e.preventDefault();
+  tap();
+});
 
 $('filter').addEventListener('input', (e) => {
   state.browser.filter = e.target.value;

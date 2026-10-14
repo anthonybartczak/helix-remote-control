@@ -43,8 +43,8 @@
         </div>
         <div class="snaps snaps-inline" id="snaps-inline"></div>
         <div class="tempo">
-          <div class="tempo-readout"><span class="tempo-bpm" id="tempo">–</span><span class="tempo-unit"><span class="desktop-only">BPM · PRESET</span><span class="tablet-only">BPM</span></span></div>
-          <button class="later tap desktop-only" type="button" disabled title="Not built yet">TAP</button>
+          <button class="tempo-readout" type="button" id="tempo-btn" disabled aria-label="Tempo. Tap to type a value"><span class="tempo-bpm" id="tempo">–</span><span class="tempo-unit"><span class="desktop-only">BPM · PRESET</span><span class="tablet-only">BPM</span></span></button>
+          <button class="act later tap" type="button" id="tap-btn" disabled aria-label="Tap tempo">TAP</button>
         </div>
         <button class="conn conn-pill blocked-only" type="button" data-conn aria-haspopup="dialog"></button>
       </div>

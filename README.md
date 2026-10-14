@@ -116,11 +116,15 @@ in the browser):
   The `fake` backend uses synthetic ranges. Verified 2026-10-14 on the HX Effects 3.80
   (Pi 4, iPad Safari, build `a04993e`): slider drags, menu, switch, 10 s fast drag with
   footswitch changes still reaching the iPad live.
+- **Snapshot:** tap 1–4 in the preset bar. The active one is lit (with `usb`; `cli`
+  cannot tell). The chain updates from the pedal.
+- **Tempo:** tap TAP on the beat; the BPM shows as you tap (amber until the pedal has
+  it) and is sent once you pause for 1.5 s. Tap the BPM to type a value (40–240).
+  Snapshot and tempo are not yet verified on the HX Effects.
 - **Rename / Save:** buttons in the preset bar. Save asks first and overwrites the
   loaded preset. "Unsaved" in the bar means edits are only in the edit buffer.
 
-Without a token, write controls are dashed and inert. Tap tempo stays dashed (not
-built). Known limits:
+Without a token, write controls are dashed and inert. Known limits:
 
 - **Live updates need `HELIX_BACKEND=usb`.** Then the server pushes each change over
   `/api/live` within about 1 s. With `cli`, the UI reads the device on open, when the iPad
@@ -131,7 +135,7 @@ built). Known limits:
   "waiting N s" meanwhile.
 - **Block categories are guessed** from the model name (`CATEGORY_RULES` in `app.js`);
   unknown models show grey `FX`. Real categories need the HX Edit catalog on the server.
-- **Active snapshot is not shown.** `tonepush chain` does not report it.
+- **Active snapshot needs `usb`.** `tonepush chain` does not report it, so `cli` lights none.
 - **Sliders snap to a grid** (0.01 on 0..1 knobs, 1 dB on levels). Type for finer values.
   Without HX Edit data (`cli`, or no `/vendor`), parameters are typed and only `%`
   values get a bar.
