@@ -21,10 +21,12 @@ over USB, UI opened from iPad Safari at `http://helix-bridge.local` with HX Edit
 names. Whole Pi: 222 MB RAM used with the service running. Next: Phase 6 (write
 operations) after a full preset backup. Install guide: [docs/deploy.md](docs/deploy.md).
 
-Phase 6 (write operations) code done 2026-10-12, tested on the fake backend only: load
-preset, block on/off, parameter value, rename, save, behind a shared token
-(`HELIX_TOKEN`). **Not yet run on the HX Effects.** First write on hardware needs your
-confirmation (AGENTS.md 6).
+Phase 6 (write operations) done and verified 2026-10-14 on the HX Effects (firmware
+3.80) via a Raspberry Pi 4 and iPad Safari, behind a shared token (`HELIX_TOKEN`): load
+preset, block on/off, parameter value (shows on the pedal almost at once), save
+(survives reloading the preset) and rename, each first run on a spare slot with the
+user's confirmation. Reordering blocks is left out on purpose: TonePush marks `move`
+untested on hardware (AGENTS.md 6). Next: Phase 7 (move to the Pi 3A+).
 
 Live sync verified 2026-10-13 on the Pi 4 with the HX Effects 3.80: the `usb` backend
 holds one USB session and pushes pedal changes (footswitches, knobs, preset switches) to
