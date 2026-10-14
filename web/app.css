@@ -190,6 +190,8 @@ button:disabled { cursor: default; }
   border-bottom: 1px solid var(--bg); min-width: 0;
 }
 .ph-code { font: 700 var(--fs-s) var(--font-mono); color: var(--c); flex: none; }
+.ph-title { display: flex; flex-direction: column; min-width: 0; padding: var(--s2) 0; }
+.ph-based { font-size: var(--fs-xs); color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ph-model { font-size: var(--fs-l); font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .ph-meta { font-size: var(--fs-s); color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 0 100 auto; }
 .ph-toggle { height: var(--tap); padding: 0 var(--s4); font-size: var(--fs-s); flex: none; }
@@ -395,7 +397,7 @@ button.tile:disabled { opacity: .6; }
   .slot-name { display: none; }
   .slot.on .node-band { height: 6px; }
   .node { border-width: 2px; border-radius: var(--r2); }
-  .node-code { font-size: 9px; }
+  .node-code { font-size: 8px; letter-spacing: -.06em; }
   .params-grid { grid-template-columns: minmax(0, 1fr); padding: var(--s2) var(--s4); }
   .ph-meta { display: none; }
   .bank { height: 64px; }

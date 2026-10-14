@@ -52,13 +52,15 @@ function category(model) {
   return null;
 }
 
-/** A block's category as { name, short, colour }: the server's, else a guess. */
+/** A block's category as { name, short, colour, subcategory }: the server's, else a guess. */
 function blockCategory(b) {
   const c = b.category;
-  if (c && /^#[0-9a-f]{6}$/i.test(c.colour)) return { name: c.name, short: c.short, colour: c.colour };
+  if (c && /^#[0-9a-f]{6}$/i.test(c.colour)) {
+    return { name: c.name, short: c.short, colour: c.colour, subcategory: c.subcategory ?? null };
+  }
   const key = category(b.model);
-  if (!key) return { name: 'Unknown category', short: 'FX', colour: 'var(--cat-unknown)' };
-  return { name: CATEGORIES[key][0], short: CATEGORIES[key][1], colour: `var(--cat-${key})` };
+  if (!key) return { name: 'Unknown category', short: 'FX', colour: 'var(--cat-unknown)', subcategory: null };
+  return { name: CATEGORIES[key][0], short: CATEGORIES[key][1], colour: `var(--cat-${key})`, subcategory: null };
 }
 
 /** "Line 6 HX Effects": every device TonePush supports is a Line 6 HX. */
@@ -879,7 +881,7 @@ function renderChain() {
     const cat = blockCategory(b);
     const cls = ['slot', b.enabled ? 'on' : '', n === state.selectedSlot ? 'selected' : ''].join(' ');
     html += `<button class="${cls}" type="button" data-slot="${n}" style="--c:${cat.colour}"` +
-      ` aria-pressed="${n === state.selectedSlot}" aria-label="Slot ${n}: ${esc(b.model)}, ${esc(cat.name)}${b.enabled ? '' : ', bypassed'}">` +
+      ` aria-pressed="${n === state.selectedSlot}" aria-label="Slot ${n}: ${esc(b.model)}, ${esc(cat.name)}${b.based_on ? `, based on ${esc(b.based_on)}` : ''}${b.enabled ? '' : ', bypassed'}"${b.based_on ? ` title="${esc(b.model)}: ${esc(b.based_on)}"` : ''}>` +
       `<div class="slot-num">${n}</div><div class="node"><div class="node-code">${esc(cat.short)}</div><div class="node-band"></div></div>` +
       `<div class="slot-name">${esc(b.model)}</div></button>`;
   }
@@ -903,7 +905,10 @@ function renderParams() {
   }
   const cat = blockCategory(b);
   el.style.setProperty('--c', cat.colour);
-  const meta = `${cat.name} · slot ${state.selectedSlot} · ${b.enabled ? 'on' : 'bypassed'}`;
+  const kind = cat.subcategory ? `${cat.name} · ${cat.subcategory}` : cat.name;
+  const meta = `${kind} · slot ${state.selectedSlot} · ${b.enabled ? 'on' : 'bypassed'}`;
+  // The real gear behind the model, from the Pilot's Guide (server: vendor/based-on.json).
+  const based = b.based_on ? `<div class="ph-based">Based on ${esc(b.based_on)}</div>` : '';
   const live = canWrite();
   const params = b.params.map((p) => {
     const c = controlOf(b, p);
@@ -922,7 +927,8 @@ function renderParams() {
     : `<button class="later ph-toggle" type="button" disabled title="${esc(WRITES_OFF)}">${b.enabled ? 'Turn off' : 'Turn on'}</button>`;
   el.innerHTML =
     `<div class="params-head"><div class="ph-code">${esc(cat.short)}</div>` +
-    `<div class="ph-model">${esc(b.model)}</div><div class="ph-meta">${esc(meta)}</div><div class="spacer"></div>` +
+    `<div class="ph-title"><div class="ph-model">${esc(b.model)}</div>${based}</div>` +
+    `<div class="ph-meta">${esc(meta)}</div><div class="spacer"></div>` +
     `${toggle}</div>` +
     `<div class="params-grid">${params}</div>`;
 }

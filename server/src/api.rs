@@ -15,6 +15,7 @@ use serde_json::json;
 
 use tokio::sync::broadcast;
 
+use crate::based_on::BasedOn;
 use crate::device::{Cause, ChainExtra, Command, Device, DeviceError, Live};
 use crate::parse;
 
@@ -28,6 +29,8 @@ pub struct AppState<D> {
     unsaved: AtomicBool,
     /// JSON messages for `/api/live` clients.
     live: broadcast::Sender<String>,
+    /// The real gear behind each model, for `based_on` in `/api/chain`.
+    based_on: BasedOn,
 }
 
 impl<D: Device> AppState<D> {
@@ -37,7 +40,14 @@ impl<D: Device> AppState<D> {
             token: token.filter(|t| !t.is_empty()),
             unsaved: AtomicBool::new(false),
             live: broadcast::channel(16).0,
+            based_on: BasedOn::new(),
         }
+    }
+
+    /// Name the real gear behind each model (`crate::based_on`).
+    pub fn with_based_on(mut self, based_on: BasedOn) -> Self {
+        self.based_on = based_on;
+        self
     }
 }
 
@@ -266,17 +276,18 @@ struct ChainView {
 }
 
 /// Parse `chain` output and join what the backend knows beyond it: native
-/// values, the active snapshot, and each block's category from HX Edit's
-/// catalog.
+/// values, the active snapshot, each block's category from HX Edit's catalog,
+/// and the gear its model is based on.
 fn full_chain<D: Device>(
-    device: &D,
+    app: &AppState<D>,
     text: &str,
     extra: &ChainExtra,
 ) -> crate::device::Result<parse::Chain> {
     let mut chain = parse::chain(text)?;
     parse::add_extra(&mut chain, extra);
     for block in &mut chain.blocks {
-        block.category = device.category(block.model_id, &block.model);
+        block.category = app.device.category(block.model_id, &block.model);
+        block.based_on = app.based_on.get(&block.model).cloned();
     }
     Ok(chain)
 }
@@ -284,7 +295,7 @@ fn full_chain<D: Device>(
 async fn chain<D: Device>(State(app): Shared<D>) -> ApiResult<ChainView> {
     let (out, extra) = app.device.chain().await?;
     Ok(Json(ChainView {
-        chain: full_chain(&app.device, &out, &extra)?,
+        chain: full_chain(&app, &out, &extra)?,
         unsaved: app.unsaved.load(Ordering::Relaxed),
     }))
 }
@@ -581,7 +592,7 @@ async fn relay<D: Device>(app: Arc<AppState<D>>, mut changes: broadcast::Receive
                     Cause::Edit => app.unsaved.store(true, Ordering::Relaxed),
                     Cause::Other => {}
                 }
-                match full_chain(&app.device, &text, &extra) {
+                match full_chain(&app, &text, &extra) {
                     Ok(chain) => json!({
                         "type": "chain",
                         "chain": ChainView {
@@ -754,6 +765,21 @@ mod tests {
         let position = fassel["params"][0]["native"].as_f64().unwrap();
         assert!((position - 0.017248867).abs() < 1e-6);
         assert_eq!(body["blocks"][3]["params"][0]["value"], "-22.1 dB");
+    }
+
+    /// Only models in the table get a `based_on`; the table is Line 6's, so
+    /// this one is made up.
+    #[tokio::test]
+    async fn chain_names_the_gear_a_model_is_based_on() {
+        let table = [("Fassel".to_owned(), "A wah pedal".to_owned())].into();
+        let app = router(AppState::new(FakeDevice::bundled(), None).with_based_on(table));
+        let (_, body) = send(
+            &app,
+            Request::get("/api/chain").body(Body::empty()).unwrap(),
+        )
+        .await;
+        assert_eq!(body["blocks"][0]["based_on"], "A wah pedal");
+        assert!(body["blocks"][1].get("based_on").is_none());
     }
 
     #[tokio::test]

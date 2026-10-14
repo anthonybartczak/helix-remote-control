@@ -135,7 +135,8 @@ async fn serve<D: Device>(
     let writes = if token.is_some() { "on" } else { "off" };
     tracing::info!(backend = device.kind(), %bind, writes, "helix-bridge listening");
     let listener = tokio::net::TcpListener::bind(bind).await?;
-    axum::serve(listener, api::router(AppState::new(device, token)))
+    let state = AppState::new(device, token).with_based_on(helix_bridge::based_on::load());
+    axum::serve(listener, api::router(state))
         .with_graceful_shutdown(shutdown_signal())
         .await
 }

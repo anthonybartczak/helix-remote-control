@@ -167,6 +167,10 @@ pub struct Block {
     /// catalog.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub category: Option<crate::controls::CategoryInfo>,
+    /// The real gear the model is based on ("MXR Dyna Comp"), from the
+    /// Pilot's Guide via `vendor/based-on.json` (`crate::based_on`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub based_on: Option<String>,
     pub enabled: bool,
     pub params: Vec<Param>,
     /// Second model of an Amp+Cab block. Never present on HX Effects.
@@ -314,6 +318,7 @@ pub fn chain(out: &str) -> Result<Chain> {
                 model: model.trim().to_owned(),
                 model_id: None,
                 category: None,
+                based_on: None,
                 enabled,
                 params: Vec::new(),
                 cab: None,

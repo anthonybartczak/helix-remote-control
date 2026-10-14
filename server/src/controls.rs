@@ -82,6 +82,9 @@ pub struct CategoryInfo {
     pub short: String,
     /// HX Edit's tint for the category, `#rrggbb`.
     pub colour: String,
+    /// HX Edit's shelf for this model: "Mono", "Stereo" or "Legacy".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub subcategory: Option<String>,
 }
 
 /// The category of the model numbered `model_id`, or else named `name`.
@@ -99,6 +102,11 @@ pub fn category(
         name: c.name.clone(),
         short: c.short_name.clone(),
         colour: format!("#{:06x}", c.colour & 0xff_ffff),
+        subcategory: c
+            .subcategories
+            .iter()
+            .find(|s| s.models.contains(&model.id))
+            .map(|s| s.name.clone()),
     })
 }
 

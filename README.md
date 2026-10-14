@@ -133,8 +133,11 @@ Without a token, write controls are dashed and inert. Known limits:
   powered up, and after a session ends. Sooner, the HX Effects may leave live updates
   off for the whole session (`third_party/hx-usb/PATCHES.md` 2b). The UI shows
   "waiting N s" meanwhile.
-- **Block categories are guessed** from the model name (`CATEGORY_RULES` in `app.js`);
-  unknown models show grey `FX`. Real categories need the HX Edit catalog on the server.
+- **Block colours and labels are HX Edit's** (Dist, Dyn, Mod, Verb, Snd/Rtn) when the server
+  has the HX Edit catalog (`usb` with `/vendor`). Without it they are guessed from the model
+  name (`CATEGORY_RULES` in `app.js`); unknown models show grey `FX`.
+- **"Based on …" under a model** needs `vendor/based-on.json`, built from HX Edit's Pilot's
+  Guide by `tools/based-on` (docs/deploy.md step 6). Never committed: it is Line 6's table.
 - **Active snapshot needs `usb`.** `tonepush chain` does not report it, so `cli` lights none.
 - **Sliders snap to a grid** (0.01 on 0..1 knobs, 1 dB on levels). Type for finer values.
   Without HX Edit data (`cli`, or no `/vendor`), parameters are typed and only `%`

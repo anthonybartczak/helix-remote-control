@@ -57,6 +57,20 @@ Total time: about 45 minutes, most of it flashing the SD card and the first boot
    ```
    The `chmod` matters: `scp` from Windows creates the folder as `drwx------`, so the
    service user cannot read it and names stay `model 269`.
+
+   Optional, for "Based on MXR Dyna Comp" under each model (about 3 minutes): build the
+   table from HX Edit's Pilot's Guide on the dev machine, from the repository root. It is
+   Line 6's table, so it stays in the gitignored `vendor/`:
+   ```powershell
+   cargo run --release --manifest-path tools/based-on/Cargo.toml
+   scp vendor/based-on.json <user>@helix-bridge.local:
+   ```
+   Then on the Pi, and restart the service:
+   ```sh
+   sudo install -m 644 ~/based-on.json /opt/helix-bridge/vendor/based-on.json
+   sudo systemctl restart helix-bridge
+   ```
+   The log says `based-on table loaded … models=261`.
 7. **Plug in the pedal.** Quit HX Edit on every machine first (AGENTS.md 5.5). Connect
    the HX Effects to the Pi over USB, then:
    ```sh

@@ -78,10 +78,14 @@ the chain; the UI does this for parameter and bypass edits.
 - `model_id` (block) and `native` (param) appear only when the server has parameter
   metadata: `usb` with HX Edit data in `/vendor`, or `fake` (synthetic). `native` is the
   value as stored (`0.02` for `2 %`); primary model only.
-- `category` (block) is `{"name": "Dynamics", "short": "Dyn", "colour": "#ddcc00"}`, from
-  HX Edit's catalog exactly as HX Edit labels and tints the block. Only with the catalog
-  (`usb` with `/vendor`, or `fake` on a machine with HX Edit installed); without it the
-  UI guesses from the model name.
+- `category` (block) is `{"name": "Dynamics", "short": "Dyn", "colour": "#ddcc00",
+  "subcategory": "Mono"}`, from HX Edit's catalog exactly as HX Edit labels and tints the
+  block; `subcategory` is the Mono / Stereo / Legacy shelf. Only with the catalog (`usb`
+  with `/vendor`, or `fake` on a machine with HX Edit installed); without it the UI
+  guesses from the model name.
+- `based_on` (block) is the real gear the model is based on (`"MXR Dyna Comp"`), from the
+  Pilot's Guide via `vendor/based-on.json` (docs/deploy.md step 6). Absent without that
+  file, and for models the guide lists no gear for (FX Loop, Send, Return, Volume).
 - Preset names are not unique (factory slots are all `New Preset`). Key on `index`.
 
 ## Status codes
