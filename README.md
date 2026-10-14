@@ -113,7 +113,9 @@ in the browser):
   a menu entry, or flip a switch. Writes go out at most every 100 ms, one at a time.
   Tap the value to type an exact one in the shown units (`40`, `2.2 kHz`). Sliders need
   HX Edit data on the server (`usb` with `/vendor`); without it every value is typed.
-  The `fake` backend uses synthetic ranges.
+  The `fake` backend uses synthetic ranges. Verified 2026-10-14 on the HX Effects 3.80
+  (Pi 4, iPad Safari, build `a04993e`): slider drags, menu, switch, 10 s fast drag with
+  footswitch changes still reaching the iPad live.
 - **Rename / Save:** buttons in the preset bar. Save asks first and overwrites the
   loaded preset. "Unsaved" in the bar means edits are only in the edit buffer.
 
