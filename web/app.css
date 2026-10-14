@@ -9,9 +9,11 @@
   --line: oklch(0.36 0.01 260); --line-strong: oklch(0.75 0.005 260);
   --ink: oklch(0.97 0.003 260); --muted: oklch(0.72 0.01 260);
   --ok: oklch(0.8 0.17 150); --warn: oklch(0.82 0.15 85); --err: oklch(0.7 0.19 25); --err-surface: oklch(0.28 0.08 25);
-  --cat-dist: oklch(0.72 0.16 30); --cat-dyn: oklch(0.72 0.16 60); --cat-eq: oklch(0.72 0.16 90); --cat-wah: oklch(0.72 0.16 120);
-  --cat-filter: oklch(0.72 0.16 150); --cat-mod: oklch(0.72 0.16 180); --cat-delay: oklch(0.72 0.16 210); --cat-reverb: oklch(0.72 0.16 240);
-  --cat-pitch: oklch(0.72 0.16 270); --cat-vol: oklch(0.72 0.16 300); --cat-loop: oklch(0.72 0.16 330); --cat-looper: oklch(0.72 0.16 0);
+  /* HX Edit's category tints (HX_ModelCatalog.json), for blocks the server could not
+     look up; with the catalog the server sends each block's colour itself. */
+  --cat-dist: #f5901e; --cat-dyn: #ddcc00; --cat-eq: #ddcc00; --cat-wah: #a844db;
+  --cat-filter: #ad46e2; --cat-mod: #0094e9; --cat-delay: #00cc00; --cat-reverb: #ff5c00;
+  --cat-pitch: #ad46e2; --cat-vol: #38a696; --cat-loop: #38a696; --cat-looper: #989898;
   --cat-unknown: var(--line-strong);
   --s1: 4px; --s2: 8px; --s3: 12px; --s4: 16px; --s5: 20px; --s6: 28px; --s7: 40px;
   --r1: 4px; --r2: 8px; --r3: 14px; --r-pill: 999px;
@@ -87,6 +89,8 @@ button:disabled { cursor: default; }
 .dot.ok { background: var(--ok); } .dot.err { background: var(--err); } .dot.warn { background: var(--warn); }
 .conn-dots { height: var(--tap); min-width: var(--tap); display: flex; gap: 6px; align-items: center; justify-content: center; }
 .conn-dots .dot { width: 10px; height: 10px; }
+.conn-name { font-size: var(--fs-xs); color: var(--muted); white-space: nowrap; margin-left: 2px; }
+.device-name { font: 12px var(--font-mono); color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
 .blocked-only { display: none; }
 
 .popover {
@@ -347,6 +351,7 @@ button.tile:disabled { opacity: .6; }
 
 @media (max-width: 1279px) and (orientation: portrait), (max-width: 767px) {
   .snaps-inline { display: none; }
+  .conn-name { display: none; }
   .snaps-row { display: grid; height: var(--tap-l); flex: none; grid-template-columns: repeat(4, minmax(0, 1fr)); }
   .snaps-row .snap { width: auto; display: flex; align-items: center; justify-content: center; gap: var(--s2); }
   .snaps-row .snap-name { display: block; font-size: var(--fs-xs); }

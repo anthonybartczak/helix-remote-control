@@ -21,21 +21,23 @@ const GENERIC_NAME = 'New Preset';
 const MAX_NAME = 16; // HX preset name limit; the server checks it too.
 const TOKEN_KEY = 'helix-bridge-token';
 
-// Block categories. The API does not send them yet, so the category is guessed
-// from the model name. Unknown models get a neutral colour. Replace with HX
-// Edit catalog data once the server exposes it.
+// Block categories. With HX Edit's catalog the server sends each block's
+// category, short label and colour (`category` in /api/chain), exactly as HX
+// Edit draws them. Without it the category is guessed from the model name and
+// drawn with the same names and palette (--cat-* in app.css); unknown models
+// get a neutral colour.
 const CATEGORIES = {
-  dist: ['Distortion', 'DST'], dyn: ['Dynamics', 'DYN'], eq: ['EQ', 'EQ'],
-  wah: ['Wah', 'WAH'], filter: ['Filter', 'FLT'], mod: ['Modulation', 'MOD'],
-  delay: ['Delay', 'DLY'], reverb: ['Reverb', 'REV'], pitch: ['Pitch/Synth', 'PIT'],
-  vol: ['Volume/Pan', 'VOL'], loop: ['Send/Return', 'LOOP'], looper: ['Looper', 'LPR'],
+  dist: ['Distortion', 'Dist'], dyn: ['Dynamics', 'Dyn'], eq: ['EQ', 'EQ'],
+  wah: ['Wah', 'Wah'], filter: ['Filter', 'Filt'], mod: ['Modulation', 'Mod'],
+  delay: ['Delay', 'Delay'], reverb: ['Reverb', 'Verb'], pitch: ['Pitch/Synth', 'Pitch'],
+  vol: ['Volume/Pan', 'Vol'], loop: ['Send/Return', 'Snd/Rtn'], looper: ['Looper', 'Loop'],
 };
 const CATEGORY_RULES = [
   [/looper/i, 'looper'],
   [/fx loop|send|return/i, 'loop'],
   [/wah|fassel|weeper|teardrop|conductor|throatbox/i, 'wah'],
   [/pitch|whammy|wham|octave|capo|detune|12 string|synth|osc|sustain|feedbacker/i, 'pitch'],
-  [/gate|compress|comp\b|limiter|deluxe comp|autoswell/i, 'dyn'],
+  [/gate|compress|comp\b|limiter|deluxe comp|autoswell|squeeze/i, 'dyn'],
   [/verb|plate|hall|room|spring|chamber|shimmer|ganymede|searchlights|cave|glitz/i, 'reverb'],
   [/delay|echo|tape|transistor|bucket|elephant|cosmos|ducked/i, 'delay'],
   [/chorus|flang|phas|trem|vibe|rotary|leslie|ring mod|vibrato/i, 'mod'],
@@ -48,6 +50,20 @@ const CATEGORY_RULES = [
 function category(model) {
   for (const [re, key] of CATEGORY_RULES) if (re.test(model)) return key;
   return null;
+}
+
+/** A block's category as { name, short, colour }: the server's, else a guess. */
+function blockCategory(b) {
+  const c = b.category;
+  if (c && /^#[0-9a-f]{6}$/i.test(c.colour)) return { name: c.name, short: c.short, colour: c.colour };
+  const key = category(b.model);
+  if (!key) return { name: 'Unknown category', short: 'FX', colour: 'var(--cat-unknown)' };
+  return { name: CATEGORIES[key][0], short: CATEGORIES[key][1], colour: `var(--cat-${key})` };
+}
+
+/** "Line 6 HX Effects": every device TonePush supports is a Line 6 HX. */
+function deviceName(info) {
+  return info?.name ? `Line 6 ${info.name}` : 'Line 6 HX';
 }
 
 // ---------- State ----------
@@ -783,7 +799,7 @@ function dotClass(kind) {
 
 function deviceLabel() {
   if (state.device === 'checking') return 'Checking…';
-  if (state.device === 'ok' && state.info) return `${state.info.name} ${state.info.firmware}`;
+  if (state.device === 'ok' && state.info) return `${deviceName(state.info)} ${state.info.firmware}`;
   return 'Device';
 }
 
@@ -791,13 +807,16 @@ function renderConnection() {
   const pill = `<span class="conn-item"><span class="dot ${dotClass('server')}"></span>Server</span>` +
     `<span class="conn-item"><span class="dot ${dotClass('device')}"></span>${esc(deviceLabel())}</span>`;
   for (const el of document.querySelectorAll('.conn-pill')) el.innerHTML = pill;
+  const name = state.info ? deviceName(state.info) : '';
   for (const el of document.querySelectorAll('.conn-dots')) {
-    el.innerHTML = `<span class="dot ${dotClass('server')}"></span><span class="dot ${dotClass('device')}"></span>`;
+    el.innerHTML = `<span class="dot ${dotClass('server')}"></span><span class="dot ${dotClass('device')}"></span>` +
+      (name ? `<span class="conn-name">${esc(name)}</span>` : '');
   }
+  $('device-name').textContent = state.info ? `${name} · FW ${state.info.firmware}` : '';
 
   const rows = [
     ['Server', { ok: 'reachable', down: 'unreachable', unknown: 'checking…' }[state.server]],
-    ['Device', state.device === 'missing' ? 'not connected' : state.info?.name ?? '–'],
+    ['Device', state.device === 'missing' ? 'not connected' : state.info ? deviceName(state.info) : '–'],
     ['Firmware', state.info?.firmware ?? '–'],
     ['Build', state.info?.build ?? '–'],
     ['Presets', state.info?.presets ?? '–'],
@@ -857,12 +876,11 @@ function renderChain() {
       html += `<div class="slot"><div class="slot-num">${n}</div><div class="node-empty"></div><div class="slot-name"></div></div>`;
       continue;
     }
-    const cat = category(b.model);
-    const code = cat ? CATEGORIES[cat][1] : 'FX';
+    const cat = blockCategory(b);
     const cls = ['slot', b.enabled ? 'on' : '', n === state.selectedSlot ? 'selected' : ''].join(' ');
-    html += `<button class="${cls}" type="button" data-slot="${n}" style="--c:var(--cat-${cat || 'unknown'})"` +
-      ` aria-pressed="${n === state.selectedSlot}" aria-label="Slot ${n}: ${esc(b.model)}${b.enabled ? '' : ', bypassed'}">` +
-      `<div class="slot-num">${n}</div><div class="node"><div class="node-code">${code}</div><div class="node-band"></div></div>` +
+    html += `<button class="${cls}" type="button" data-slot="${n}" style="--c:${cat.colour}"` +
+      ` aria-pressed="${n === state.selectedSlot}" aria-label="Slot ${n}: ${esc(b.model)}, ${esc(cat.name)}${b.enabled ? '' : ', bypassed'}">` +
+      `<div class="slot-num">${n}</div><div class="node"><div class="node-code">${esc(cat.short)}</div><div class="node-band"></div></div>` +
       `<div class="slot-name">${esc(b.model)}</div></button>`;
   }
   html += '</div><div class="io">Out</div>';
@@ -883,10 +901,9 @@ function renderParams() {
     el.innerHTML = '<div class="params-empty">No blocks in this preset.</div>';
     return;
   }
-  const cat = category(b.model);
-  el.style.setProperty('--c', `var(--cat-${cat || 'unknown'})`);
-  const catName = cat ? CATEGORIES[cat][0] : 'Unknown category';
-  const meta = `${catName} · slot ${state.selectedSlot} · ${b.enabled ? 'on' : 'bypassed'}`;
+  const cat = blockCategory(b);
+  el.style.setProperty('--c', cat.colour);
+  const meta = `${cat.name} · slot ${state.selectedSlot} · ${b.enabled ? 'on' : 'bypassed'}`;
   const live = canWrite();
   const params = b.params.map((p) => {
     const c = controlOf(b, p);
@@ -904,7 +921,7 @@ function renderParams() {
     ? `<button class="act ph-toggle" type="button" data-toggle${live ? '' : ' disabled'}>${b.enabled ? 'Turn off' : 'Turn on'}</button>`
     : `<button class="later ph-toggle" type="button" disabled title="${esc(WRITES_OFF)}">${b.enabled ? 'Turn off' : 'Turn on'}</button>`;
   el.innerHTML =
-    `<div class="params-head"><div class="ph-code">${cat ? CATEGORIES[cat][1] : 'FX'}</div>` +
+    `<div class="params-head"><div class="ph-code">${esc(cat.short)}</div>` +
     `<div class="ph-model">${esc(b.model)}</div><div class="ph-meta">${esc(meta)}</div><div class="spacer"></div>` +
     `${toggle}</div>` +
     `<div class="params-grid">${params}</div>`;
@@ -973,7 +990,7 @@ function renderPresetList() {
 function renderStatusLine() {
   const i = state.info;
   $('statusline').innerHTML = i
-    ? `<span>${esc(i.name)} · FW ${esc(i.firmware)} · BUILD ${esc(i.build)} · ${esc(i.presets)} PRESETS</span>`
+    ? `<span>${esc(deviceName(i))} · FW ${esc(i.firmware)} · BUILD ${esc(i.build)} · ${esc(i.presets)} PRESETS</span>`
     : '';
 }
 

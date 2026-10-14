@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use tokio::process::Command as Process;
 use tokio::sync::{broadcast, Mutex};
 
-pub use crate::controls::ModelInfo;
+pub use crate::controls::{CategoryInfo, ModelInfo};
 pub use crate::fake::FakeDevice;
 
 /// The `tonepush` commands the bridge may run, and [`Command::SetNative`].
@@ -213,6 +213,12 @@ pub trait Device: Send + Sync + 'static {
     /// Parameter metadata for a model number (`/api/models/{id}`). `None`
     /// without HX Edit's catalog (`cli` backend, or `usb` with no `/vendor`).
     fn model(&self, _id: u32) -> Option<ModelInfo> {
+        None
+    }
+
+    /// A block's category from HX Edit's catalog, by model number or name.
+    /// `None` without the catalog; the UI then guesses from the name.
+    fn category(&self, _model_id: Option<u32>, _name: &str) -> Option<CategoryInfo> {
         None
     }
 }

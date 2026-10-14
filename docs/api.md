@@ -78,6 +78,10 @@ the chain; the UI does this for parameter and bypass edits.
 - `model_id` (block) and `native` (param) appear only when the server has parameter
   metadata: `usb` with HX Edit data in `/vendor`, or `fake` (synthetic). `native` is the
   value as stored (`0.02` for `2 %`); primary model only.
+- `category` (block) is `{"name": "Dynamics", "short": "Dyn", "colour": "#ddcc00"}`, from
+  HX Edit's catalog exactly as HX Edit labels and tints the block. Only with the catalog
+  (`usb` with `/vendor`, or `fake` on a machine with HX Edit installed); without it the
+  UI guesses from the model name.
 - Preset names are not unique (factory slots are all `New Preset`). Key on `index`.
 
 ## Status codes

@@ -23,7 +23,7 @@ use hx_proto::msgpack::Value;
 use hx_usb::Session;
 use tokio::sync::{broadcast, oneshot};
 
-use crate::controls::{self, ModelInfo};
+use crate::controls::{self, CategoryInfo, ModelInfo};
 use crate::device::{
     BlockNatives, Cause, ChainExtra, Command, Device, DeviceError, Live, Natives, Result,
 };
@@ -174,6 +174,10 @@ impl Device for UsbDevice {
 
     fn model(&self, id: u32) -> Option<ModelInfo> {
         controls::from_catalog(self.catalog.as_deref()?, id)
+    }
+
+    fn category(&self, model_id: Option<u32>, name: &str) -> Option<CategoryInfo> {
+        controls::category(self.catalog.as_deref()?, model_id, name)
     }
 }
 

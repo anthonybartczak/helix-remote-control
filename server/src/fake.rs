@@ -22,7 +22,7 @@ use std::time::Duration;
 
 use tokio::sync::broadcast;
 
-use crate::controls::{self, Kind, ModelInfo};
+use crate::controls::{self, CategoryInfo, Kind, ModelInfo};
 use crate::device::{
     BlockNatives, Cause, ChainExtra, Command, Device, DeviceError, Live, Natives, Result,
 };
@@ -199,6 +199,17 @@ impl Device for FakeDevice {
 
     fn model(&self, id: u32) -> Option<ModelInfo> {
         synthetic::model(id)
+    }
+
+    /// From HX Edit's catalog when this machine has one (`HX_EDIT_RESOURCES`),
+    /// so the UI can be checked against real colours without a pedal. The
+    /// fixtures' model names are the catalog's.
+    /// The fake's model numbers are its own, not the catalog's: go by name.
+    fn category(&self, _model_id: Option<u32>, name: &str) -> Option<CategoryInfo> {
+        static CATALOG: std::sync::OnceLock<Option<hx_catalog::Catalog>> =
+            std::sync::OnceLock::new();
+        let catalog = CATALOG.get_or_init(|| hx_catalog::Catalog::load().ok());
+        controls::category(catalog.as_ref()?, None, name)
     }
 }
 

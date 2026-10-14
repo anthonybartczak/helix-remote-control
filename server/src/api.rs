@@ -265,17 +265,26 @@ struct ChainView {
     unsaved: bool,
 }
 
-/// Parse `chain` output and join what the backend knows beyond it.
-fn full_chain(text: &str, extra: &ChainExtra) -> crate::device::Result<parse::Chain> {
+/// Parse `chain` output and join what the backend knows beyond it: native
+/// values, the active snapshot, and each block's category from HX Edit's
+/// catalog.
+fn full_chain<D: Device>(
+    device: &D,
+    text: &str,
+    extra: &ChainExtra,
+) -> crate::device::Result<parse::Chain> {
     let mut chain = parse::chain(text)?;
     parse::add_extra(&mut chain, extra);
+    for block in &mut chain.blocks {
+        block.category = device.category(block.model_id, &block.model);
+    }
     Ok(chain)
 }
 
 async fn chain<D: Device>(State(app): Shared<D>) -> ApiResult<ChainView> {
     let (out, extra) = app.device.chain().await?;
     Ok(Json(ChainView {
-        chain: full_chain(&out, &extra)?,
+        chain: full_chain(&app.device, &out, &extra)?,
         unsaved: app.unsaved.load(Ordering::Relaxed),
     }))
 }
@@ -572,7 +581,7 @@ async fn relay<D: Device>(app: Arc<AppState<D>>, mut changes: broadcast::Receive
                     Cause::Edit => app.unsaved.store(true, Ordering::Relaxed),
                     Cause::Other => {}
                 }
-                match full_chain(&text, &extra) {
+                match full_chain(&app.device, &text, &extra) {
                     Ok(chain) => json!({
                         "type": "chain",
                         "chain": ChainView {

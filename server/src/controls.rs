@@ -73,6 +73,35 @@ pub struct ParamInfo {
     pub labels: Vec<String>,
 }
 
+/// A block's category the way HX Edit draws it, from HX Edit's catalog.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct CategoryInfo {
+    /// "Distortion", "Send/Return".
+    pub name: String,
+    /// The label HX Edit puts under a block: "Dist", "Verb", "Snd/Rtn".
+    pub short: String,
+    /// HX Edit's tint for the category, `#rrggbb`.
+    pub colour: String,
+}
+
+/// The category of the model numbered `model_id`, or else named `name`.
+pub fn category(
+    catalog: &hx_catalog::Catalog,
+    model_id: Option<u32>,
+    name: &str,
+) -> Option<CategoryInfo> {
+    let model = model_id
+        .and_then(|id| catalog.model_number(id))
+        .or_else(|| catalog.models().find(|m| m.name == name))?;
+    let id = catalog.category_of(&model.id).unwrap_or(model.category);
+    let c = catalog.categories().iter().find(|c| c.id == id)?;
+    Some(CategoryInfo {
+        name: c.name.clone(),
+        short: c.short_name.clone(),
+        colour: format!("#{:06x}", c.colour & 0xff_ffff),
+    })
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ModelInfo {
     /// Model number, as `model_id` in `/api/chain`.

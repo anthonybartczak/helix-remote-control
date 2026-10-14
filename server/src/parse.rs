@@ -163,6 +163,10 @@ pub struct Block {
     /// Model number for `/api/models/{id}`. Only with parameter metadata.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model_id: Option<u32>,
+    /// Category, short label and colour as HX Edit shows them. Only with the
+    /// catalog.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub category: Option<crate::controls::CategoryInfo>,
     pub enabled: bool,
     pub params: Vec<Param>,
     /// Second model of an Amp+Cab block. Never present on HX Effects.
@@ -309,6 +313,7 @@ pub fn chain(out: &str) -> Result<Chain> {
                 position,
                 model: model.trim().to_owned(),
                 model_id: None,
+                category: None,
                 enabled,
                 params: Vec::new(),
                 cab: None,
