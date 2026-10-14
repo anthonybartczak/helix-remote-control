@@ -55,7 +55,7 @@ With the patch, the bridge's `usb` backend ran 2–3 minutes of footswitch use a
 shipped in the bundle for the `cli` backend) keeps the bug; if it is used for a long
 `watch`, the pedal needs a power cycle afterwards.
 
-Fix submitted upstream: https://github.com/crmne/tonepush/pull/25.
+Fixed upstream: https://github.com/crmne/tonepush/pull/25, merged 2026-10-14 (`76f3bc9`), not yet in a release.
 
 ### Draft upstream report (crmne/tonepush, superseded by PR #25)
 

@@ -8,9 +8,11 @@ in with `[patch."https://github.com/crmne/tonepush"]`. The `tonepush` CLI shippe
 the Pi bundle is still built from upstream and does **not** have these patches.
 
 Drop this folder once upstream has an equivalent fix. Upstream pull request:
-https://github.com/crmne/tonepush/pull/25 (opened 2026-10-13). Once it is merged and
-released, move the TonePush pin to that release, delete this folder and the
-`[patch]` section in `server/Cargo.toml`. The patch prepared for
+https://github.com/crmne/tonepush/pull/25, **merged 2026-10-14 as `76f3bc9`**. Its
+`hx-usb` code is identical to this folder. Not in a release yet (latest: `v0.9.1`,
+without it). When a release includes `76f3bc9`: move the TonePush pin to that tag
+(AGENTS.md 3, with a note in the commit), delete this folder and the `[patch]` section
+in `server/Cargo.toml`. The bundled `tonepush` CLI gets the fix with the same bump. The patch prepared for
 upstream, against TonePush `main` (53a6a65), and its pull request text are in
 `upstream/`.
 
