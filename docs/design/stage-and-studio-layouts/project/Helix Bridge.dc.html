@@ -1,0 +1,395 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<meta name="design_doc_mode" content="canvas">
+<style>
+:root{
+--font-ui:system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",sans-serif;
+--font-mono:ui-monospace,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+--bg:oklch(0.1 0.004 260);--surface:oklch(0.17 0.006 260);--surface-2:oklch(0.23 0.008 260);
+--line:oklch(0.36 0.01 260);--line-strong:oklch(0.75 0.005 260);
+--ink:oklch(0.97 0.003 260);--muted:oklch(0.72 0.01 260);
+--ok:oklch(0.8 0.17 150);--warn:oklch(0.82 0.15 85);--err:oklch(0.7 0.19 25);--err-surface:oklch(0.28 0.08 25);
+--cat-dist:oklch(0.72 0.16 30);--cat-dyn:oklch(0.72 0.16 60);--cat-eq:oklch(0.72 0.16 90);--cat-wah:oklch(0.72 0.16 120);
+--cat-filter:oklch(0.72 0.16 150);--cat-mod:oklch(0.72 0.16 180);--cat-delay:oklch(0.72 0.16 210);--cat-reverb:oklch(0.72 0.16 240);
+--cat-pitch:oklch(0.72 0.16 270);--cat-vol:oklch(0.72 0.16 300);--cat-loop:oklch(0.72 0.16 330);--cat-looper:oklch(0.72 0.16 0);
+--s1:4px;--s2:8px;--s3:12px;--s4:16px;--s5:20px;--s6:28px;--s7:40px;
+--r1:4px;--r2:8px;--r3:14px;--r-pill:999px;
+--fs-xs:12px;--fs-s:14px;--fs-m:16px;--fs-l:18px;--fs-xl:22px;--fs-2xl:28px;--fs-3xl:40px;
+--tap:44px;--tap-l:56px;--node:64px;
+--bp-tablet:768px;--bp-tablet-l:1024px;--bp-desktop:1280px;
+}
+body{margin:0;background:#e6e6e4;font-family:var(--font-ui);-webkit-font-smoothing:antialiased}
+a{color:#2a2a2a}a:hover{color:#000}
+</style>
+</helmet>
+<section style="padding:64px 64px 0;display:flex;flex-direction:column;gap:12px;max-width:980px">
+  <div style="font:600 13px var(--font-mono);letter-spacing:.08em;color:#666">HELIX BRIDGE · DIRECTION 2A RIG · PHASE 4 (READ-ONLY)</div>
+  <div style="font-size:32px;font-weight:600;color:#1d1d1f">Main view, preset browser, states, tokens</div>
+  <div style="font-size:15px;line-height:1.55;color:#444;text-wrap:pretty">Dashed outlines mark phase 6 controls: Rename, Save, Tap, Turn on, slider thumbs, Load. Chain shows the HX Effects' 9 block slots; I assumed slot = API position − 1 (position 1 = input), which puts Noise Gate in slot 9. Categories are assumed until the API sends them. Slider fill positions are estimates because the API only sends display strings.</div>
+</section>
+
+<section style="padding:48px 64px;display:flex;flex-direction:column;gap:20px">
+  <div style="font:600 13px var(--font-mono);letter-spacing:.08em;color:#666">1 · MAIN VIEW</div>
+  <div style="display:flex;flex-wrap:wrap;gap:56px;align-items:flex-start">
+    <div style="display:flex;flex-direction:column;gap:14px">
+      <div style="font:500 13px var(--font-mono);color:#666">DESKTOP · 1440 × 900</div>
+      <div data-screen-label="Main desktop" style="width:1440px;height:900px;overflow:hidden;display:flex;flex-direction:column;background:var(--bg);color:var(--ink);border-radius:10px;box-shadow:0 20px 60px rgba(0,0,0,.3)">
+        <div style="height:56px;flex:none;display:flex;align-items:center;gap:var(--s4);padding:0 var(--s5)">
+          <div style="font:700 13px var(--font-mono);letter-spacing:.14em">HELIX BRIDGE</div>
+          <div style="flex:1"></div>
+          <div style="height:var(--tap);display:flex;align-items:center;gap:var(--s4);padding:0 var(--s4);border-radius:var(--r-pill);background:var(--surface);font-size:var(--fs-s);color:var(--muted)"><div style="display:flex;gap:var(--s2);align-items:center"><div style="width:8px;height:8px;border-radius:50%;background:var(--ok)"></div>Server</div><div style="display:flex;gap:var(--s2);align-items:center"><div style="width:8px;height:8px;border-radius:50%;background:var(--ok)"></div>HX Effects 3.80</div></div>
+        </div>
+        <div style="flex:1;min-height:0;display:grid;grid-template-columns:272px minmax(0,1fr);gap:var(--s2);padding:0 var(--s2) var(--s2)">
+          <div style="background:var(--surface);border-radius:var(--r3);display:flex;flex-direction:column;min-height:0;overflow:hidden">
+            <div style="height:52px;flex:none;display:flex;align-items:center;justify-content:space-between;padding:0 var(--s4);border-bottom:1px solid var(--bg)"><div style="font-size:13px;font-weight:700;letter-spacing:.1em">PRESETS</div><div style="height:36px;display:flex;align-items:center;padding:0 var(--s3);border-radius:var(--r2);background:var(--surface-2);font-size:13px">All 128</div></div>
+            <div style="flex:1;min-height:0;overflow:hidden;display:flex;flex-direction:column">
+              <sc-for list="{{ listRows }}" as="pr" hint-placeholder-count="16">
+                <div style="height:var(--tap);flex:none;display:flex;align-items:center;gap:var(--s3);padding:0 var(--s4);background:{{ pr.bg }};color:{{ pr.fg }};border-top:{{ pr.sep }}">
+                  <div style="font:600 13px var(--font-mono);width:32px;opacity:.7">{{ pr.label }}</div>
+                  <div style="font-size:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ pr.name }}</div>
+                </div>
+              </sc-for>
+            </div>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:var(--s2);min-width:0;min-height:0">
+            <div style="height:var(--tap-l);flex:none;display:flex;gap:var(--s2)">
+              <div style="width:var(--tap-l);display:grid;place-items:center;background:var(--surface);border-radius:var(--r2);font-size:20px">‹</div>
+              <div style="width:var(--tap-l);display:grid;place-items:center;background:var(--surface);border-radius:var(--r2);font-size:20px">›</div>
+              <div style="flex:1;min-width:0;display:flex;align-items:center;gap:var(--s3);padding:0 var(--s2) 0 var(--s4);background:var(--surface);border-radius:var(--r2)"><span style="font:600 var(--fs-xl) var(--font-mono);color:var(--muted)">01C</span><span style="font-size:var(--fs-xl);font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">New Preset</span><div style="flex:1"></div><div style="height:40px;display:flex;align-items:center;padding:0 var(--s3);border:1.5px dashed var(--line);border-radius:6px;font-size:13px;color:var(--muted)">Rename</div><div style="height:40px;display:flex;align-items:center;padding:0 var(--s3);border:1.5px dashed var(--line);border-radius:6px;font-size:13px;color:var(--muted)">Save</div></div>
+              <div style="display:flex;gap:var(--s1)">
+                <sc-for list="{{ snaps }}" as="s" hint-placeholder-count="4">
+                  <div style="width:92px;display:flex;flex-direction:column;justify-content:center;align-items:center;gap:2px;border-radius:var(--r2);background:{{ s.bg }};color:{{ s.fg }}"><span style="font:700 var(--fs-l) var(--font-mono)">{{ s.key }}</span><span style="font-size:10px;letter-spacing:.06em;opacity:.8">{{ s.name }}</span></div>
+                </sc-for>
+              </div>
+              <div style="display:flex;background:var(--surface);border-radius:var(--r2);overflow:hidden">
+                <div style="width:96px;display:flex;flex-direction:column;justify-content:center;align-items:center"><span style="font:700 var(--fs-xl) var(--font-mono)">120</span><span style="font-size:10px;letter-spacing:.1em;color:var(--muted)">BPM · PRESET</span></div>
+                <div style="width:var(--tap-l);margin:6px 6px 6px 0;display:grid;place-items:center;border:1.5px dashed var(--line);border-radius:6px;font-size:12px;font-weight:600;color:var(--muted)">TAP</div>
+              </div>
+            </div>
+            <div style="height:220px;flex:none"><dc-import name="Rig Chain" style="width:100%;height:100%" hint-size="100%,220px"></dc-import></div>
+            <div style="flex:1;min-height:0;display:grid;grid-template-columns:minmax(0,1fr) 520px;gap:var(--s2)">
+              <dc-import name="Rig Params" columns="{{ 2 }}" style="width:100%;height:100%" hint-size="100%,100%"></dc-import>
+              <dc-import name="Rig Bank" style="width:100%;height:100%" hint-size="100%,100%"></dc-import>
+            </div>
+          </div>
+        </div>
+        <div style="height:32px;flex:none;display:flex;align-items:center;gap:var(--s5);padding:0 var(--s5);font:12px var(--font-mono);color:var(--muted)"><span>HX EFFECTS · FW 3.80 · BUILD d972399 · 128 PRESETS</span></div>
+      </div>
+      <div style="max-width:1440px;font-size:14px;line-height:1.5;color:#555">Left list scrolls to keep the loaded preset in view. Bank tiles show the loaded bank at stage size. Selected block has the white ring; bypassed blocks are outline-only, active blocks get a filled band.</div>
+    </div>
+
+    <div style="display:flex;flex-direction:column;gap:14px">
+      <div style="font:500 13px var(--font-mono);color:#666">IPAD LANDSCAPE · 1194 × 834</div>
+      <div data-screen-label="Main iPad landscape" style="width:1194px;height:834px;box-sizing:border-box;overflow:hidden;display:flex;flex-direction:column;gap:var(--s2);padding:var(--s2);background:var(--bg);color:var(--ink);border-radius:18px;box-shadow:0 20px 60px rgba(0,0,0,.3)">
+        <div style="height:var(--tap-l);flex:none;display:flex;gap:var(--s2)">
+          <div style="width:104px;display:grid;place-items:center;background:var(--surface-2);border-radius:var(--r2);font-size:15px;font-weight:600">Presets</div>
+          <div style="width:var(--tap-l);display:grid;place-items:center;background:var(--surface);border-radius:var(--r2);font-size:20px">‹</div>
+          <div style="width:var(--tap-l);display:grid;place-items:center;background:var(--surface);border-radius:var(--r2);font-size:20px">›</div>
+          <div style="flex:1;min-width:0;display:flex;align-items:center;gap:var(--s3);padding:0 var(--s4);background:var(--surface);border-radius:var(--r2)"><span style="font:600 var(--fs-xl) var(--font-mono);color:var(--muted)">01C</span><span style="font-size:var(--fs-xl);font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">New Preset</span><div style="flex:1"></div><div style="display:flex;gap:6px;align-items:center"><div style="width:10px;height:10px;border-radius:50%;background:var(--ok)"></div><div style="width:10px;height:10px;border-radius:50%;background:var(--ok)"></div></div></div>
+          <div style="display:flex;gap:var(--s1)">
+            <sc-for list="{{ snaps }}" as="s" hint-placeholder-count="4">
+              <div style="width:60px;display:grid;place-items:center;border-radius:var(--r2);background:{{ s.bg }};color:{{ s.fg }};font:700 var(--fs-l) var(--font-mono)">{{ s.key }}</div>
+            </sc-for>
+          </div>
+          <div style="width:88px;display:flex;flex-direction:column;justify-content:center;align-items:center;background:var(--surface);border-radius:var(--r2)"><span style="font:700 var(--fs-l) var(--font-mono)">120</span><span style="font-size:10px;letter-spacing:.1em;color:var(--muted)">BPM</span></div>
+        </div>
+        <div style="height:200px;flex:none"><dc-import name="Rig Chain" style="width:100%;height:100%" hint-size="100%,200px"></dc-import></div>
+        <div style="flex:1;min-height:0;display:grid;grid-template-columns:minmax(0,1fr) 400px;gap:var(--s2)">
+          <dc-import name="Rig Params" columns="{{ 1 }}" style="width:100%;height:100%" hint-size="100%,100%"></dc-import>
+          <dc-import name="Rig Bank" style="width:100%;height:100%" hint-size="100%,100%"></dc-import>
+        </div>
+      </div>
+      <div style="max-width:1194px;font-size:14px;line-height:1.5;color:#555">Preset list moves behind the Presets button (opens the browser). Connection collapses to two dots; tap for details. Everything 56 px tall in the top row for standing use.</div>
+    </div>
+
+    <div style="display:flex;flex-direction:column;gap:14px">
+      <div style="font:500 13px var(--font-mono);color:#666">IPAD PORTRAIT · 834 × 1194</div>
+      <div data-screen-label="Main iPad portrait" style="width:834px;height:1194px;box-sizing:border-box;overflow:hidden;display:flex;flex-direction:column;gap:var(--s2);padding:var(--s2);background:var(--bg);color:var(--ink);border-radius:18px;box-shadow:0 20px 60px rgba(0,0,0,.3)">
+        <div style="height:var(--tap-l);flex:none;display:flex;gap:var(--s2)">
+          <div style="width:104px;display:grid;place-items:center;background:var(--surface-2);border-radius:var(--r2);font-size:15px;font-weight:600">Presets</div>
+          <div style="width:var(--tap-l);display:grid;place-items:center;background:var(--surface);border-radius:var(--r2);font-size:20px">‹</div>
+          <div style="width:var(--tap-l);display:grid;place-items:center;background:var(--surface);border-radius:var(--r2);font-size:20px">›</div>
+          <div style="flex:1;min-width:0;display:flex;align-items:center;gap:var(--s3);padding:0 var(--s4);background:var(--surface);border-radius:var(--r2)"><span style="font:600 var(--fs-xl) var(--font-mono);color:var(--muted)">01C</span><span style="font-size:var(--fs-xl);font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">New Preset</span><div style="flex:1"></div><div style="display:flex;gap:6px"><div style="width:10px;height:10px;border-radius:50%;background:var(--ok)"></div><div style="width:10px;height:10px;border-radius:50%;background:var(--ok)"></div></div></div>
+          <div style="width:88px;display:flex;flex-direction:column;justify-content:center;align-items:center;background:var(--surface);border-radius:var(--r2)"><span style="font:700 var(--fs-l) var(--font-mono)">120</span><span style="font-size:10px;letter-spacing:.1em;color:var(--muted)">BPM</span></div>
+        </div>
+        <div style="height:var(--tap-l);flex:none;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:var(--s1)">
+          <sc-for list="{{ snaps }}" as="s" hint-placeholder-count="4">
+            <div style="display:flex;align-items:center;justify-content:center;gap:var(--s2);border-radius:var(--r2);background:{{ s.bg }};color:{{ s.fg }}"><span style="font:700 var(--fs-l) var(--font-mono)">{{ s.key }}</span><span style="font-size:var(--fs-xs);letter-spacing:.06em;opacity:.8">{{ s.name }}</span></div>
+          </sc-for>
+        </div>
+        <div style="height:190px;flex:none"><dc-import name="Rig Chain" style="width:100%;height:100%" hint-size="100%,190px"></dc-import></div>
+        <div style="flex:1;min-height:0"><dc-import name="Rig Params" columns="{{ 2 }}" style="width:100%;height:100%" hint-size="100%,100%"></dc-import></div>
+        <div style="height:150px;flex:none"><dc-import name="Rig Bank" layout="row" style="width:100%;height:100%" hint-size="100%,150px"></dc-import></div>
+      </div>
+      <div style="max-width:834px;font-size:14px;line-height:1.5;color:#555">Same parts, stacked: snapshots get their own full-width row, bank tiles become one row of four at the bottom (closest to the hand on a stand).</div>
+    </div>
+  </div>
+</section>
+
+<section style="padding:24px 64px 48px;display:flex;flex-direction:column;gap:20px">
+  <div style="font:600 13px var(--font-mono);letter-spacing:.08em;color:#666">2 · PRESET BROWSER</div>
+  <div style="display:flex;flex-wrap:wrap;gap:56px;align-items:flex-start">
+    <div style="display:flex;flex-direction:column;gap:14px">
+      <div style="font:500 13px var(--font-mono);color:#666">DESKTOP · 1440 × 900 · ALL 128 AT ONCE</div>
+      <div data-screen-label="Browser desktop" style="width:1440px;height:900px;box-sizing:border-box;overflow:hidden;display:flex;flex-direction:column;gap:var(--s2);padding:var(--s2);background:var(--bg);color:var(--ink);border-radius:10px;box-shadow:0 20px 60px rgba(0,0,0,.3)">
+        <div style="height:var(--tap-l);flex:none;display:flex;gap:var(--s2);align-items:stretch">
+          <div style="display:flex;align-items:center;padding:0 var(--s4);font-size:var(--fs-xl);font-weight:600">Presets</div>
+          <div style="width:360px;display:flex;align-items:center;padding:0 var(--s4);background:var(--surface);border-radius:var(--r2);font-size:var(--fs-m);color:var(--muted)">Filter by name or label</div>
+          <div style="flex:1"></div>
+          <div style="display:flex;align-items:center;gap:var(--s3);padding:0 var(--s4);font-size:var(--fs-s);color:var(--muted)"><span style="width:14px;height:14px;border-radius:3px;background:var(--ink)"></span>Loaded<span style="width:14px;height:14px;border-radius:3px;box-shadow:inset 0 0 0 2px var(--ink);margin-left:var(--s3)"></span>Selected</div>
+          <div style="width:var(--tap-l);display:grid;place-items:center;background:var(--surface);border-radius:var(--r2);font-size:22px">×</div>
+        </div>
+        <div style="flex:1;min-height:0;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:var(--s2)">
+          <sc-for list="{{ browserCols }}" as="col" hint-placeholder-count="3">
+            <div style="display:flex;flex-direction:column;gap:var(--s1);background:var(--surface);border-radius:var(--r3);padding:var(--s2)">
+              <sc-for list="{{ col.banks }}" as="bk" hint-placeholder-count="11">
+                <div style="display:grid;grid-template-columns:40px repeat(4,minmax(0,1fr));gap:var(--s1);height:62px">
+                  <div style="display:grid;place-items:center;font:700 var(--fs-l) var(--font-mono);color:var(--muted)">{{ bk.num }}</div>
+                  <sc-for list="{{ bk.presets }}" as="pr" hint-placeholder-count="4">
+                    <div style="min-width:0;display:flex;flex-direction:column;justify-content:center;gap:2px;padding:0 var(--s2);border-radius:6px;background:{{ pr.bg }};color:{{ pr.fg }};box-shadow:{{ pr.ring }}">
+                      <div style="font:700 var(--fs-s) var(--font-mono)">{{ pr.letter }}</div>
+                      <div style="font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:{{ pr.nameColor }}">{{ pr.name }}</div>
+                    </div>
+                  </sc-for>
+                </div>
+              </sc-for>
+            </div>
+          </sc-for>
+        </div>
+        <div style="height:64px;flex:none;display:flex;align-items:center;gap:var(--s4);padding:0 var(--s2) 0 var(--s5);background:var(--surface);border-radius:var(--r3)">
+          <span style="font:700 var(--fs-xl) var(--font-mono)">02A</span><span style="font-size:var(--fs-xl)">Wah Lead</span><span style="font-size:var(--fs-s);color:var(--muted)">selected · 01C New Preset is loaded</span>
+          <div style="flex:1"></div>
+          <div style="height:48px;display:flex;align-items:center;padding:0 var(--s6);border:1.5px dashed var(--line-strong);border-radius:var(--r2);font-size:var(--fs-m);font-weight:600">Load 02A</div>
+        </div>
+      </div>
+      <div style="max-width:1440px;font-size:14px;line-height:1.5;color:#555">Three columns of banks show all 128 without scrolling. Generic "New Preset" names are dimmed so named presets stand out; the label always shows. Tap selects; Load (phase 6) sends it to the device. Filter narrows by name or label ("02", "wah").</div>
+    </div>
+
+    <div style="display:flex;flex-direction:column;gap:14px">
+      <div style="font:500 13px var(--font-mono);color:#666">IPAD PORTRAIT · 834 × 1194 · SCROLLS, WITH BANK JUMP</div>
+      <div data-screen-label="Browser iPad portrait" style="width:834px;height:1194px;box-sizing:border-box;overflow:hidden;display:flex;flex-direction:column;gap:var(--s2);padding:var(--s2);background:var(--bg);color:var(--ink);border-radius:18px;box-shadow:0 20px 60px rgba(0,0,0,.3)">
+        <div style="height:var(--tap-l);flex:none;display:flex;gap:var(--s2)">
+          <div style="width:var(--tap-l);display:grid;place-items:center;background:var(--surface);border-radius:var(--r2);font-size:22px">×</div>
+          <div style="flex:1;display:flex;align-items:center;padding:0 var(--s4);background:var(--surface);border-radius:var(--r2);font-size:var(--fs-m);color:var(--muted)">Filter by name or label</div>
+        </div>
+        <div style="flex:1;min-height:0;display:grid;grid-template-columns:minmax(0,1fr) 64px;gap:var(--s2)">
+          <div style="display:flex;flex-direction:column;gap:var(--s1);overflow:hidden">
+            <sc-for list="{{ browserList }}" as="bk" hint-placeholder-count="14">
+              <div style="display:grid;grid-template-columns:48px repeat(4,minmax(0,1fr));gap:var(--s1);height:72px;flex:none">
+                <div style="display:grid;place-items:center;font:700 var(--fs-xl) var(--font-mono);color:var(--muted)">{{ bk.num }}</div>
+                <sc-for list="{{ bk.presets }}" as="pr" hint-placeholder-count="4">
+                  <div style="min-width:0;display:flex;flex-direction:column;justify-content:center;gap:2px;padding:0 var(--s3);border-radius:var(--r2);background:{{ pr.bg }};color:{{ pr.fg }};box-shadow:{{ pr.ring }}">
+                    <div style="font:700 var(--fs-m) var(--font-mono)">{{ pr.letter }}</div>
+                    <div style="font-size:var(--fs-s);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:{{ pr.nameColor }}">{{ pr.name }}</div>
+                  </div>
+                </sc-for>
+              </div>
+            </sc-for>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:var(--s1)">
+            <sc-for list="{{ jumps }}" as="j" hint-placeholder-count="8">
+              <div style="flex:1;min-height:var(--tap);display:grid;place-items:center;border-radius:var(--r2);background:{{ j.bg }};font:600 var(--fs-s) var(--font-mono);color:{{ j.fg }}">{{ j.num }}</div>
+            </sc-for>
+          </div>
+        </div>
+        <div style="height:72px;flex:none;display:flex;align-items:center;gap:var(--s3);padding:0 var(--s2) 0 var(--s4);background:var(--surface);border-radius:var(--r3)">
+          <span style="font:700 var(--fs-xl) var(--font-mono)">02A</span><span style="font-size:var(--fs-l)">Wah Lead</span>
+          <div style="flex:1"></div>
+          <div style="height:var(--tap-l);display:flex;align-items:center;padding:0 var(--s6);border:1.5px dashed var(--line-strong);border-radius:var(--r2);font-size:var(--fs-m);font-weight:600">Load 02A</div>
+        </div>
+      </div>
+      <div style="max-width:834px;font-size:14px;line-height:1.5;color:#555">One bank per row, 72 px tall. Jump rail on the right goes to banks 01, 05, 09 … 29 (8 targets, each ≥ 44 px). iPad landscape uses the desktop's three-column grid, scrolled.</div>
+    </div>
+  </div>
+</section>
+
+<section style="padding:24px 64px 48px;display:flex;flex-direction:column;gap:20px">
+  <div style="font:600 13px var(--font-mono);letter-spacing:.08em;color:#666">3 · LOADING AND ERRORS · IPAD LANDSCAPE</div>
+  <div style="display:flex;flex-wrap:wrap;gap:56px;align-items:flex-start">
+    <div style="display:flex;flex-direction:column;gap:14px">
+      <div style="font:500 13px var(--font-mono);color:#666">LOADING · DEVICE CALL IN FLIGHT (1–3 S)</div>
+      <div data-screen-label="Loading" style="width:1194px;height:834px;box-sizing:border-box;overflow:hidden;display:flex;flex-direction:column;gap:var(--s2);padding:var(--s2);background:var(--bg);color:var(--ink);border-radius:18px;box-shadow:0 20px 60px rgba(0,0,0,.3)">
+        <div style="height:var(--tap-l);flex:none;display:flex;gap:var(--s2)">
+          <div style="width:104px;display:grid;place-items:center;background:var(--surface-2);border-radius:var(--r2);font-size:15px;font-weight:600">Presets</div>
+          <div style="width:var(--tap-l);display:grid;place-items:center;background:var(--surface);border-radius:var(--r2);font-size:20px;color:var(--muted)">‹</div>
+          <div style="width:var(--tap-l);display:grid;place-items:center;background:var(--surface);border-radius:var(--r2);font-size:20px;color:var(--muted)">›</div>
+          <div style="flex:1;min-width:0;position:relative;display:flex;align-items:center;gap:var(--s3);padding:0 var(--s4);background:var(--surface);border-radius:var(--r2);overflow:hidden"><span style="font:600 var(--fs-xl) var(--font-mono)">01A</span><span style="font-size:var(--fs-xl);font-weight:600">Clean Verb</span><span style="font-size:var(--fs-s);color:var(--muted)">Loading from device…</span><div style="position:absolute;left:0;bottom:0;height:3px;width:42%;background:var(--ink)"></div></div>
+          <div style="display:flex;gap:var(--s1)"><sc-for list="{{ snapsIdle }}" as="s" hint-placeholder-count="4"><div style="width:60px;display:grid;place-items:center;border-radius:var(--r2);background:var(--surface);color:var(--muted);font:700 var(--fs-l) var(--font-mono)">{{ s.key }}</div></sc-for></div>
+          <div style="width:88px;display:grid;place-items:center;background:var(--surface);border-radius:var(--r2);font:700 var(--fs-l) var(--font-mono);color:var(--muted)">–</div>
+        </div>
+        <div style="height:200px;flex:none"><dc-import name="Rig Chain" loading="{{ true }}" style="width:100%;height:100%" hint-size="100%,200px"></dc-import></div>
+        <div style="flex:1;min-height:0;display:grid;grid-template-columns:minmax(0,1fr) 400px;gap:var(--s2)">
+          <dc-import name="Rig Params" loading="{{ true }}" columns="{{ 1 }}" style="width:100%;height:100%" hint-size="100%,100%"></dc-import>
+          <dc-import name="Rig Bank" loading-letter="A" style="width:100%;height:100%" hint-size="100%,100%"></dc-import>
+        </div>
+      </div>
+      <div style="max-width:1194px;font-size:14px;line-height:1.5;color:#555">Target label and name show immediately (from /api/presets); chain and parameters go to skeletons until /api/chain returns. Thin bar under the name is the progress cue. Prev/next and snapshots are disabled while a call is pending; a second tap queues, never doubles.</div>
+    </div>
+
+    <div style="display:flex;flex-direction:column;gap:14px">
+      <div style="font:500 13px var(--font-mono);color:#666">ERROR · TONEPUSH FAILED (NON-BLOCKING)</div>
+      <div data-screen-label="Error tonepush" style="width:1194px;height:834px;box-sizing:border-box;overflow:hidden;display:flex;flex-direction:column;gap:var(--s2);padding:var(--s2);background:var(--bg);color:var(--ink);border-radius:18px;box-shadow:0 20px 60px rgba(0,0,0,.3)">
+        <div style="height:var(--tap-l);flex:none;display:flex;gap:var(--s2)">
+          <div style="width:104px;display:grid;place-items:center;background:var(--surface-2);border-radius:var(--r2);font-size:15px;font-weight:600">Presets</div>
+          <div style="width:var(--tap-l);display:grid;place-items:center;background:var(--surface);border-radius:var(--r2);font-size:20px">‹</div>
+          <div style="width:var(--tap-l);display:grid;place-items:center;background:var(--surface);border-radius:var(--r2);font-size:20px">›</div>
+          <div style="flex:1;min-width:0;display:flex;align-items:center;gap:var(--s3);padding:0 var(--s4);background:var(--surface);border-radius:var(--r2)"><span style="font:600 var(--fs-xl) var(--font-mono);color:var(--muted)">01C</span><span style="font-size:var(--fs-xl);font-weight:600">New Preset</span><div style="flex:1"></div><div style="display:flex;gap:6px"><div style="width:10px;height:10px;border-radius:50%;background:var(--ok)"></div><div style="width:10px;height:10px;border-radius:50%;background:var(--ok)"></div></div></div>
+          <div style="display:flex;gap:var(--s1)"><sc-for list="{{ snaps }}" as="s" hint-placeholder-count="4"><div style="width:60px;display:grid;place-items:center;border-radius:var(--r2);background:{{ s.bg }};color:{{ s.fg }};font:700 var(--fs-l) var(--font-mono)">{{ s.key }}</div></sc-for></div>
+          <div style="width:88px;display:flex;flex-direction:column;justify-content:center;align-items:center;background:var(--surface);border-radius:var(--r2)"><span style="font:700 var(--fs-l) var(--font-mono)">120</span><span style="font-size:10px;letter-spacing:.1em;color:var(--muted)">BPM</span></div>
+        </div>
+        <div style="height:64px;flex:none;display:flex;align-items:center;gap:var(--s3);padding:0 var(--s2) 0 var(--s4);background:var(--err-surface);border:2px solid var(--err);border-radius:var(--r2);box-sizing:border-box">
+          <div style="width:12px;height:12px;border-radius:50%;background:var(--err)"></div>
+          <div style="font:600 var(--fs-m) var(--font-mono)">tonepush failed: device busy</div>
+          <div style="font-size:var(--fs-s);color:var(--ink)">Couldn't load 02A. Still showing 01C.</div>
+          <div style="flex:1"></div>
+          <div style="height:48px;display:grid;place-items:center;padding:0 var(--s5);border-radius:var(--r2);background:var(--ink);color:var(--bg);font-size:var(--fs-m);font-weight:600">Retry</div>
+          <div style="width:48px;height:48px;display:grid;place-items:center;border-radius:var(--r2);font-size:22px">×</div>
+        </div>
+        <div style="height:180px;flex:none"><dc-import name="Rig Chain" style="width:100%;height:100%" hint-size="100%,180px"></dc-import></div>
+        <div style="flex:1;min-height:0;display:grid;grid-template-columns:minmax(0,1fr) 400px;gap:var(--s2)">
+          <dc-import name="Rig Params" columns="{{ 1 }}" style="width:100%;height:100%" hint-size="100%,100%"></dc-import>
+          <dc-import name="Rig Bank" style="width:100%;height:100%" hint-size="100%,100%"></dc-import>
+        </div>
+      </div>
+      <div style="max-width:1194px;font-size:14px;line-height:1.5;color:#555">The server's message is shown verbatim in mono after "tonepush failed:" ("device busy" is a sample). The last good state stays visible underneath so the player isn't left with a blank screen mid-song.</div>
+    </div>
+
+    <div style="display:flex;flex-direction:column;gap:14px">
+      <div style="font:500 13px var(--font-mono);color:#666">ERROR · DEVICE NOT CONNECTED (BLOCKING)</div>
+      <div data-screen-label="Error device" style="width:1194px;height:834px;box-sizing:border-box;overflow:hidden;display:flex;flex-direction:column;gap:var(--s2);padding:var(--s2);background:var(--bg);color:var(--ink);border-radius:18px;box-shadow:0 20px 60px rgba(0,0,0,.3)">
+        <div style="height:var(--tap-l);flex:none;display:flex;gap:var(--s2)">
+          <div style="width:104px;display:grid;place-items:center;background:var(--surface);border-radius:var(--r2);font-size:15px;font-weight:600;color:var(--muted)">Presets</div>
+          <div style="flex:1"></div>
+          <div style="height:var(--tap-l);display:flex;align-items:center;gap:var(--s4);padding:0 var(--s4);border-radius:var(--r2);background:var(--surface);font-size:var(--fs-s)"><div style="display:flex;gap:var(--s2);align-items:center"><div style="width:10px;height:10px;border-radius:50%;background:var(--ok)"></div>Server</div><div style="display:flex;gap:var(--s2);align-items:center"><div style="width:10px;height:10px;border-radius:50%;background:var(--err)"></div>Device</div></div>
+        </div>
+        <div style="flex:1;display:grid;place-items:center;background:var(--surface);border-radius:var(--r3)">
+          <div style="display:flex;flex-direction:column;align-items:center;gap:var(--s4);max-width:520px;text-align:center">
+            <div style="width:var(--node);height:var(--node);box-sizing:border-box;border-radius:var(--r3);border:3px solid var(--err);display:grid;place-items:center;font:700 var(--fs-s) var(--font-mono);color:var(--err)">USB</div>
+            <div style="font-size:var(--fs-3xl);font-weight:600;line-height:1.1">Device not connected</div>
+            <div style="font-size:var(--fs-l);line-height:1.5;color:var(--muted);text-wrap:pretty">Check the USB cable between the HX Effects and the computer running Helix Bridge, and that the pedal is powered on.</div>
+            <div style="display:flex;gap:var(--s2);margin-top:var(--s2)"><div style="height:var(--tap-l);display:grid;place-items:center;padding:0 var(--s7);border-radius:var(--r2);background:var(--ink);color:var(--bg);font-size:var(--fs-m);font-weight:600">Try again</div></div>
+            <div style="font:var(--fs-xs) var(--font-mono);color:var(--muted)">Retrying automatically every 5 s</div>
+          </div>
+        </div>
+      </div>
+      <div style="max-width:1194px;font-size:14px;line-height:1.5;color:#555">Server reachable, device not: only the device dot goes red. If the server itself is unreachable the same screen reads "Can't reach Helix Bridge server" with both dots red.</div>
+    </div>
+  </div>
+</section>
+
+<section style="padding:24px 64px 48px;display:flex;flex-direction:column;gap:20px">
+  <div style="font:600 13px var(--font-mono);letter-spacing:.08em;color:#666">4 · CONNECTION INDICATOR</div>
+  <div style="display:flex;flex-wrap:wrap;gap:var(--s7);align-items:flex-start;padding:var(--s7);background:var(--bg);color:var(--ink);border-radius:14px;width:fit-content">
+    <div style="display:flex;flex-direction:column;gap:var(--s4)">
+      <sc-for list="{{ connStates }}" as="c" hint-placeholder-count="4">
+        <div style="display:flex;align-items:center;gap:var(--s5)">
+          <div style="height:var(--tap);display:flex;align-items:center;gap:var(--s4);padding:0 var(--s4);border-radius:var(--r-pill);background:var(--surface);font-size:var(--fs-s)"><div style="display:flex;gap:var(--s2);align-items:center"><div style="width:8px;height:8px;border-radius:50%;background:{{ c.server }}"></div>Server</div><div style="display:flex;gap:var(--s2);align-items:center"><div style="width:8px;height:8px;border-radius:50%;background:{{ c.device }}"></div>{{ c.deviceLabel }}</div></div>
+          <div style="font-size:var(--fs-s);color:var(--muted);width:280px">{{ c.note }}</div>
+        </div>
+      </sc-for>
+    </div>
+    <div style="width:320px;display:flex;flex-direction:column;gap:var(--s3);padding:var(--s5);background:var(--surface-2);border-radius:var(--r3)">
+      <div style="font-size:var(--fs-xs);font-weight:700;letter-spacing:.1em;color:var(--muted)">TAP THE INDICATOR</div>
+      <sc-for list="{{ deviceInfo }}" as="d" hint-placeholder-count="5">
+        <div style="display:flex;justify-content:space-between;font-size:var(--fs-s)"><span style="color:var(--muted)">{{ d.k }}</span><span style="font-family:var(--font-mono)">{{ d.v }}</span></div>
+      </sc-for>
+    </div>
+  </div>
+</section>
+
+<section style="padding:24px 64px 48px;display:flex;flex-direction:column;gap:20px">
+  <div style="font:600 13px var(--font-mono);letter-spacing:.08em;color:#666">5 · DESIGN TOKENS (CSS CUSTOM PROPERTIES ON :ROOT)</div>
+  <div style="width:1440px;box-sizing:border-box;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--s7);padding:var(--s7);background:var(--bg);color:var(--ink);border-radius:14px">
+    <div style="display:flex;flex-direction:column;gap:var(--s4)">
+      <div style="font-size:var(--fs-xs);font-weight:700;letter-spacing:.1em;color:var(--muted)">SURFACES, TEXT, STATUS</div>
+      <div style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:var(--s3)">
+        <sc-for list="{{ baseColors }}" as="c" hint-placeholder-count="12">
+          <div style="display:flex;flex-direction:column;gap:var(--s2)"><div style="height:56px;border-radius:var(--r2);background:{{ c.v }};box-shadow:inset 0 0 0 1px var(--line)"></div><div style="font:var(--fs-xs) var(--font-mono)">{{ c.name }}</div></div>
+        </sc-for>
+      </div>
+      <div style="font-size:var(--fs-xs);font-weight:700;letter-spacing:.1em;color:var(--muted);margin-top:var(--s4)">BLOCK CATEGORIES · L 0.72 C 0.16, HUE STEPS OF 30°</div>
+      <div style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:var(--s3)">
+        <sc-for list="{{ catColors }}" as="c" hint-placeholder-count="12">
+          <div style="display:flex;align-items:center;gap:var(--s3)"><div style="width:var(--tap);height:var(--tap);flex:none;box-sizing:border-box;border-radius:10px;border:3px solid {{ c.v }};overflow:hidden;display:flex;flex-direction:column"><div style="flex:1"></div><div style="height:9px;background:{{ c.v }}"></div></div><div style="display:flex;flex-direction:column;gap:2px;min-width:0"><span style="font-size:var(--fs-s)">{{ c.label }}</span><span style="font:11px var(--font-mono);color:var(--muted)">{{ c.name }}</span></div></div>
+        </sc-for>
+      </div>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:var(--s4)">
+      <div style="font-size:var(--fs-xs);font-weight:700;letter-spacing:.1em;color:var(--muted)">TYPE SCALE · SYSTEM UI + SYSTEM MONO</div>
+      <sc-for list="{{ typeScale }}" as="t" hint-placeholder-count="7">
+        <div style="display:flex;align-items:baseline;gap:var(--s4)"><span style="font:var(--fs-xs) var(--font-mono);color:var(--muted);width:120px">{{ t.name }}</span><span style="font-size:{{ t.v }};font-weight:600">01C New Preset</span></div>
+      </sc-for>
+      <div style="font-size:var(--fs-xs);font-weight:700;letter-spacing:.1em;color:var(--muted);margin-top:var(--s4)">SPACING · RADII · SIZES · BREAKPOINTS</div>
+      <div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--s2) var(--s6)">
+        <sc-for list="{{ sizeTokens }}" as="t" hint-placeholder-count="20">
+          <div style="display:flex;justify-content:space-between;font:var(--fs-s) var(--font-mono);padding:var(--s1) 0;border-bottom:1px solid var(--surface-2)"><span>{{ t.name }}</span><span style="color:var(--muted)">{{ t.v }}</span></div>
+        </sc-for>
+      </div>
+      <div style="font-size:var(--fs-s);line-height:1.5;color:var(--muted)">CSS variables can't be used inside @media queries, so the --bp-* values are reference values to copy into media queries.</div>
+    </div>
+  </div>
+</section>
+
+<section style="padding:24px 64px 96px;display:flex;flex-direction:column;gap:12px;max-width:980px">
+  <div style="font:600 13px var(--font-mono);letter-spacing:.08em;color:#666">6 · PHONE, LATER</div>
+  <div style="font-size:15px;line-height:1.6;color:#333;text-wrap:pretty">The layout is built from five stackable parts: preset bar, snapshots, chain, parameters, bank tiles. iPad portrait already stacks them. On a phone (below --bp-tablet):</div>
+  <ol style="margin:0;padding-left:20px;font-size:15px;line-height:1.6;color:#333;display:flex;flex-direction:column;gap:6px">
+    <li>Preset bar splits into two rows: label + name with ‹ ›, then snapshots 1–4 and tempo.</li>
+    <li>The chain keeps 9 slots in one row but drops names under the nodes; the selected block's name shows above the parameters. Scrolling sideways is the fallback below ~360 px.</li>
+    <li>Parameters go to one column and fill the screen between chain and bank row.</li>
+    <li>Bank tiles become a fixed bottom row of four (like iPad portrait), 64 px tall.</li>
+    <li>The preset browser becomes a full-screen sheet with the same one-bank-per-row list and jump rail.</li>
+  </ol>
+</section>
+</x-dc>
+<script type="text/x-dc" data-dc-script>
+class Component extends DCLogic {
+  renderVals() {
+    const named = { '01A': 'Clean Verb', '01B': 'Edge Delay', '02A': 'Wah Lead', '02C': 'Octave Up', '03B': 'Ambient Swell', '04D': 'Slapback', '05A': 'Trem Verb', '06B': 'Loop Rig', '09A': 'Shimmer Pad', '12C': 'Dry Rhythm', '17B': 'Whammy Solo', '24D': 'Church Verb' };
+    const LOADED = '01C', SELECTED = '02A';
+    const banks = Array.from({ length: 32 }, (_, i) => {
+      const num = String(i + 1).padStart(2, '0');
+      return { num, presets: ['A', 'B', 'C', 'D'].map(letter => {
+        const label = num + letter, loaded = label === LOADED, selected = label === SELECTED;
+        const name = named[label] || 'New Preset';
+        return { letter, label, name,
+          bg: loaded ? 'var(--ink)' : 'var(--surface-2)', fg: loaded ? 'var(--bg)' : 'var(--ink)',
+          ring: selected ? 'inset 0 0 0 3px var(--ink)' : 'none',
+          nameColor: loaded ? 'var(--bg)' : (named[label] ? 'var(--ink)' : 'var(--muted)') };
+      }) };
+    });
+    const listRows = banks.slice(0, 5).flatMap(bk => bk.presets.map((p, j) => ({ label: p.label, name: p.name,
+      bg: p.label === LOADED ? 'var(--ink)' : 'transparent', fg: p.label === LOADED ? 'var(--bg)' : 'var(--ink)',
+      sep: j === 0 ? '1px solid var(--line)' : 'none' })));
+    const snapNames = ['SNAPSHOT 1', 'SNAPSHOT 2', 'SNAPSHOT 3', 'SNAPSHOT 4'];
+    const snaps = snapNames.map((name, i) => ({ name, key: String(i + 1),
+      bg: i === 0 ? 'var(--ink)' : 'var(--surface)', fg: i === 0 ? 'var(--bg)' : 'var(--ink)' }));
+    const jumps = [1, 5, 9, 13, 17, 21, 25, 29].map(n => ({ num: String(n).padStart(2, '0'),
+      bg: n === 1 ? 'var(--ink)' : 'var(--surface)', fg: n === 1 ? 'var(--bg)' : 'var(--ink)' }));
+    const connStates = [
+      { server: 'var(--ok)', device: 'var(--ok)', deviceLabel: 'HX Effects 3.80', note: 'Both reachable.' },
+      { server: 'var(--ok)', device: 'var(--err)', deviceLabel: 'Device', note: 'Server up, pedal not found on USB.' },
+      { server: 'var(--err)', device: 'var(--line)', deviceLabel: 'Device', note: 'Server unreachable; device state unknown (grey).' },
+      { server: 'var(--warn)', device: 'var(--warn)', deviceLabel: 'Checking…', note: 'Reconnecting after a drop.' }];
+    const deviceInfo = [{ k: 'Server', v: 'reachable' }, { k: 'Device', v: 'HX Effects' }, { k: 'Firmware', v: '3.80' }, { k: 'Build', v: 'd972399' }, { k: 'Presets', v: '128' }];
+    const baseColors = ['bg', 'surface', 'surface-2', 'line', 'line-strong', 'ink', 'muted', 'ok', 'warn', 'err', 'err-surface'].map(n => ({ name: '--' + n, v: 'var(--' + n + ')' }));
+    const cats = [['dist', 'Distortion'], ['dyn', 'Dynamics'], ['eq', 'EQ'], ['wah', 'Wah'], ['filter', 'Filter'], ['mod', 'Modulation'], ['delay', 'Delay'], ['reverb', 'Reverb'], ['pitch', 'Pitch/Synth'], ['vol', 'Volume/Pan'], ['loop', 'Send/Return'], ['looper', 'Looper']];
+    const catColors = cats.map(([k, label]) => ({ name: '--cat-' + k, label, v: 'var(--cat-' + k + ')' }));
+    const typeScale = [['--fs-xs', '12px'], ['--fs-s', '14px'], ['--fs-m', '16px'], ['--fs-l', '18px'], ['--fs-xl', '22px'], ['--fs-2xl', '28px'], ['--fs-3xl', '40px']].map(([name, v]) => ({ name, v }));
+    const sizeTokens = [['--s1', '4px'], ['--s2', '8px'], ['--s3', '12px'], ['--s4', '16px'], ['--s5', '20px'], ['--s6', '28px'], ['--s7', '40px'], ['--r1', '4px'], ['--r2', '8px'], ['--r3', '14px'], ['--r-pill', '999px'], ['--tap', '44px'], ['--tap-l', '56px'], ['--node', '64px'], ['--bp-tablet', '768px'], ['--bp-tablet-l', '1024px'], ['--bp-desktop', '1280px']].map(([name, v]) => ({ name, v }));
+    return { listRows, snaps, snapsIdle: snaps,
+      browserCols: [{ banks: banks.slice(0, 11) }, { banks: banks.slice(11, 22) }, { banks: banks.slice(22) }],
+      browserList: banks.slice(0, 14), jumps, connStates, deviceInfo, baseColors, catColors, typeScale, sizeTokens };
+  }
+}
+</script>
+</body>
+</html>

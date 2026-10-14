@@ -1,0 +1,13 @@
+<?xml version="1.0" standalone='no'?>
+<!DOCTYPE service-group SYSTEM "avahi-service.dtd">
+<!-- Advertises the web UI over mDNS/Bonjour. The name helix-bridge.local itself
+     comes from the Pi's hostname (install.sh hostname option). Installed to
+     /etc/avahi/services/helix-bridge.service. -->
+<service-group>
+  <name replace-wildcards="yes">Helix Bridge on %h</name>
+  <service>
+    <type>_http._tcp</type>
+    <port>80</port>
+    <txt-record>path=/</txt-record>
+  </service>
+</service-group>

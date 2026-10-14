@@ -32,6 +32,10 @@ Never hand-edit. Re-record when the TonePush pin changes. See AGENTS.md section 
 
 `list`, `info`, `setlists`, `presets`, `preset` and `irs` do not depend on HX Edit data.
 
+Write commands (`select`, `enable`, `set`, `rename`, `save`) have no fixtures: they
+change the pedal, so none were recorded. `FakeDevice` (`src/fake.rs`) keeps writes in
+memory and replies with TonePush's own messages, copied from its source.
+
 ## Quirks to handle in the parser
 
 - **Every preset is named `New Preset`.** Preset names are not unique; key on index.

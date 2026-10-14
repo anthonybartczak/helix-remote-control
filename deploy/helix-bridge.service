@@ -1,0 +1,42 @@
+# systemd unit for the Helix Bridge server. Installed by install.sh to
+# /etc/systemd/system/helix-bridge.service. Settings: /etc/helix-bridge/helix-bridge.env
+[Unit]
+Description=Helix Bridge (web UI for a Line 6 HX device)
+Documentation=https://github.com/anthonybartczak/helix-remote-control
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=helix-bridge
+Group=helix-bridge
+# tonepush keeps its files under $HOME/.local/share/tonepush.
+Environment=HOME=/var/lib/helix-bridge
+EnvironmentFile=/etc/helix-bridge/helix-bridge.env
+StateDirectory=helix-bridge
+WorkingDirectory=/var/lib/helix-bridge
+ExecStart=/opt/helix-bridge/bin/helix-bridge
+Restart=on-failure
+RestartSec=3
+
+# Port 80 as a non-root user, so the iPad URL needs no port number.
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+NoNewPrivileges=yes
+
+# Hardening. No PrivateDevices: tonepush needs /dev/bus/usb.
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+# AF_NETLINK: USB hotplug events in nusb.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+
+# RAM budget on the Pi 3A+ (AGENTS.md 5.2): server + tonepush children.
+MemoryHigh=120M
+MemoryMax=180M
+
+[Install]
+WantedBy=multi-user.target
