@@ -72,7 +72,8 @@ HTTP API over the device. Endpoints: [docs/api.md](docs/api.md). Writes need
      "Desktop development with C++" workload
      (`winget install Microsoft.VisualStudio.2022.BuildTools --override "--add Microsoft.VisualStudio.Workload.VCTools --includeRecommended --passive"`).
      The `windows-gnu` toolchain fails without a separate `dlltool.exe`.
-3. Checks before pushing: `cargo fmt`, `cargo clippy --all-targets -- -D warnings`, `cargo test`.
+3. Checks before pushing: `cargo fmt`, `cargo clippy --all-targets -- -D warnings`,
+   `cargo test`, `cargo test -p hx-usb`, `shellcheck deploy/*.sh`, and the web tests below.
 
 | Variable | Default | Meaning |
 |---|---|---|
@@ -108,7 +109,11 @@ in the browser):
 - **Load a preset:** ‹ ›, a bank tile, or Presets → pick → Load. Asks first if there are
   unsaved edits.
 - **Block on/off:** select a block, tap Turn on / Turn off.
-- **Parameter:** tap a parameter, type a value in the shown units (`40`, `2.2 kHz`).
+- **Parameter:** drag its slider left or right (the value shows under your finger), pick
+  a menu entry, or flip a switch. Writes go out at most every 100 ms, one at a time.
+  Tap the value to type an exact one in the shown units (`40`, `2.2 kHz`). Sliders need
+  HX Edit data on the server (`usb` with `/vendor`); without it every value is typed.
+  The `fake` backend uses synthetic ranges.
 - **Rename / Save:** buttons in the preset bar. Save asks first and overwrites the
   loaded preset. "Unsaved" in the bar means edits are only in the edit buffer.
 
@@ -120,12 +125,18 @@ built). Known limits:
   returns to the page, and on "Refresh from device" (tap the connection dots).
 - **Block categories are guessed** from the model name (`CATEGORY_RULES` in `app.js`);
   unknown models show grey `FX`. Real categories need the HX Edit catalog on the server.
-- **Slider fill only for `%` values.** The API sends display strings, so other scales are
-  unknown and their bars stay empty.
 - **Active snapshot is not shown.** `tonepush chain` does not report it.
-- **Parameters are typed, not dragged.** A slider needs each parameter's range, which
-  the API does not send yet.
+- **Sliders snap to a grid** (0.01 on 0..1 knobs, 1 dB on levels). Type for finer values.
+  Without HX Edit data (`cli`, or no `/vendor`), parameters are typed and only `%`
+  values get a bar.
 - **Unsaved flag:** with `usb`, pedal edits count too; with `cli`, only bridge edits.
+
+Web tests (Node 22; Chromium from Playwright, never `playwright install` in the cloud):
+
+1. Rate limiter unit tests: `node --test web/tests/latest.test.mjs`
+2. Drag check against the fake backend: `cargo build --manifest-path server/Cargo.toml`,
+   then `NODE_PATH=$(npm root -g) node web/tests/drag.mjs` (needs `playwright` installed
+   globally; about 15 s).
 
 ## Deploying to the Pi (`deploy/`)
 

@@ -48,6 +48,9 @@ jobs:
       - name: shellcheck deploy scripts
         working-directory: .
         run: shellcheck deploy/*.sh
+      - name: web unit tests (rate limiter)
+        working-directory: .
+        run: node --test web/tests/latest.test.mjs
 
   pi-bundle:
     needs: check

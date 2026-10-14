@@ -404,3 +404,43 @@ button.tile:disabled { opacity: .6; }
   .blocker-title { font-size: var(--fs-2xl); }
   .jumps { width: 52px; }
 }
+
+/* ---------- Parameter controls (sliders, pickers, toggles) ---------- */
+/* Every control is at least 44 px tall (--tap). Sliders drag relative to
+   where the finger lands; a vertical swipe still scrolls (touch-action). */
+
+.param.ctl { gap: var(--s1); }
+.param-value.typed {
+  min-height: var(--tap); padding: 0 var(--s2); margin-right: calc(-1 * var(--s2));
+  border-radius: var(--r2); text-align: right;
+}
+.param-value.typed:not(:disabled):active { background: var(--surface-2); }
+.slider {
+  --pos: 0%;
+  height: var(--tap); position: relative; border-radius: var(--r2); background: var(--surface-2);
+  touch-action: pan-y; user-select: none; -webkit-user-select: none; cursor: ew-resize; overflow: hidden;
+}
+.slider .track-fill { width: var(--pos); }
+.slider .track-thumb { left: var(--pos); width: 6px; margin-left: -3px; border-radius: 3px; }
+.slider.dragging { outline: 2px solid var(--c); }
+.slider.dragging .track-fill { opacity: .55; }
+.slider[aria-disabled="true"] { cursor: default; opacity: .6; }
+.menu {
+  height: var(--tap); width: 100%; padding: 0 var(--s3); border: 0; border-radius: var(--r2);
+  background: var(--surface-2); color: var(--ink); font: 600 var(--fs-l) var(--font-mono);
+  -webkit-appearance: none; appearance: none;
+}
+.menu:disabled { opacity: .6; }
+.switch {
+  height: var(--tap); display: flex; align-items: center; gap: var(--s3); padding: 0 var(--s3);
+  border-radius: var(--r2); background: var(--surface-2); font: 600 var(--fs-l) var(--font-mono); text-align: left;
+}
+.switch:disabled { opacity: .6; }
+.switch-knob {
+  width: 40px; height: 24px; flex: none; border-radius: 12px; background: var(--line); position: relative;
+}
+.switch-knob::after {
+  content: ""; position: absolute; top: 3px; left: 3px; width: 18px; height: 18px; border-radius: 50%; background: var(--ink);
+}
+.switch[aria-pressed="true"] .switch-knob { background: var(--c); }
+.switch[aria-pressed="true"] .switch-knob::after { left: 19px; }

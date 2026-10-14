@@ -6,6 +6,10 @@
 // in this browser.
 // Live updates: with the usb backend the server pushes the chain over a
 // WebSocket (/api/live) whenever the pedal changes, footswitches included.
+// Parameter controls: with HX Edit data on the server, continuous parameters
+// are sliders, menus pickers and switches toggles (/api/models/{id}); writes
+// go out by native value through LatestSender (latest.js), at most one in
+// flight. Tapping a value still types it.
 'use strict';
 
 const SLOTS = 9; // HX Effects block slots. Slot = chain position - 1 (position 1 is the input).
@@ -61,6 +65,8 @@ const state = {
   live: false, // server pushes device changes (/api/health .live)
   unsaved: false, // edits made through the bridge since the last load or save
   busy: null, // write in progress: short label, e.g. 'Saving…'
+  models: new Map(), // model_id -> /api/models/{id} | MODEL_PENDING | null (no data: type values)
+  drag: null, // slider under a finger: { key, el, pointer, x0, i0, i, started, ctx }
 };
 
 // ---------- API ----------
@@ -132,6 +138,7 @@ async function doRefresh(full) {
 
     state.chain = await api('/api/chain');
     state.unsaved = !!state.chain.unsaved;
+    loadModels();
     keepSelection();
     syncLoaded();
     state.device = 'ok';
@@ -230,6 +237,7 @@ function connectLive() {
 function applyLiveChain(chain) {
   state.chain = chain;
   state.unsaved = !!chain.unsaved;
+  loadModels();
   state.device = 'ok';
   keepSelection();
   syncLoaded();
@@ -343,10 +351,238 @@ function editParam(index) {
   const b = slotMap().get(state.selectedSlot);
   const p = b?.params.find((x) => x.index === index);
   if (!p) return;
+  pins.delete(paramKey(b, p));
   const value = window.prompt(`${b.model} · ${p.name}\nNow ${p.value}. Type a value in the same units, e.g. ${p.value}:`, p.value);
   if (value == null || !value.trim() || value.trim() === p.value) return;
   write(`Setting ${p.name}…`, `/api/blocks/${b.position}/params/${p.index}`, { value: value.trim() },
     (res) => { p.value = res.value || value.trim(); });
+}
+
+// ---------- Parameter controls ----------
+
+const MODEL_PENDING = 'pending';
+const SLIDE_GAP_MS = 100; // least time between two slider writes (latest.js)
+const PIN_HOLD_MS = 1500; // after the last write, ignore older echoes this long
+const DRAG_START_PX = 6; // horizontal travel before a touch counts as a drag
+
+/** Fetch metadata for models in the chain not seen yet. Catalog only, no USB. */
+function loadModels() {
+  for (const b of state.chain?.blocks || []) {
+    const id = b.model_id;
+    if (id == null || state.models.has(id)) continue;
+    state.models.set(id, MODEL_PENDING);
+    api(`/api/models/${id}`).then((m) => {
+      state.models.set(id, m);
+      renderParams();
+    }, (e) => {
+      // No data for it: type values. Network trouble: try again next chain.
+      if (e instanceof ApiError && e.code === 'no_catalog') state.models.set(id, null);
+      else state.models.delete(id);
+    });
+  }
+}
+
+const paramKey = (b, p) => `${b.position}/${p.index}`;
+
+/** The control for a parameter, or null to keep tap-to-type only. */
+function controlOf(b, p) {
+  const m = state.models.get(b.model_id);
+  if (!m || m === MODEL_PENDING || typeof p.native !== 'number') return null;
+  const c = m.params.find((x) => x.index === p.index);
+  return c && c.kind !== 'text' && c.labels.length === c.steps + 1 ? c : null;
+}
+
+/** Native value at grid position i; the server has the same formula (controls.rs). */
+function nativeAt(c, i) {
+  if (i >= c.steps) return c.max;
+  const t = i / c.steps;
+  return c.scale === 'log' ? c.min * Math.pow(c.max / c.min, t) : c.min + t * (c.max - c.min);
+}
+
+/** Nearest grid position to a native value. */
+function indexOf(c, native) {
+  let t = c.scale === 'log'
+    ? Math.log(native / c.min) / Math.log(c.max / c.min)
+    : (native - c.min) / (c.max - c.min);
+  if (!Number.isFinite(t)) t = 0;
+  return Math.max(0, Math.min(c.steps, Math.round(t * c.steps)));
+}
+
+// What this client last sent per parameter. While writes are in flight, and
+// briefly after, chain updates that disagree are older echoes: the control
+// keeps the pinned value instead of jumping under the finger.
+const pins = new Map(); // key -> { model, native, label, until }
+
+function shownValue(b, p) {
+  const key = paramKey(b, p);
+  const pin = pins.get(key);
+  if (pin && pin.model === b.model_id) {
+    const active = sender.busy(key) || state.drag?.key === key;
+    const agrees = typeof p.native === 'number' &&
+      Math.abs(p.native - pin.native) <= 1e-4 * Math.max(1, Math.abs(pin.native));
+    if ((active || Date.now() < pin.until) && !agrees) return { native: pin.native, label: pin.label };
+    if (!active) pins.delete(key);
+  } else if (pin) {
+    pins.delete(key);
+  }
+  return { native: p.native, label: p.value };
+}
+
+function findParam(position, index) {
+  const b = state.chain?.blocks.find((x) => x.position === position);
+  return b ? [b, b.params.find((x) => x.index === index)] : [null, null];
+}
+
+const sender = new LatestSender(
+  (key, v) => api(`/api/blocks/${v.position}/params/${v.index}`, {
+    method: 'POST', body: { native: v.native, model: v.model }, token: sessionToken,
+  }),
+  {
+    gap: SLIDE_GAP_MS,
+    onResult(key, v, res) {
+      storeToken(sessionToken);
+      state.unsaved = !!res.unsaved;
+      const [b, p] = findParam(v.position, v.index);
+      if (p && b.model_id === v.model) {
+        p.native = v.native;
+        if (res.value) p.value = res.value;
+      }
+      renderPresetBar();
+      renderControls();
+    },
+    onError(key, v, e) {
+      sender.cancel(key);
+      pins.delete(key);
+      const err = e instanceof ApiError ? e : new ApiError(0, 'client', String(e));
+      if (err.code === 'unauthorized') {
+        sessionToken = '';
+        storeToken('');
+        state.banner = { message: 'Token not accepted.', context: 'Touch the control again to enter it.' };
+      } else if (err.code === 'unreachable' || err.code === 'no_device') {
+        handleError(err);
+      } else {
+        if (err.code === 'writes_disabled') state.writes = false;
+        state.banner = { message: err.message, context: 'Value not set.' };
+        if (err.code === 'stale') refresh({ full: false });
+      }
+      if (!state.drag) render(); else renderBanner();
+    },
+    onIdle(key) {
+      const pin = pins.get(key);
+      if (pin) pin.until = Date.now() + PIN_HOLD_MS;
+      if (!state.drag) renderParams();
+      setTimeout(() => { if (!state.drag) renderParams(); }, PIN_HOLD_MS + 50);
+    },
+  },
+);
+
+/** The token for a control write, asking once if none is known. */
+function controlToken() {
+  if (!sessionToken) sessionToken = storedToken() || askToken(false);
+  return sessionToken;
+}
+
+/** Context of a control element: block, parameter, metadata. */
+function controlContext(el) {
+  const b = slotMap().get(state.selectedSlot);
+  const p = b?.params.find((x) => x.index === Number(el.dataset.ctl));
+  const c = p && controlOf(b, p);
+  return c ? { b, p, c, key: paramKey(b, p) } : null;
+}
+
+/** Queue a write of grid position i (last value wins, see latest.js). */
+function sendIndex(ctx, i) {
+  const { b, p, c, key } = ctx;
+  const native = nativeAt(c, i);
+  pins.set(key, { model: b.model_id, native, label: c.labels[i], until: Infinity });
+  sender.push(key, { position: b.position, index: p.index, native, model: b.model_id });
+}
+
+/** Move a slider's drawing to grid position i without re-rendering. */
+function paintSlider(el, c, i) {
+  el.style.setProperty('--pos', `${(i / c.steps) * 100}%`);
+  el.setAttribute('aria-valuenow', String(i));
+  el.setAttribute('aria-valuetext', c.labels[i]);
+  const value = el.closest('.param')?.querySelector('.param-value');
+  if (value) value.textContent = c.labels[i];
+}
+
+function controlReady() {
+  return canWrite() && !!controlToken();
+}
+
+/** Like controlReady, but a drag never starts behind a token prompt. */
+function dragReady() {
+  if (!canWrite()) return false;
+  if (sessionToken || (sessionToken = storedToken())) return true;
+  controlToken(); // asks; the next touch drags
+  return false;
+}
+
+function sliderDown(e) {
+  const el = e.target.closest('[data-slider]');
+  if (!el || state.drag || el.getAttribute('aria-disabled') === 'true') return;
+  const ctx = controlContext(el);
+  if (!ctx || !dragReady()) return;
+  const i = Number(el.getAttribute('aria-valuenow'));
+  state.drag = { key: ctx.key, el, pointer: e.pointerId, x0: e.clientX, i0: i, i, started: false, ctx };
+  try { el.setPointerCapture(e.pointerId); } catch { /* pointer already gone */ }
+}
+
+function sliderMove(e) {
+  const d = state.drag;
+  if (!d || e.pointerId !== d.pointer) return;
+  const dx = e.clientX - d.x0;
+  if (!d.started) {
+    if (Math.abs(dx) < DRAG_START_PX) return;
+    d.started = true;
+    d.el.classList.add('dragging');
+  }
+  const width = d.el.clientWidth || 1;
+  const i = Math.max(0, Math.min(d.ctx.c.steps, Math.round(d.i0 + (dx / width) * d.ctx.c.steps)));
+  if (i === d.i) return;
+  d.i = i;
+  paintSlider(d.el, d.ctx.c, i);
+  sendIndex(d.ctx, i);
+}
+
+function sliderUp(e) {
+  const d = state.drag;
+  if (!d || e.pointerId !== d.pointer) return;
+  state.drag = null;
+  d.el.classList.remove('dragging');
+  try { d.el.releasePointerCapture(d.pointer); } catch { /* released already */ }
+  render(); // what arrived during the drag
+}
+
+function sliderKey(e) {
+  const el = e.target.closest('[data-slider]');
+  const step = { ArrowLeft: -1, ArrowDown: -1, ArrowRight: 1, ArrowUp: 1 }[e.key];
+  if (!el || !step || el.getAttribute('aria-disabled') === 'true') return;
+  e.preventDefault();
+  const ctx = controlContext(el);
+  if (!ctx || !controlReady()) return;
+  const i = Math.max(0, Math.min(ctx.c.steps, Number(el.getAttribute('aria-valuenow')) + step));
+  paintSlider(el, ctx.c, i);
+  sendIndex(ctx, i);
+}
+
+function menuChange(e) {
+  const el = e.target.closest('[data-menu]');
+  if (!el) return;
+  const ctx = controlContext(el);
+  if (!ctx || !controlReady()) { renderParams(); return; }
+  sendIndex(ctx, Number(el.value));
+}
+
+function switchToggle(el) {
+  const ctx = controlContext(el);
+  if (!ctx || !controlReady()) return;
+  const on = el.getAttribute('aria-pressed') === 'true';
+  const i = on ? 0 : 1;
+  el.setAttribute('aria-pressed', String(!on));
+  el.querySelector('.switch-label').textContent = ctx.c.labels[i];
+  sendIndex(ctx, i);
 }
 
 function renamePreset() {
@@ -530,6 +766,7 @@ function renderChain() {
 }
 
 function renderParams() {
+  if (state.drag) return; // never rebuild a slider under the finger; sliderUp renders
   const el = $('params');
   if (!state.chain) {
     const cells = Array.from({ length: 6 }, () => '<div class="param"><div class="skel-line"></div><div class="track"></div></div>').join('');
@@ -548,6 +785,8 @@ function renderParams() {
   const meta = `${catName} · slot ${state.selectedSlot} · ${b.enabled ? 'on' : 'bypassed'}`;
   const live = canWrite();
   const params = b.params.map((p) => {
+    const c = controlOf(b, p);
+    if (c) return controlHtml(b, p, c, live);
     const pct = percentOf(p.value);
     const bar = pct == null ? '' :
       `<div class="track-fill" style="width:${pct}%"></div><div class="track-thumb" style="left:${pct}%"></div>`;
@@ -565,6 +804,33 @@ function renderParams() {
     `<div class="ph-model">${esc(b.model)}</div><div class="ph-meta">${esc(meta)}</div><div class="spacer"></div>` +
     `${toggle}</div>` +
     `<div class="params-grid">${params}</div>`;
+}
+
+/** One parameter as a slider, picker or toggle; the value stays tap-to-type. */
+function controlHtml(b, p, c, live) {
+  const { native, label } = shownValue(b, p);
+  const i = indexOf(c, native);
+  const off = live ? '' : ' disabled';
+  const name = `<span class="param-name">${esc(p.name)}</span>`;
+  if (c.kind === 'menu') {
+    const options = c.labels.map((l, n) => `<option value="${n}"${n === i ? ' selected' : ''}>${esc(l)}</option>`).join('');
+    return `<div class="param ctl"><div class="param-top">${name}</div>` +
+      `<select class="menu" data-ctl="${p.index}" data-menu aria-label="${esc(p.name)}"${off}>${options}</select></div>`;
+  }
+  if (c.kind === 'switch') {
+    const on = i === 1;
+    return `<div class="param ctl"><div class="param-top">${name}</div>` +
+      `<button class="switch" type="button" data-ctl="${p.index}" data-switch aria-pressed="${on}" aria-label="${esc(p.name)}"${off}>` +
+      `<span class="switch-knob"></span><span class="switch-label">${esc(c.labels[i])}</span></button></div>`;
+  }
+  const value = state.writes
+    ? `<button class="param-value typed" type="button" data-param="${p.index}"${off} aria-label="${esc(p.name)}: ${esc(label)}. Tap to type a value">${esc(label)}</button>`
+    : `<span class="param-value">${esc(label)}</span>`;
+  return `<div class="param ctl"><div class="param-top">${name}${value}</div>` +
+    `<div class="slider" data-ctl="${p.index}" data-slider role="slider" tabindex="${live ? 0 : -1}" aria-label="${esc(p.name)}"` +
+    ` aria-valuemin="0" aria-valuemax="${c.steps}" aria-valuenow="${i}" aria-valuetext="${esc(label)}"` +
+    ` aria-disabled="${!live}" style="--pos:${(i / c.steps) * 100}%">` +
+    '<div class="track-fill"></div><div class="track-thumb"></div></div></div>';
 }
 
 function renderBank() {
@@ -746,6 +1012,8 @@ document.addEventListener('click', (e) => {
     toggleBlock();
   } else if (t.matches('[data-param]')) {
     editParam(Number(t.dataset.param));
+  } else if (t.matches('[data-switch]')) {
+    switchToggle(t);
   } else if (t.id === 'rename-btn') {
     renamePreset();
   } else if (t.id === 'save-btn') {
@@ -756,6 +1024,15 @@ document.addEventListener('click', (e) => {
     updateActiveJump();
   }
 });
+
+const paramsEl = $('params');
+paramsEl.addEventListener('pointerdown', sliderDown);
+paramsEl.addEventListener('pointermove', sliderMove);
+paramsEl.addEventListener('pointerup', sliderUp);
+paramsEl.addEventListener('pointercancel', sliderUp);
+paramsEl.addEventListener('lostpointercapture', sliderUp);
+paramsEl.addEventListener('keydown', sliderKey);
+paramsEl.addEventListener('change', menuChange);
 
 $('filter').addEventListener('input', (e) => {
   state.browser.filter = e.target.value;
