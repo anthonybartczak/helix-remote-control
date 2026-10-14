@@ -52,7 +52,7 @@ the chain; the UI does this for parameter and bypass edits.
 - Snapshot switch is opcode 88 (`{92: index}`); a snapshot the preset lacks is refused by
   the pedal (502 `failed`, "error -46"). Tempo has no opcode: TonePush rewrites the whole
   preset document (opcode 21) and reads it back, about 1 s. Both are confirmed on an HX
-  Stomp by TonePush and **not yet verified on the HX Effects**.
+  Stomp by TonePush and verified on the HX Effects 3.80 (Pi 4, 2026-10-14).
 - Not exposed: reorder (`tonepush move`, marked untested on hardware by TonePush),
   model change, snapshot rename, routing, IRs, settings, restore.
 

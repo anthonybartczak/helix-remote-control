@@ -120,7 +120,7 @@ in the browser):
   cannot tell). The chain updates from the pedal.
 - **Tempo:** tap TAP on the beat; the BPM shows as you tap (amber until the pedal has
   it) and is sent once you pause for 1.5 s. Tap the BPM to type a value (40–240).
-  Snapshot and tempo are not yet verified on the HX Effects.
+  Snapshot switch, tap and typed tempo verified 2026-10-14 on the HX Effects 3.80 (Pi 4).
 - **Rename / Save:** buttons in the preset bar. Save asks first and overwrites the
   loaded preset. "Unsaved" in the bar means edits are only in the edit buffer.
 
