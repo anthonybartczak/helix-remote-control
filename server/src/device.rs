@@ -12,14 +12,15 @@ use std::time::{Duration, Instant};
 use tokio::process::Command as Process;
 use tokio::sync::{broadcast, Mutex};
 
+pub use crate::controls::ModelInfo;
 pub use crate::fake::FakeDevice;
 
-/// The `tonepush` commands the bridge may run.
+/// The `tonepush` commands the bridge may run, and [`Command::SetNative`].
 ///
 /// Writes are limited to what phase 6 needs and TonePush has used on hardware:
 /// load, bypass, parameter, rename, save. `move` (reorder) is left out: TonePush
 /// marks it untested against hardware (AGENTS.md 6, unverified operations).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Command {
     List,
     Info,
@@ -45,6 +46,16 @@ pub enum Command {
         param: u32,
         value: String,
     },
+    /// Set a parameter by its native value (a slider position), checked
+    /// against the HX Edit catalog. `model` is the model the client saw in
+    /// that slot; a different one there answers [`DeviceError::Stale`].
+    /// Edit buffer only. No `tonepush` equivalent.
+    SetNative {
+        block: u32,
+        param: u32,
+        native: f32,
+        model: u32,
+    },
     /// Rename a stored preset. Written to the device's flash at once.
     Rename {
         setlist: u32,
@@ -56,11 +67,12 @@ pub enum Command {
 }
 
 impl Command {
-    /// Arguments after the program name.
+    /// Arguments after the program name, or `None` for a command `tonepush`
+    /// does not have.
     ///
     /// User text goes after `--`, so a value like `-22.1` is not read as a flag.
-    pub fn args(&self) -> Vec<String> {
-        match self {
+    pub fn args(&self) -> Option<Vec<String>> {
+        Some(match self {
             Command::List => vec!["list".into()],
             Command::Info => vec!["info".into()],
             Command::Setlists => vec!["setlists".into()],
@@ -104,7 +116,8 @@ impl Command {
                 name.clone(),
             ],
             Command::Save => vec!["save".into()],
-        }
+            Command::SetNative { .. } => return None,
+        })
     }
 
     /// True if the command changes the device.
@@ -114,13 +127,14 @@ impl Command {
             Command::Select { .. }
                 | Command::Enable { .. }
                 | Command::Set { .. }
+                | Command::SetNative { .. }
                 | Command::Rename { .. }
                 | Command::Save
         )
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum DeviceError {
     /// `tonepush` could not be started at all.
     Spawn(String),
@@ -134,6 +148,10 @@ pub enum DeviceError {
     NoFixture(Command),
     /// Output did not have the expected shape.
     Parse(String),
+    /// The request no longer matches the device (another model in that slot).
+    Stale(String),
+    /// The device side refused the value before sending it (out of range).
+    Invalid(String),
 }
 
 impl fmt::Display for DeviceError {
@@ -146,6 +164,7 @@ impl fmt::Display for DeviceError {
             DeviceError::Timeout(d) => write!(f, "tonepush took longer than {}s", d.as_secs()),
             DeviceError::NoFixture(c) => write!(f, "no fixture recorded for {c:?}"),
             DeviceError::Parse(e) => write!(f, "unexpected tonepush output: {e}"),
+            DeviceError::Stale(e) | DeviceError::Invalid(e) => f.write_str(e),
         }
     }
 }
@@ -167,13 +186,43 @@ pub trait Device: Send + Sync + 'static {
     fn subscribe(&self) -> Option<broadcast::Receiver<Live>> {
         None
     }
+
+    /// `chain` output plus the native values behind it, for sliders. Natives
+    /// are `None` unless the backend has parameter metadata ([`Device::model`]).
+    fn chain(&self) -> impl Future<Output = Result<(String, Option<Natives>)>> + Send {
+        async move { Ok((self.run(Command::Chain).await?, None)) }
+    }
+
+    /// Parameter metadata for a model number (`/api/models/{id}`). `None`
+    /// without HX Edit's catalog (`cli` backend, or `usb` with no `/vendor`).
+    fn model(&self, _id: u32) -> Option<ModelInfo> {
+        None
+    }
+}
+
+/// Native parameter values of the loaded preset, per block.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Natives(pub Vec<BlockNatives>);
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct BlockNatives {
+    /// Block number as `chain` prints it.
+    pub position: u32,
+    /// Model number (`/api/models/{id}`).
+    pub model: u32,
+    /// Values of the primary model, by parameter index.
+    pub values: Vec<f32>,
 }
 
 /// Something that changed on the device without the client asking.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Live {
     /// The loaded preset's chain, in `tonepush chain` format, after a change.
-    Chain { text: String, cause: Cause },
+    Chain {
+        text: String,
+        cause: Cause,
+        natives: Option<Natives>,
+    },
     /// The device session came up (`true`) or was lost (`false`).
     Connected(bool),
 }
@@ -258,8 +307,13 @@ impl CliDevice {
     }
 
     async fn run_once(&self, cmd: &Command) -> Result<String> {
+        let args = cmd.args().ok_or_else(|| {
+            DeviceError::Invalid(
+                "setting a parameter by native value needs HELIX_BACKEND=usb".into(),
+            )
+        })?;
         let child = Process::new(&self.program)
-            .args(cmd.args())
+            .args(args)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -306,6 +360,9 @@ impl Device for CliDevice {
         if cmd.is_write() {
             tracing::info!(args = ?cmd.args(), "device write");
         }
+        if cmd.args().is_none() {
+            return self.run_once(&cmd).await;
+        }
         // Safe to retry a write too: a claim failure means tonepush never got
         // a session, so nothing reached the device.
         let mut result = self.run_spaced(&mut session, &cmd).await;
@@ -340,17 +397,24 @@ mod tests {
             param: 0,
             value: "-22.1 dB".into(),
         };
-        assert_eq!(set.args(), ["set", "--", "10", "0", "-22.1 dB"]);
+        assert_eq!(set.args().unwrap(), ["set", "--", "10", "0", "-22.1 dB"]);
         let rename = Command::Rename {
             setlist: 0,
             index: 7,
             name: "--help".into(),
         };
         assert_eq!(
-            rename.args(),
+            rename.args().unwrap(),
             ["rename", "--setlist=0", "--", "7", "--help"]
         );
         assert!(rename.is_write() && Command::Save.is_write());
+        let native = Command::SetNative {
+            block: 2,
+            param: 0,
+            native: 0.4,
+            model: 269,
+        };
+        assert!(native.is_write() && native.args().is_none());
         assert!(!Command::Chain.is_write());
     }
 
@@ -417,6 +481,21 @@ mod tests {
             .unwrap_err();
         assert!(matches!(err, DeviceError::NotConnected(_)), "{err}");
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// `tonepush` has no native-value set; the CLI backend refuses it
+    /// without starting a process.
+    #[tokio::test]
+    async fn cli_refuses_native_values() {
+        let dev = CliDevice::new("/nonexistent/tonepush", Duration::from_secs(1));
+        let cmd = Command::SetNative {
+            block: 2,
+            param: 0,
+            native: 0.4,
+            model: 269,
+        };
+        let err = dev.run(cmd).await.unwrap_err();
+        assert!(matches!(err, DeviceError::Invalid(_)), "{err}");
     }
 
     #[tokio::test]

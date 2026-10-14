@@ -13,6 +13,7 @@ one. `/api/device` is cached after the first success (cleared when the device is
 | GET | `/api/presets?setlist=0` | `tonepush presets --setlist=N` | `{setlist, presets: [{index, label, name, loaded}]}` |
 | GET | `/api/preset` | `tonepush preset` | `{setlist, index, label, name, firmware, build}` |
 | GET | `/api/chain` | `tonepush chain` | `{label, name, tempo, snapshots, blocks, unsaved}` |
+| GET | `/api/models/{id}` | none (HX Edit catalog) | Parameter metadata for sliders, see below. 404 `no_catalog` without it |
 
 `unsaved` is true after a bypass or parameter change made through the bridge, until the
 next load or save. Edits made on the pedal itself are not seen; it resets on restart.
@@ -29,7 +30,7 @@ the chain; the UI does this for parameter and bypass edits.
 |---|---|---|---|---|
 | POST | `/api/select` | `{index, setlist?}` | `tonepush select --setlist=S -- I` | Load a preset. **Drops unsaved edits** |
 | POST | `/api/blocks/{position}/enabled` | `{enabled}` | `tonepush enable -- P on\|off` | Bypass on/off. Edit buffer only |
-| POST | `/api/blocks/{position}/params/{index}` | `{value}` | `tonepush set -- P I V` | Set a parameter. Edit buffer only |
+| POST | `/api/blocks/{position}/params/{index}` | `{value}` or `{native, model}` | `tonepush set -- P I V`; native: `usb`/`fake` only | Set a parameter. Edit buffer only |
 | POST | `/api/presets/{index}/rename` | `{name, setlist?}` | `tonepush rename --setlist=S -- I N` | Rename a stored preset. Written at once |
 | POST | `/api/save` | `{}` | `tonepush save` | Commit the edit buffer over the loaded preset |
 
@@ -37,6 +38,11 @@ the chain; the UI does this for parameter and bypass edits.
 - `value` is typed in display units, as `/api/chain` shows them (`40`, `40 %`,
   `2.2 kHz`, `-22.1 dB`); TonePush converts with the HX Edit catalog. Without the catalog
   it must be the raw number. 1–32 printable ASCII characters.
+- `{native, model}` sets the value as the device stores it (a slider position, see
+  "Parameter metadata"). `model` is the block's `model_id` from `/api/chain`; if the slot
+  now holds another model the answer is 409 `stale` (re-read the chain). Outside the
+  catalog's `min..max`: 400 `bad_request`. Menus are sent as whole numbers and switches as
+  booleans, as the device expects (TonePush #7). The `cli` backend refuses it (400).
 - `name`: 1–16 printable ASCII characters (HX preset name limit), trimmed.
 - Edits change the device's edit buffer: audible at once, lost on the next load unless
   saved. `save` keeps the current name and slot; it never writes another slot.
@@ -60,6 +66,9 @@ the chain; the UI does this for parameter and bypass edits.
 - `value` is the display string (`"2.2 kHz"`, `"+0.0 dB"`). Without HX Edit data on the
   host, models read `model 269`, params `param 0` and values are raw numbers.
 - `cab` (model + params) appears only on Amp+Cab blocks; never on HX Effects.
+- `model_id` (block) and `native` (param) appear only when the server has parameter
+  metadata: `usb` with HX Edit data in `/vendor`, or `fake` (synthetic). `native` is the
+  value as stored (`0.02` for `2 %`); primary model only.
 - Preset names are not unique (factory slots are all `New Preset`). Key on `index`.
 
 ## Status codes
@@ -70,10 +79,12 @@ Device errors carry a stable `code` so clients need not parse messages:
 | Status | `code` | Cause |
 |---|---|---|
 | 400 | – | Bad query string or JSON body, e.g. `setlist=x` (plain-text body from axum; 415/422 for wrong content type or fields) |
-| 400 | `bad_request` | Write input failed checks: block 0, empty or too-long name/value, non-ASCII |
+| 400 | `bad_request` | Write input failed checks: block 0, empty or too-long name/value, non-ASCII, native value out of range, neither or both of `value`/`native` |
 | 401 | `unauthorized` | Write without the right `Authorization: Bearer` token |
 | 403 | `writes_disabled` | Write, but the server has no `HELIX_TOKEN` |
 | 404 | `no_fixture` | Fake backend has no fixture for the request (only setlist 0 is recorded) |
+| 404 | `no_catalog` | `/api/models/{id}`: no HX Edit data on the server, or an unknown model |
+| 409 | `stale` | Native write for a model that is no longer in that slot |
 | 502 | `failed` | `tonepush` exited with an error (message is its stderr) |
 | 502 | `parse` | `tonepush` printed unexpected output |
 | 503 | `no_device` | `tonepush` found no HX device on USB (`no HX device found`) |
@@ -83,6 +94,43 @@ Device errors carry a stable `code` so clients need not parse messages:
 "could not claim interface" failures are retried 3 times (after 1 s, 3 s, 8 s) before
 returning 502.
 
+## Parameter metadata: `GET /api/models/{id}`
+
+Read from HX Edit's catalog (`hx_catalog::Param`), no device call. Fetch once per model
+and keep it: it never changes while the server runs.
+
+```json
+{
+  "id": 269, "name": "Fassel",
+  "params": [
+    { "index": 0, "name": "Position", "kind": "continuous", "min": 0, "max": 1,
+      "default": 0.5, "scale": "linear", "steps": 100, "labels": ["0 %", "1 %", "…", "100 %"] }
+  ]
+}
+```
+
+- `kind`: `continuous` (slider), `menu` (picker), `switch` (toggle) or `text` (no control,
+  type the value).
+- Grid position `i` (0..=`steps`) is the native value `min + i/steps·(max−min)`, or
+  `min·(max/min)^(i/steps)` when `scale` is `log` (ranges spanning 100× or more, such as
+  frequencies). `labels[i]` is what HX Edit shows there, so a UI can show the value under
+  the finger without a request. Menus: `labels[i]` is the value `min + i`. Switches:
+  `labels` is `[off, on]`.
+- Steps: 0.01 on a 0..1 knob, 1 dB on −120..+12 dB, 200 log steps; at most about 150 linear
+  steps. Values between grid positions stay reachable by typing.
+- `synthetic: true` marks the fake backend's made-up ranges (`server/src/fake.rs`,
+  `synthetic`). They reproduce the recorded display values, not HX Edit's data.
+
+Rate limits for native writes:
+
+- **Client** (`web/latest.js`): at most one write in flight, starts at least 100 ms
+  apart, last value wins per parameter; nothing queues.
+- **Server** (`usb`): parameter writes queued behind each other for the same parameter
+  are folded into the newest (every caller gets its answer), and op30s go out at least
+  40 ms apart. HX Edit sends one op30 per move step (TonePush opcodes.md 4.3); this
+  device wedges when hammered (PROTOCOL.md), so the bridge stays well below that.
+- A native write uses the cached document for the model (no preset read per step).
+
 ## Live updates: `GET /api/live` (WebSocket)
 
 With `HELIX_BACKEND=usb` (and `fake`, which echoes its own writes) `/api/health` reports
@@ -90,7 +138,7 @@ With `HELIX_BACKEND=usb` (and `fake`, which echoes its own writes) `/api/health`
 
 | Message | When |
 |---|---|
-| `{"type": "chain", "chain": {…same as /api/chain…}}` | The loaded preset's chain changed: footswitch, knob, preset or snapshot switch on the pedal, or any client's write |
+| `{"type": "chain", "chain": {…same as /api/chain…}}` | The loaded preset's chain changed: footswitch, knob, preset or snapshot switch on the pedal, or any client's write. Carries `model_id`/`native` like `/api/chain` |
 | `{"type": "device", "connected": true\|false}` | The USB session came up or was lost |
 
 How the `usb` backend sees changes: it reads the pedal's notifications every 700 ms
@@ -105,7 +153,7 @@ load (4, 8, 22/object 28).
 
 ## Web UI
 
-`GET /`, `/app.css`, `/app.js` serve the UI from `/web`. The files are compiled into
+`GET /`, `/app.css`, `/app.js`, `/latest.js` serve the UI from `/web`. The files are compiled into
 the binary (`include_str!`), so edit them and rebuild; sent with `Cache-Control: no-cache`.
 
 Not yet: WebSocket live state (needs the bridge to hold one device session; the CLI

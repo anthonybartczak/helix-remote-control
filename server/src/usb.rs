@@ -23,7 +23,8 @@ use hx_proto::msgpack::Value;
 use hx_usb::Session;
 use tokio::sync::{broadcast, oneshot};
 
-use crate::device::{Cause, Command, Device, DeviceError, Live, Result};
+use crate::controls::{self, ModelInfo};
+use crate::device::{BlockNatives, Cause, Command, Device, DeviceError, Live, Natives, Result};
 
 /// How often an idle session reads notifications and sends keep-alives.
 /// TonePush uses 700 ms; faster polling wedged a device during its development.
@@ -48,10 +49,20 @@ const RECONNECT: Duration = Duration::from_secs(5);
 /// there is no point knocking every 5 s.
 const RECONNECT_MAX: Duration = Duration::from_secs(60);
 
+/// Least time between two slider writes (op30). Clients send at most one
+/// every 50-100 ms; this holds when several iPads drag at once. HX Edit sends
+/// one op30 per move step (opcodes.md 4.3), but this device wedges when
+/// hammered (PROTOCOL.md), so stay well below that.
+const PARAM_GAP: Duration = Duration::from_millis(40);
+
 const NO_DEVICE: &str = "no HX device found - check the USB cable";
 
+type Reply = oneshot::Sender<Result<String>>;
+
 enum Job {
-    Run(Command, oneshot::Sender<Result<String>>),
+    Run(Command, Reply),
+    /// `chain` plus the native values behind it.
+    Chain(oneshot::Sender<Result<(String, Option<Natives>)>>),
     /// Close the session cleanly and end the worker.
     Stop,
 }
@@ -59,6 +70,9 @@ enum Job {
 pub struct UsbDevice {
     jobs: mpsc::Sender<Job>,
     live: broadcast::Sender<Live>,
+    /// HX Edit's catalog, shared with the worker; metadata is read here so
+    /// `/api/models` never waits behind a USB command.
+    catalog: Option<Arc<hx_catalog::Catalog>>,
     worker: Arc<Mutex<Option<thread::JoinHandle<()>>>>,
 }
 
@@ -88,13 +102,22 @@ impl UsbDevice {
         let (jobs, rx) = mpsc::channel();
         let (live, _) = broadcast::channel(16);
         let publish = live.clone();
+        let catalog = match hx_catalog::Catalog::load() {
+            Ok(c) => Some(Arc::new(c)),
+            Err(e) => {
+                tracing::warn!("no HX Edit catalog, models stay numbered, no sliders: {e}");
+                None
+            }
+        };
+        let shared = catalog.clone();
         let worker = thread::Builder::new()
             .name("hx-usb".into())
-            .spawn(move || Worker::new(publish).run(rx))
+            .spawn(move || Worker::new(publish, shared).run(rx))
             .expect("spawn the USB worker thread");
         UsbDevice {
             jobs,
             live,
+            catalog,
             worker: Arc::new(Mutex::new(Some(worker))),
         }
     }
@@ -125,11 +148,25 @@ impl Device for UsbDevice {
     fn subscribe(&self) -> Option<broadcast::Receiver<Live>> {
         Some(self.live.subscribe())
     }
+
+    async fn chain(&self) -> Result<(String, Option<Natives>)> {
+        let (reply, answer) = oneshot::channel();
+        self.jobs
+            .send(Job::Chain(reply))
+            .map_err(|_| DeviceError::Spawn("USB worker stopped".into()))?;
+        answer
+            .await
+            .map_err(|_| DeviceError::Spawn("USB worker stopped".into()))?
+    }
+
+    fn model(&self, id: u32) -> Option<ModelInfo> {
+        controls::from_catalog(self.catalog.as_deref()?, id)
+    }
 }
 
 struct Worker {
     session: Option<Session>,
-    catalog: Option<hx_catalog::Catalog>,
+    catalog: Option<Arc<hx_catalog::Catalog>>,
     live: broadcast::Sender<Live>,
     last_poll: Instant,
     last_connect: Option<Instant>,
@@ -147,6 +184,8 @@ struct Worker {
     stats: (Instant, u32, u32, u32),
     /// Re-reads refused in a row (a pedal mid-load refuses for a moment).
     reload_retries: u32,
+    /// When the last slider write went out, for [`PARAM_GAP`].
+    last_param_write: Option<Instant>,
 }
 
 struct Doc {
@@ -169,14 +208,7 @@ enum Patch {
 }
 
 impl Worker {
-    fn new(live: broadcast::Sender<Live>) -> Self {
-        let catalog = match hx_catalog::Catalog::load() {
-            Ok(c) => Some(c),
-            Err(e) => {
-                tracing::warn!("no HX Edit catalog, models stay numbered: {e}");
-                None
-            }
-        };
+    fn new(live: broadcast::Sender<Live>, catalog: Option<Arc<hx_catalog::Catalog>>) -> Self {
         Worker {
             session: None,
             catalog,
@@ -189,15 +221,32 @@ impl Worker {
             doc: None,
             stats: (Instant::now(), 0, 0, 0),
             reload_retries: 0,
+            last_param_write: None,
         }
     }
 
     fn run(mut self, jobs: mpsc::Receiver<Job>) {
+        // A job read while coalescing slider writes, to run next.
+        let mut queued: Option<Job> = None;
         loop {
             let wait = self.next_wake().saturating_duration_since(Instant::now());
-            match jobs.recv_timeout(wait) {
+            let next = match queued.take() {
+                Some(job) => Ok(job),
+                None => jobs.recv_timeout(wait),
+            };
+            match next {
                 Ok(Job::Run(cmd, reply)) => {
+                    let (cmd, replies, after) = coalesce(cmd, reply, &jobs);
+                    queued = after;
                     let result = self.command(&cmd);
+                    for reply in replies {
+                        let _ = reply.send(result.clone());
+                    }
+                }
+                Ok(Job::Chain(reply)) => {
+                    let result = self
+                        .command(&Command::Chain)
+                        .map(|text| (text, self.natives()));
                     let _ = reply.send(result);
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
@@ -403,9 +452,29 @@ impl Worker {
         self.publish(text, cause);
     }
 
+    /// Native values of the cached document, when the catalog can describe
+    /// them (no catalog, no sliders: the UI types values instead).
+    fn natives(&self) -> Option<Natives> {
+        self.catalog.as_ref()?;
+        let doc = self.doc.as_ref()?;
+        Some(Natives(
+            doc.preset
+                .blocks()
+                .map(|(slot, block)| BlockNatives {
+                    position: slot as u32 + 1,
+                    model: block.model.unwrap_or_default(),
+                    values: block.values.clone(),
+                })
+                .collect(),
+        ))
+    }
+
     fn publish(&mut self, text: String, cause: Cause) {
+        let natives = self.natives();
+        // Natives in the key too: a slider step can leave the text unchanged.
+        let key = format!("{text}{natives:?}");
         // A loaded preset is news even if it looks the same (two `New Preset`s).
-        if cause != Cause::Preset && self.shown.as_deref() == Some(text.as_str()) {
+        if cause != Cause::Preset && self.shown.as_deref() == Some(key.as_str()) {
             return;
         }
         tracing::debug!(
@@ -413,8 +482,12 @@ impl Worker {
             listeners = self.live.receiver_count(),
             "live update"
         );
-        self.shown = Some(text.clone());
-        let _ = self.live.send(Live::Chain { text, cause });
+        self.shown = Some(key);
+        let _ = self.live.send(Live::Chain {
+            text,
+            cause,
+            natives,
+        });
     }
 
     fn publish_chain(&mut self, cause: Cause) {
@@ -457,6 +530,12 @@ impl Worker {
                 param,
                 value,
             } => self.set(*block, *param, value),
+            Command::SetNative {
+                block,
+                param,
+                native,
+                model,
+            } => self.set_native(*block, *param, *native, *model),
             Command::Rename {
                 setlist,
                 index,
@@ -466,7 +545,7 @@ impl Worker {
         };
         if *cmd == Command::Chain {
             if let Ok(text) = &out {
-                self.shown = Some(text.clone());
+                self.shown = Some(format!("{text}{:?}", self.natives()));
             }
         }
         // Some writes swallow their own notifications (a select reads them
@@ -475,7 +554,9 @@ impl Worker {
         if out.is_ok() {
             match cmd {
                 Command::Select { .. } => self.want_reload(Cause::Preset),
-                Command::Enable { .. } | Command::Set { .. } => self.publish_doc(Cause::Edit),
+                Command::Enable { .. } | Command::Set { .. } | Command::SetNative { .. } => {
+                    self.publish_doc(Cause::Edit)
+                }
                 Command::Rename { .. } | Command::Save => self.want_reload(Cause::Other),
                 _ => {}
             }
@@ -567,7 +648,7 @@ impl Worker {
 
     /// `show_chain`.
     fn render(&self, doc: &Doc) -> String {
-        let (preset, catalog) = (&doc.preset, self.catalog.as_ref());
+        let (preset, catalog) = (&doc.preset, self.catalog.as_deref());
         let mut out = String::new();
         if let Some((_, index, name)) = &doc.info {
             let index = *index;
@@ -669,6 +750,63 @@ impl Worker {
         Ok(format!("block {block}: {name} = {shown}\n"))
     }
 
+    /// Set a parameter by native value: a slider step. Uses the cached
+    /// document for the model (no preset read per step), re-reading only when
+    /// it is missing or names another model than the client saw.
+    fn set_native(&mut self, block: u32, param: u32, native: f32, model: u32) -> Result<String> {
+        let catalog = self.catalog.clone().ok_or_else(|| {
+            DeviceError::Invalid(
+                "setting by native value needs HX Edit data on the server (/vendor)".into(),
+            )
+        })?;
+        let slot = (block as usize).wrapping_sub(1);
+        let model_at = |doc: &Option<Doc>| {
+            doc.as_ref()
+                .and_then(|d| d.preset.slots.get(slot))
+                .and_then(|s| s.model)
+        };
+        if model_at(&self.doc) != Some(model) {
+            self.chain()?;
+        }
+        match model_at(&self.doc) {
+            Some(m) if m == model => {}
+            Some(m) => {
+                return Err(DeviceError::Stale(format!(
+                    "block {block} now holds model {m}, not {model}; reload the chain"
+                )))
+            }
+            None => {
+                return Err(DeviceError::Stale(format!(
+                    "no block at position {block}; reload the chain"
+                )))
+            }
+        }
+        let described = catalog.param(model, param as usize).ok_or_else(|| {
+            DeviceError::Invalid(format!("model {model} has no parameter {param}"))
+        })?;
+        if !described.accepts(native) {
+            return Err(DeviceError::Invalid(format!(
+                "{native} is outside {}..{} for {}",
+                described.min, described.max, described.name
+            )));
+        }
+        let held = controls::settle(described.kind, native);
+        let wire = described.kind.wire(native);
+        if let Some(last) = self.last_param_write {
+            thread::sleep(pace(last, Instant::now(), PARAM_GAP));
+        }
+        let index = i64::from(param);
+        let sent = self.with(|s| s.set_param(slot as i64, index, wire));
+        self.last_param_write = Some(Instant::now());
+        sent?;
+        self.patch_param(slot as i64, param, held);
+        Ok(format!(
+            "block {block}: {} = {}\n",
+            described.name,
+            catalog.format(described, held)
+        ))
+    }
+
     /// Mirror our own parameter write into `doc`; forget it if it cannot be.
     fn patch_param(&mut self, slot: i64, param: u32, value: f32) {
         let patch = Patch::Param {
@@ -735,6 +873,40 @@ pub fn watch(seconds: u64) -> std::result::Result<(), String> {
     }
     println!("total: {total} notifications in {seconds} s");
     Ok(())
+}
+
+/// How long to wait before the next slider write so writes stay `gap` apart.
+fn pace(last: Instant, now: Instant, gap: Duration) -> Duration {
+    (last + gap).saturating_duration_since(now)
+}
+
+/// Fold slider writes queued behind `cmd` into one: a later write to the same
+/// parameter replaces it (last value wins), and every caller gets that
+/// write's answer. Stops at the first other job, which is returned to run
+/// next, so nothing is reordered. Other commands pass through untouched.
+fn coalesce(
+    mut cmd: Command,
+    reply: Reply,
+    jobs: &mpsc::Receiver<Job>,
+) -> (Command, Vec<Reply>, Option<Job>) {
+    let mut replies = vec![reply];
+    let target = |c: &Command| match c {
+        Command::SetNative { block, param, .. } => Some((*block, *param)),
+        _ => None,
+    };
+    let Some(wanted) = target(&cmd) else {
+        return (cmd, replies, None);
+    };
+    while let Ok(job) = jobs.try_recv() {
+        match job {
+            Job::Run(next, reply) if target(&next) == Some(wanted) => {
+                cmd = next;
+                replies.push(reply);
+            }
+            other => return (cmd, replies, Some(other)),
+        }
+    }
+    (cmd, replies, None)
 }
 
 /// `list_devices`, HX part.
@@ -888,6 +1060,64 @@ mod tests {
             patch(49, &event(5, 10, msgmap! { 98 => Value::Int(1) })),
             None
         );
+    }
+
+    fn native(block: u32, native: f32) -> Command {
+        Command::SetNative {
+            block,
+            param: 0,
+            native,
+            model: 269,
+        }
+    }
+
+    #[test]
+    fn slider_writes_coalesce() {
+        let (tx, rx) = mpsc::channel();
+        let mut answers = Vec::new();
+        let mut send = |cmd| {
+            let (reply, answer) = oneshot::channel();
+            tx.send(Job::Run(cmd, reply)).unwrap();
+            answers.push(answer);
+        };
+        send(native(2, 0.2));
+        send(native(2, 0.3));
+        send(native(2, 0.4));
+        send(native(3, 0.9));
+        send(native(2, 0.5));
+        let Ok(Job::Run(first, reply)) = rx.try_recv() else {
+            panic!("first job");
+        };
+        let (cmd, replies, next) = coalesce(first, reply, &rx);
+        // Last value for block 2 wins; block 3 waits its turn, unreordered.
+        assert_eq!(cmd, native(2, 0.4));
+        assert_eq!(replies.len(), 3);
+        let Some(Job::Run(next, reply)) = next else {
+            panic!("block 3 kept");
+        };
+        assert_eq!(next, native(3, 0.9));
+        let (cmd, replies, _) = coalesce(next, reply, &rx);
+        assert_eq!((cmd, replies.len()), (native(3, 0.9), 1));
+        // Other commands never coalesce.
+        let (reply, _answer) = oneshot::channel();
+        tx.send(Job::Run(Command::Save, oneshot::channel().0))
+            .unwrap();
+        let (cmd, replies, next) = coalesce(Command::Save, reply, &rx);
+        assert_eq!((cmd, replies.len()), (Command::Save, 1));
+        assert!(next.is_none());
+        assert!(matches!(rx.try_recv(), Ok(Job::Run(Command::Save, _))));
+    }
+
+    #[test]
+    fn slider_writes_are_paced() {
+        let t = Instant::now();
+        let gap = Duration::from_millis(40);
+        assert_eq!(pace(t, t, gap), gap);
+        assert_eq!(
+            pace(t, t + Duration::from_millis(15), gap),
+            Duration::from_millis(25)
+        );
+        assert_eq!(pace(t, t + Duration::from_millis(90), gap), Duration::ZERO);
     }
 
     #[test]

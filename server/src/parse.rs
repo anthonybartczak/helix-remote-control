@@ -156,6 +156,9 @@ pub struct Block {
     pub position: u32,
     /// Model name, or `model N` without HX Edit data.
     pub model: String,
+    /// Model number for `/api/models/{id}`. Only with parameter metadata.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model_id: Option<u32>,
     pub enabled: bool,
     pub params: Vec<Param>,
     /// Second model of an Amp+Cab block. Never present on HX Effects.
@@ -177,6 +180,10 @@ pub struct Param {
     pub name: String,
     /// Display value as printed, e.g. `2.2 kHz`, or the raw number.
     pub value: String,
+    /// The value as the device stores it (`0.4` for `40 %`). Only with
+    /// parameter metadata; primary model only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub native: Option<f32>,
 }
 
 /// Parameter lines are `"      {name:<18} {value}"`: value starts at column 25.
@@ -203,6 +210,7 @@ fn param_line(index: u32, line: &str) -> Result<Param> {
         index,
         name: name.trim().to_owned(),
         value: value.trim().to_owned(),
+        native: None,
     })
 }
 
@@ -295,6 +303,7 @@ pub fn chain(out: &str) -> Result<Chain> {
             chain.blocks.push(Block {
                 position,
                 model: model.trim().to_owned(),
+                model_id: None,
                 enabled,
                 params: Vec::new(),
                 cab: None,
@@ -302,6 +311,20 @@ pub fn chain(out: &str) -> Result<Chain> {
         }
     }
     Ok(chain)
+}
+
+/// Add model numbers and native values to a parsed chain, matching blocks by
+/// position. A block whose natives are missing keeps none.
+pub fn add_natives(chain: &mut Chain, natives: &crate::device::Natives) {
+    for block in &mut chain.blocks {
+        let Some(n) = natives.0.iter().find(|n| n.position == block.position) else {
+            continue;
+        };
+        block.model_id = Some(n.model);
+        for param in &mut block.params {
+            param.native = n.values.get(param.index as usize).copied();
+        }
+    }
 }
 
 #[cfg(test)]
@@ -445,6 +468,25 @@ Mic                57 Dynamic\n";
         let cab = block.cab.as_ref().unwrap();
         assert_eq!(cab.model, "Some Cab");
         assert_eq!(cab.params[0].value, "57 Dynamic");
+    }
+
+    #[test]
+    fn natives_join_by_position() {
+        use crate::device::{BlockNatives, Natives};
+        let mut c = chain(&fixture("chain.txt")).unwrap();
+        let natives = Natives(vec![BlockNatives {
+            position: 10,
+            model: 123,
+            values: vec![-22.1, 0.431],
+        }]);
+        add_natives(&mut c, &natives);
+        assert_eq!(c.blocks[0].model_id, None);
+        assert_eq!(c.blocks[0].params[0].native, None);
+        let gate = &c.blocks[3];
+        assert_eq!(gate.model_id, Some(123));
+        assert_eq!(gate.params[1].native, Some(0.431));
+        // Fewer values than parameters: the rest stay typed.
+        assert_eq!(gate.params[2].native, None);
     }
 
     #[test]

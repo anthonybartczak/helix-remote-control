@@ -15,7 +15,7 @@ use serde_json::json;
 
 use tokio::sync::broadcast;
 
-use crate::device::{Cause, Command, Device, DeviceError, Live};
+use crate::device::{Cause, Command, Device, DeviceError, Live, Natives};
 use crate::parse;
 
 /// Shared by every request.
@@ -56,6 +56,7 @@ pub fn router<D: Device>(state: AppState<D>) -> Router {
         .route("/api/presets", get(presets::<D>))
         .route("/api/preset", get(current_preset::<D>))
         .route("/api/chain", get(chain::<D>))
+        .route("/api/models/{id}", get(model::<D>))
         .route("/api/select", post(select::<D>))
         .route("/api/blocks/{position}/enabled", post(enable::<D>))
         .route(
@@ -68,6 +69,7 @@ pub fn router<D: Device>(state: AppState<D>) -> Router {
         .route("/", get(index))
         .route("/app.css", get(app_css))
         .route("/app.js", get(app_js))
+        .route("/latest.js", get(latest_js))
         .with_state(state)
 }
 
@@ -99,6 +101,16 @@ async fn app_js() -> impl IntoResponse {
     )
 }
 
+async fn latest_js() -> impl IntoResponse {
+    (
+        [
+            (header::CONTENT_TYPE, "text/javascript; charset=utf-8"),
+            NO_CACHE,
+        ],
+        include_str!("../../web/latest.js"),
+    )
+}
+
 enum ApiError {
     Device(DeviceError),
     /// Write sent without the right token.
@@ -107,6 +119,8 @@ enum ApiError {
     WritesDisabled,
     /// Request body failed our own checks.
     BadRequest(String),
+    /// No parameter metadata for this model (no HX Edit catalog, or unknown).
+    NoCatalog(u32),
 }
 
 impl ApiError {
@@ -120,6 +134,9 @@ impl ApiError {
             ApiError::Device(DeviceError::Timeout(_)) => "timeout",
             ApiError::Device(DeviceError::NoFixture(_)) => "no_fixture",
             ApiError::Device(DeviceError::Parse(_)) => "parse",
+            ApiError::Device(DeviceError::Stale(_)) => "stale",
+            ApiError::Device(DeviceError::Invalid(_)) => "bad_request",
+            ApiError::NoCatalog(_) => "no_catalog",
             ApiError::Unauthorized => "unauthorized",
             ApiError::WritesDisabled => "writes_disabled",
             ApiError::BadRequest(_) => "bad_request",
@@ -135,7 +152,10 @@ impl ApiError {
                 DeviceError::Timeout(_) => StatusCode::GATEWAY_TIMEOUT,
                 DeviceError::Failed(_) | DeviceError::Parse(_) => StatusCode::BAD_GATEWAY,
                 DeviceError::NoFixture(_) => StatusCode::NOT_FOUND,
+                DeviceError::Stale(_) => StatusCode::CONFLICT,
+                DeviceError::Invalid(_) => StatusCode::BAD_REQUEST,
             },
+            ApiError::NoCatalog(_) => StatusCode::NOT_FOUND,
             ApiError::Unauthorized => StatusCode::UNAUTHORIZED,
             ApiError::WritesDisabled => StatusCode::FORBIDDEN,
             ApiError::BadRequest(_) => StatusCode::BAD_REQUEST,
@@ -150,6 +170,9 @@ impl ApiError {
                 "writes are off: set HELIX_TOKEN on the server to turn them on".into()
             }
             ApiError::BadRequest(msg) => msg.clone(),
+            ApiError::NoCatalog(id) => format!(
+                "no parameter data for model {id}: needs HX Edit data on the server (usb backend)"
+            ),
         }
     }
 }
@@ -240,12 +263,33 @@ struct ChainView {
     unsaved: bool,
 }
 
+/// Parse `chain` output and join the native values behind it, if any.
+fn full_chain(text: &str, natives: Option<&Natives>) -> crate::device::Result<parse::Chain> {
+    let mut chain = parse::chain(text)?;
+    if let Some(natives) = natives {
+        parse::add_natives(&mut chain, natives);
+    }
+    Ok(chain)
+}
+
 async fn chain<D: Device>(State(app): Shared<D>) -> ApiResult<ChainView> {
-    let out = app.device.run(Command::Chain).await?;
+    let (out, natives) = app.device.chain().await?;
     Ok(Json(ChainView {
-        chain: parse::chain(&out)?,
+        chain: full_chain(&out, natives.as_ref())?,
         unsaved: app.unsaved.load(Ordering::Relaxed),
     }))
+}
+
+/// `GET /api/models/{id}`: parameter metadata for sliders. Catalog only, no
+/// device call.
+async fn model<D: Device>(
+    State(app): Shared<D>,
+    Path(id): Path<u32>,
+) -> ApiResult<crate::controls::ModelInfo> {
+    app.device
+        .model(id)
+        .map(Json)
+        .ok_or(ApiError::NoCatalog(id))
 }
 
 // ---------- Writes ----------
@@ -343,9 +387,9 @@ async fn write<D: Device>(
     _: WriteAccess,
     cmd: Command,
 ) -> ApiResult<WriteResult> {
-    let is_set = matches!(cmd, Command::Set { .. });
+    let is_set = matches!(cmd, Command::Set { .. } | Command::SetNative { .. });
     let unsaved = match cmd {
-        Command::Enable { .. } | Command::Set { .. } => Some(true),
+        Command::Enable { .. } | Command::Set { .. } | Command::SetNative { .. } => Some(true),
         Command::Select { .. } | Command::Save => Some(false),
         _ => None,
     };
@@ -398,9 +442,13 @@ async fn enable<D: Device>(
     write(&app, access, cmd).await
 }
 
+/// Either `{value}` (display units, typed) or `{native, model}` (a slider
+/// position, with the model number the client saw in that slot).
 #[derive(Deserialize)]
 struct ParamBody {
-    value: String,
+    value: Option<String>,
+    native: Option<f32>,
+    model: Option<u32>,
 }
 
 async fn set_param<D: Device>(
@@ -409,10 +457,32 @@ async fn set_param<D: Device>(
     Path((position, index)): Path<(u32, u32)>,
     Json(body): Json<ParamBody>,
 ) -> ApiResult<WriteResult> {
-    let cmd = Command::Set {
-        block: checked_position(position)?,
-        param: index,
-        value: checked_text("value", &body.value, MAX_VALUE)?,
+    let block = checked_position(position)?;
+    let cmd = match body {
+        ParamBody {
+            value: Some(value),
+            native: None,
+            model: None,
+        } => Command::Set {
+            block,
+            param: index,
+            value: checked_text("value", &value, MAX_VALUE)?,
+        },
+        ParamBody {
+            value: None,
+            native: Some(native),
+            model: Some(model),
+        } if native.is_finite() => Command::SetNative {
+            block,
+            param: index,
+            native,
+            model,
+        },
+        _ => {
+            return Err(ApiError::BadRequest(
+                "send {\"value\": text} or {\"native\": number, \"model\": id}".into(),
+            ))
+        }
     };
     write(&app, access, cmd).await
 }
@@ -449,13 +519,17 @@ async fn save<D: Device>(State(app): Shared<D>, access: WriteAccess) -> ApiResul
 async fn relay<D: Device>(app: Arc<AppState<D>>, mut changes: broadcast::Receiver<Live>) {
     loop {
         let msg = match changes.recv().await {
-            Ok(Live::Chain { text, cause }) => {
+            Ok(Live::Chain {
+                text,
+                cause,
+                natives,
+            }) => {
                 match cause {
                     Cause::Preset => app.unsaved.store(false, Ordering::Relaxed),
                     Cause::Edit => app.unsaved.store(true, Ordering::Relaxed),
                     Cause::Other => {}
                 }
-                match parse::chain(&text) {
+                match full_chain(&text, natives.as_ref()) {
                     Ok(chain) => json!({
                         "type": "chain",
                         "chain": ChainView {
@@ -588,6 +662,7 @@ mod tests {
             ("/", "text/html"),
             ("/app.css", "text/css"),
             ("/app.js", "text/javascript"),
+            ("/latest.js", "text/javascript"),
         ] {
             let res = app()
                 .oneshot(Request::get(uri).body(Body::empty()).unwrap())
@@ -617,6 +692,71 @@ mod tests {
         assert_eq!(body["blocks"][0]["params"][2]["value"], "2.2 kHz");
         assert!(body["blocks"][0].get("cab").is_none());
         assert_eq!(body["unsaved"], false);
+    }
+
+    #[tokio::test]
+    async fn chain_carries_natives() {
+        let (_, body) = get_json("/api/chain").await;
+        let fassel = &body["blocks"][0];
+        assert_eq!(fassel["model_id"], 269);
+        let position = fassel["params"][0]["native"].as_f64().unwrap();
+        assert!((position - 0.017248867).abs() < 1e-6);
+        assert_eq!(body["blocks"][3]["params"][0]["value"], "-22.1 dB");
+    }
+
+    #[tokio::test]
+    async fn models() {
+        let (status, body) = get_json("/api/models/269").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["name"], "Fassel");
+        assert_eq!(body["synthetic"], true);
+        let position = &body["params"][0];
+        assert_eq!(position["kind"], "continuous");
+        assert_eq!(position["steps"], 100);
+        assert_eq!(position["labels"][40], "40 %");
+        let (_, pitch) = get_json("/api/models/296").await;
+        assert_eq!(pitch["params"][0]["kind"], "menu");
+        assert_eq!(pitch["params"][0]["labels"][31], "+7");
+        let (_, gate) = get_json("/api/models/123").await;
+        assert_eq!(gate["params"][1]["scale"], "log");
+
+        let (status, body) = get_json("/api/models/9999").await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(body["code"], "no_catalog");
+    }
+
+    #[tokio::test]
+    async fn set_by_native_value() {
+        let app = app();
+        let t = Some(TOKEN);
+        let url = "/api/blocks/2/params/0";
+        let (status, res) = post(&app, url, t, json!({ "native": 0.4, "model": 269 })).await;
+        assert_eq!(status, StatusCode::OK, "{res}");
+        assert_eq!(res["value"], "40 %");
+        assert_eq!(res["unsaved"], true);
+        let (_, chain) = send(
+            &app,
+            Request::get("/api/chain").body(Body::empty()).unwrap(),
+        )
+        .await;
+        assert_eq!(chain["blocks"][0]["params"][0]["value"], "40 %");
+        assert!((chain["blocks"][0]["params"][0]["native"].as_f64().unwrap() - 0.4).abs() < 1e-6);
+
+        // Another model in the slot than the client saw: 409, re-read.
+        let (status, res) = post(&app, url, t, json!({ "native": 0.4, "model": 296 })).await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(res["code"], "stale");
+        // Out of range, or a malformed body.
+        for body in [
+            json!({ "native": 2.0, "model": 269 }),
+            json!({ "native": 0.4 }),
+            json!({ "value": "40 %", "native": 0.4, "model": 269 }),
+            json!({}),
+        ] {
+            let (status, res) = post(&app, url, t, body.clone()).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{body}: {res}");
+            assert_eq!(res["code"], "bad_request");
+        }
     }
 
     #[tokio::test]
