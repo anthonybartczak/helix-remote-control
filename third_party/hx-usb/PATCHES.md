@@ -80,24 +80,36 @@ over a byte at a time until the stream lines up again. All ~70 000
 notifications in TonePush's HX Edit captures pass; the slip costs the one
 notification it cut through. `Session::events_skipped()` counts the bytes.
 
-**2b. An events handshake left unanswered.** A session opened while the device
-is still sending notifications to the previous one (it keeps going for up to
-~4 KB after that session ends, about 15-30 s) can find the events channel never
-answers its hello. Requests work; no notification arrives for the whole
-session. Seen on the HX Effects after a session was dropped and reopened 4 s
-later, and in TonePush's own `tests/fixtures/session.transcript`: stale ticks
+**2b. An events handshake left unanswered.** A session that opens too soon
+after another one ended, or after the pedal powered up, can find the events
+channel never answers its hello. Requests work; no notification arrives for
+the whole session. Often the first open attempt fails and `open`'s immediate
+retry is the deaf one. HX Effects 3.80, Pi 4, 2026-10-14: every open 0-4 s after
+a session ended (service restart, reconnect after a lost session, the reopen
+below in its first version) or 4 s after re-enumeration was deaf; every open
+15 s or more after worked, `watch` and the hand-run server included. One cause
+is that the device keeps sending to an ended session for up to ~4 KB (15-30 s);
+TonePush's own `tests/fixtures/session.transcript` shows that case: stale ticks
 before the handshake, the events hello unanswered, no events frame afterwards.
 
-*Change:* `route` notes each channel's hello reply;
-`Session::events_answered()` says whether the events channel answered. The
-handshake itself is unchanged (the replay transcript still matches). The
-helix-bridge server keeps a deaf session for requests and opens again 40 s
-later, up to 3 times (`server/src/usb.rs`, `check_events`).
+*Change:*
+- `route` notes each channel's hello reply; `Session::events_answered()` says
+  whether the events channel answered. The handshake bytes are unchanged (the
+  replay transcript still matches).
+- `drain` keeps reading while a previous session's notifications still arrive,
+  up to 30 s, instead of stopping at 3 s with the pedal still streaming.
+- The helix-bridge server (`server/src/usb.rs`) opens no session sooner than
+  20 s after one ended, after the process started, or after the pedal
+  appeared; a deaf session serves requests for 20 s, then is closed and opened
+  again after the same 20 s, up to 3 times.
 
 **Tests.** `realign::tests` (rotation, rotation right after a split, split
 messages, service-open reply), `commands::pedal_tests::a_frame_sent_out_of_order_costs_one_notification`,
 `a_session_says_whether_the_events_channel_answered` (the fake pedal now
-answers handshakes, and can be told not to on the events channel). Replay test
-unchanged and passing.
+answers handshakes, and can be told not to on the events channel),
+`tests::a_drain_waits_on_notifications_only`. Replay test unchanged and passing.
 
-**On hardware:** not verified yet.
+**On hardware:** 2a verified 2026-10-14 (HX Effects 3.80, Pi 4): under the server
+the realigner caught an out-of-order frame every 2-5 s (none in a 30 s `watch`,
+which ACKs once per 700 ms) while 119-145 notifications per 10 s kept arriving.
+2b: the 20 s settle is not verified yet.

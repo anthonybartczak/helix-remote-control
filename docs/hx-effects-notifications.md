@@ -83,11 +83,16 @@ faults (details and fix: `third_party/hx-usb/PATCHES.md` section 2).
    moved behind its body. The stream reader lost step, and the session ended with
    "stream message declares 1779853698 bytes". HX Edit's own HX Stomp capture has
    the same frame. Fixed: the events stream re-aligns and loses one notification.
-2. **Deaf events channel.** After any session ends, the pedal keeps sending
-   notifications into it for 15-30 s. A session opened in that window (a service
-   restart, or the server reconnecting 4 s after a lost session) may get no
-   answer to its events handshake and then no notification at all. Fixed: the
-   server notices, keeps the session for requests and reopens 40 s later.
+2. **Deaf events channel.** A session opened 0-4 s after another one ended (a
+   service restart, a reconnect after a lost session) or right after the pedal
+   powered up got no answer to its events handshake, and then no notification
+   at all. Every open 15 s or more after worked. Fixed: the server waits 20 s
+   after any of those before opening, the drain waits out a previous session's
+   notifications, and a deaf session is noticed and reopened.
+
+Under the server's poll loop the out-of-order frame shows up every 2-5 s (one
+tick lost each time); a 30 s `watch` had none. Fewer ACKs per poll might avoid
+it; not tried yet.
 
 Checked and ruled out the same evening: no USB errors in `dmesg`, `vcgencmd
 get_throttled` = `0x0`, USB autosuspend off for the pedal (`power/control=on`),

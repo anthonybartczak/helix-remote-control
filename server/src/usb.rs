@@ -42,10 +42,15 @@ const STATS_EVERY: Duration = Duration::from_secs(10);
 const SETTLE: Duration = Duration::from_millis(250);
 /// Re-read at the latest this long after the first notification of a burst.
 const SETTLE_MAX: Duration = Duration::from_secs(1);
-/// After an open whose events channel did not answer, open again this much
-/// later. The HX Effects keeps sending to a closed session for up to ~4 KB of
-/// notifications: about 30 s of idle ticks, 15 s with footswitches in use.
-const REOPEN_DEAF: Duration = Duration::from_secs(40);
+/// Least time between a session ending (here or in another process) or the
+/// pedal appearing, and the next open. On an HX Effects 3.80 every open 0-4 s
+/// after one of those left the events channel deaf, often after a failed
+/// first attempt; every open 15 s or more after worked (2026-10-14, PATCHES.md 2b).
+const SETTLE_BEFORE_OPEN: Duration = Duration::from_secs(20);
+/// After an open whose events channel did not answer, close it this much
+/// later and open again after [`SETTLE_BEFORE_OPEN`]. Until then the session
+/// still serves requests.
+const REOPEN_DEAF: Duration = Duration::from_secs(20);
 /// Give up reopening for live updates after this many deaf opens in a row.
 const DEAF_RETRIES: u32 = 3;
 /// With no session, look for the pedal this often (only USB enumeration).
@@ -198,6 +203,10 @@ struct Worker {
     deaf_opens: u32,
     /// `Session::events_skipped` when last looked at.
     skipped: u64,
+    /// No open before this: see [`SETTLE_BEFORE_OPEN`].
+    not_before: Instant,
+    /// The last look for the pedal found none.
+    absent: bool,
 }
 
 struct Doc {
@@ -237,6 +246,9 @@ impl Worker {
             reopen: None,
             deaf_opens: 0,
             skipped: 0,
+            // A restart: the previous process's session may have just ended.
+            not_before: Instant::now() + SETTLE_BEFORE_OPEN,
+            absent: false,
         }
     }
 
@@ -283,7 +295,8 @@ impl Worker {
                 .map_or(self.last_poll + POLL, |t| t.min(self.last_poll + POLL)),
             None => self
                 .last_connect
-                .map_or(Instant::now(), |t| t + self.reconnect_delay()),
+                .map_or(Instant::now(), |t| t + self.reconnect_delay())
+                .max(self.not_before),
         };
         match self.reload {
             Some((first, latest, _)) => poll.min((latest + SETTLE).min(first + SETTLE_MAX)),
@@ -306,9 +319,12 @@ impl Worker {
         }
         if self.reopen.is_some_and(|t| now >= t) {
             self.reopen = None;
-            tracing::info!("opening the USB session again for live updates");
+            tracing::info!(
+                "closing the USB session to open it again for live updates in {} s",
+                SETTLE_BEFORE_OPEN.as_secs()
+            );
             self.close();
-            let _ = self.connect();
+            let _ = self.live.send(Live::Connected(false));
             return;
         }
         if now >= self.last_poll + POLL {
@@ -330,11 +346,32 @@ impl Worker {
 
     fn connect(&mut self) -> Result<&mut Session> {
         if self.session.is_none() {
-            self.last_connect = Some(Instant::now());
+            let now = Instant::now();
+            if now < self.not_before {
+                return Err(DeviceError::NotConnected(format!(
+                    "waiting {} s for the pedal to settle before connecting",
+                    (self.not_before - now).as_secs() + 1
+                )));
+            }
+            self.last_connect = Some(now);
             let found = hx_usb::list().map_err(|e| DeviceError::Failed(e.to_string()))?;
-            let device = found
-                .first()
-                .ok_or_else(|| DeviceError::NotConnected(NO_DEVICE.into()))?;
+            let Some(device) = found.first() else {
+                self.absent = true;
+                return Err(DeviceError::NotConnected(NO_DEVICE.into()));
+            };
+            if self.absent {
+                // Just plugged in or powered up: let it finish booting.
+                self.absent = false;
+                self.not_before = now + SETTLE_BEFORE_OPEN;
+                tracing::info!(
+                    "pedal found; connecting in {} s",
+                    SETTLE_BEFORE_OPEN.as_secs()
+                );
+                return Err(DeviceError::NotConnected(format!(
+                    "pedal found; connecting in {} s",
+                    SETTLE_BEFORE_OPEN.as_secs()
+                )));
+            }
             let session = device.open().map_err(|e| {
                 self.open_failures += 1;
                 if self.open_failures == 1 {
@@ -355,10 +392,10 @@ impl Worker {
     }
 
     /// A session whose events channel did not answer works, but no live
-    /// update reaches it. The HX Effects does that when a session opens while
-    /// it is still sending notifications to the previous one, which it keeps
-    /// doing for up to half a minute after that session ends (PATCHES.md 2).
-    /// Keep this session for requests and open again once it has gone quiet.
+    /// update reaches it. The HX Effects does that when a session opens too
+    /// soon after another one ended or after it powered up (PATCHES.md 2b).
+    /// Keep this session for requests for a while, then close it and open
+    /// again after [`SETTLE_BEFORE_OPEN`].
     fn check_events(&mut self, session: &Session) {
         self.reopen = None;
         if session.events_answered() {
@@ -375,8 +412,9 @@ impl Worker {
         }
         tracing::warn!(
             "the pedal's events channel did not answer, so live updates will not arrive; \
-             opening again in {} s, once it stops sending to the previous session",
-            REOPEN_DEAF.as_secs()
+             closing in {} s and opening again {} s later",
+            REOPEN_DEAF.as_secs(),
+            SETTLE_BEFORE_OPEN.as_secs()
         );
         self.reopen = Some(Instant::now() + REOPEN_DEAF);
     }
@@ -386,6 +424,7 @@ impl Worker {
         self.session = None;
         self.reload = None;
         self.doc = None;
+        self.not_before = Instant::now() + SETTLE_BEFORE_OPEN;
     }
 
     /// Drop a session after an error that leaves its state unknown.
@@ -395,8 +434,10 @@ impl Worker {
                 tracing::warn!("USB session lost: {e}");
                 self.reload = None;
                 self.doc = None;
-                // Try again at once; failed opens back off by themselves.
+                // Try again once the pedal has settled; failed opens back
+                // off by themselves.
                 self.last_connect = None;
+                self.not_before = Instant::now() + SETTLE_BEFORE_OPEN;
                 let _ = self.live.send(Live::Connected(false));
             }
             DeviceError::Failed(e.to_string())

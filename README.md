@@ -123,6 +123,10 @@ built). Known limits:
 - **Live updates need `HELIX_BACKEND=usb`.** Then the server pushes each change over
   `/api/live` within about 1 s. With `cli`, the UI reads the device on open, when the iPad
   returns to the page, and on "Refresh from device" (tap the connection dots).
+- **The `usb` backend connects 20 s after start**, after the pedal is plugged in or
+  powered up, and after a session ends. Sooner, the HX Effects may leave live updates
+  off for the whole session (`third_party/hx-usb/PATCHES.md` 2b). The UI shows
+  "waiting N s" meanwhile.
 - **Block categories are guessed** from the model name (`CATEGORY_RULES` in `app.js`);
   unknown models show grey `FX`. Real categories need the HX Edit catalog on the server.
 - **Active snapshot is not shown.** `tonepush chain` does not report it.

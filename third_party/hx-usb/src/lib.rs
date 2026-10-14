@@ -560,23 +560,42 @@ impl Session {
     /// sustained load and coincided with the device locking up hard enough to
     /// need its power pulled, so a few seconds of clearing is the most we ask
     /// for before proceeding regardless.
+    ///
+    /// Notifications still arriving for a previous session extend it, up to
+    /// [`STALE_EVENTS_BUDGET`](Self::STALE_EVENTS_BUDGET). An HX Effects keeps
+    /// sending to a session that has ended for up to ~4 KB, 15-30 s, and a
+    /// handshake in that time can leave the new session's events channel
+    /// deaf (helix-bridge PATCHES.md 2b).
     fn drain(&mut self) {
-        let give_up = Instant::now() + Self::DRAIN_BUDGET;
+        let start = Instant::now();
+        let mut give_up = start + Self::DRAIN_BUDGET;
         let mut quiet = 0;
         let mut discarded = 0usize;
+        let mut stale_events = 0usize;
 
         while quiet < 3 && Instant::now() < give_up {
-            match self.read_once(Self::DRAIN_READ) {
-                Ok(_) => {
+            match self.wire.recv(Self::DRAIN_READ) {
+                Ok(data) => {
                     quiet = 0;
                     discarded += 1;
+                    if debug() && !data.is_empty() {
+                        eprintln!("RX {}", hex(&data));
+                    }
+                    if carries_events(&data) {
+                        stale_events += 1;
+                        give_up = (Instant::now() + Self::DRAIN_BUDGET)
+                            .min(start + Self::STALE_EVENTS_BUDGET);
+                    }
                 }
                 Err(_) => quiet += 1,
             }
         }
 
         if debug() && discarded > 0 {
-            eprintln!("drained {discarded} stale frames");
+            eprintln!(
+                "drained {discarded} stale frames ({stale_events} with notifications) in {:.1} s",
+                start.elapsed().as_secs_f32()
+            );
         }
     }
 
@@ -704,6 +723,8 @@ impl Session {
     /// Total budget for clearing a backlog. Bounded because an unbounded drain
     /// kept the endpoint busy and coincided with device lock-ups.
     const DRAIN_BUDGET: Duration = Duration::from_secs(3);
+    /// Longest drain while a previous session's notifications keep arriving.
+    const STALE_EVENTS_BUDGET: Duration = Duration::from_secs(30);
     /// How long a single bulk write may take.
     const WRITE: Duration = Duration::from_secs(2);
     /// How long to wait for a cancelled write to come back.
@@ -1373,6 +1394,17 @@ fn completion_matches(args: &Value, txn: i64) -> bool {
         && args.get(rpc::key::STATUS).and_then(Value::as_i64) == Some(0)
 }
 
+/// Whether a transfer holds stream data on the events channel.
+fn carries_events(transfer: &[u8]) -> bool {
+    Frame::decode_transfer(transfer).is_ok_and(|frames| {
+        frames.iter().any(|f| {
+            f.src == ChannelId::EVENTS.device
+                && ChannelHeader::decode(&f.payload)
+                    .is_some_and(|(hdr, rest)| hdr.has_data() && !rest.is_empty())
+        })
+    })
+}
+
 fn decode_message(value: Value) -> Result<Message> {
     Message::try_from_value(value)
         .map_err(|error| Error::Protocol(format!("malformed RPC message: {error}")))
@@ -1409,6 +1441,28 @@ fn service(id: ChannelId) -> u16 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn bytes(hex: &str) -> Vec<u8> {
+        hex.split_whitespace()
+            .map(|b| u8::from_str_radix(b, 16).unwrap())
+            .collect()
+    }
+
+    /// Only notifications keep a drain going; the keep-alives the device
+    /// sends to old sessions indefinitely do not. Transfers from an HX
+    /// Effects (3.80) capture.
+    #[test]
+    fn a_drain_waits_on_notifications_only() {
+        let tick = "1d 00 00 18 f0 03 02 10 00 04 00 04 09 02 00 00 00 00 04 00 0d 00 00 00 \
+                    82 69 16 6a 84 52 00 44 0a 79 1b 6a c0 6c cd 00";
+        let events_keepalive = "08 00 00 18 f0 03 02 10 00 69 00 10 09 02 00 00";
+        let control_ack = "08 00 00 18 ef 03 01 10 00 03 00 08 09 02 00 00";
+        assert!(carries_events(&bytes(tick)));
+        assert!(carries_events(&bytes(&format!("{control_ack} {tick}"))));
+        assert!(!carries_events(&bytes(events_keepalive)));
+        assert!(!carries_events(&bytes(control_ack)));
+        assert!(!carries_events(&[]));
+    }
 
     /// Acknowledgements are a base plus the bytes consumed, not a bare count.
     /// Sending the count alone makes the device stop answering, so this is the
