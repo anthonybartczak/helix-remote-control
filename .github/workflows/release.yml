@@ -52,8 +52,9 @@ jobs:
         working-directory: .
         run: node --test web/tests/latest.test.mjs
 
+  # Runs beside `check`, not after it: the run only counts as green (and the
+  # Pi's updater only takes a green run) when both jobs pass.
   pi-bundle:
-    needs: check
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -69,16 +70,25 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ env.TARGET }}
+      # Prebuilt wheels; compiling cargo-zigbuild from source took 1.5 min.
       - name: Install zig and cargo-zigbuild
         run: |
-          pip install "ziglang==$ZIG_VERSION"
-          cargo install --locked "cargo-zigbuild@$ZIGBUILD_VERSION"
+          pip install --only-binary=:all: "ziglang==$ZIG_VERSION" "cargo-zigbuild==$ZIGBUILD_VERSION"
       # No compiler cache for shipped binaries.
       - name: Build helix-bridge
         working-directory: server
         run: cargo zigbuild --release --locked --target "$TARGET.$GLIBC"
+      # TonePush is pinned, so its binary only changes with the pin or the
+      # build tools: cache it under exactly those (saves 1.5 min a build).
+      - name: Restore tonepush
+        id: tonepush-cache
+        uses: actions/cache@v4
+        with:
+          path: tonepush/target/${{ env.TARGET }}/release/tonepush
+          key: tonepush-${{ env.TONEPUSH_COMMIT }}-${{ env.TARGET }}.${{ env.GLIBC }}-zig${{ env.ZIG_VERSION }}-zigbuild${{ env.ZIGBUILD_VERSION }}
       # TonePush pins its own toolchain; add the target to that one.
       - name: Build tonepush
+        if: steps.tonepush-cache.outputs.cache-hit != 'true'
         working-directory: tonepush
         run: |
           rustup target add "$TARGET"
@@ -103,7 +113,7 @@ jobs:
 
   release:
     if: github.ref_type == 'tag'
-    needs: pi-bundle
+    needs: [check, pi-bundle]
     runs-on: ubuntu-24.04
     permissions:
       contents: write

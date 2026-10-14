@@ -153,7 +153,7 @@ Web tests (Node 22; Chromium from Playwright, never `playwright install` in the 
 
 ## Deploying to the Pi (`deploy/`)
 
-GitHub Actions (`.github/workflows/release.yml`) checks the server, then cross-compiles
+GitHub Actions (`.github/workflows/release.yml`) checks the server and, in parallel, cross-compiles
 `helix-bridge` and TonePush's `tonepush` for `aarch64-unknown-linux-gnu` (glibc 2.31,
 `cargo-zigbuild`). Every push uploads a `pi-bundle` workflow artifact; pushing a `v*` tag
 also creates a GitHub release with the tarball.
