@@ -132,7 +132,9 @@ Tags: **[local]** needs the dev machine, device or Pi; **[cloud]** pure code, ru
    `FakeDevice` tests in the cloud; every first write on real hardware happens locally, with
    the user's confirmation (section 6).
 7. **Move to Pi 3A+.** **[local]** Same binary and install script. Measure RAM with `free -h`
-   and report.
+   and report. **Deferred (2026-10-14):** the Pi 4 is the working target for now. When resumed,
+   the Pi 4's SD card can move to the 3A+ as is (same 64-bit OS); it needs a micro-USB 2.5 A
+   supply. Pi 4 baseline: 218 MB used for the whole system with the bridge running.
 
 ## 8. Definition of done (per phase)
 

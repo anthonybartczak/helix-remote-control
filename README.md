@@ -26,7 +26,8 @@ Phase 6 (write operations) done and verified 2026-10-14 on the HX Effects (firmw
 preset, block on/off, parameter value (shows on the pedal almost at once), save
 (survives reloading the preset) and rename, each first run on a spare slot with the
 user's confirmation. Reordering blocks is left out on purpose: TonePush marks `move`
-untested on hardware (AGENTS.md 6). Next: Phase 7 (move to the Pi 3A+).
+untested on hardware (AGENTS.md 6). Phase 7 (move to the Pi 3A+) is deferred: the Pi 4
+is the working target for now.
 
 Live sync verified 2026-10-13 on the Pi 4 with the HX Effects 3.80: the `usb` backend
 holds one USB session and pushes pedal changes (footswitches, knobs, preset switches) to
