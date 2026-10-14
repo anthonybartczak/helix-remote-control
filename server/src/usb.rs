@@ -24,7 +24,9 @@ use hx_usb::Session;
 use tokio::sync::{broadcast, oneshot};
 
 use crate::controls::{self, ModelInfo};
-use crate::device::{BlockNatives, Cause, Command, Device, DeviceError, Live, Natives, Result};
+use crate::device::{
+    BlockNatives, Cause, ChainExtra, Command, Device, DeviceError, Live, Natives, Result,
+};
 
 /// How often an idle session reads notifications and sends keep-alives.
 /// TonePush uses 700 ms; faster polling wedged a device during its development.
@@ -73,7 +75,7 @@ type Reply = oneshot::Sender<Result<String>>;
 enum Job {
     Run(Command, Reply),
     /// `chain` plus the native values behind it.
-    Chain(oneshot::Sender<Result<(String, Option<Natives>)>>),
+    Chain(oneshot::Sender<Result<(String, ChainExtra)>>),
     /// Close the session cleanly and end the worker.
     Stop,
 }
@@ -160,7 +162,7 @@ impl Device for UsbDevice {
         Some(self.live.subscribe())
     }
 
-    async fn chain(&self) -> Result<(String, Option<Natives>)> {
+    async fn chain(&self) -> Result<(String, ChainExtra)> {
         let (reply, answer) = oneshot::channel();
         self.jobs
             .send(Job::Chain(reply))
@@ -273,7 +275,7 @@ impl Worker {
                 Ok(Job::Chain(reply)) => {
                     let result = self
                         .command(&Command::Chain)
-                        .map(|text| (text, self.natives()));
+                        .map(|text| (text, self.extra()));
                     let _ = reply.send(result);
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
@@ -580,10 +582,18 @@ impl Worker {
         ))
     }
 
+    /// What the cached document says beyond the `chain` text.
+    fn extra(&self) -> ChainExtra {
+        ChainExtra {
+            natives: self.natives(),
+            snapshot: self.doc.as_ref().and_then(|d| active_snapshot(&d.preset)),
+        }
+    }
+
     fn publish(&mut self, text: String, cause: Cause) {
-        let natives = self.natives();
+        let extra = self.extra();
         // Natives in the key too: a slider step can leave the text unchanged.
-        let key = format!("{text}{natives:?}");
+        let key = format!("{text}{extra:?}");
         // A loaded preset is news even if it looks the same (two `New Preset`s).
         if cause != Cause::Preset && self.shown.as_deref() == Some(key.as_str()) {
             return;
@@ -594,11 +604,7 @@ impl Worker {
             "live update"
         );
         self.shown = Some(key);
-        let _ = self.live.send(Live::Chain {
-            text,
-            cause,
-            natives,
-        });
+        let _ = self.live.send(Live::Chain { text, cause, extra });
     }
 
     fn publish_chain(&mut self, cause: Cause) {
@@ -653,10 +659,12 @@ impl Worker {
                 name,
             } => self.rename(*setlist, *index, name),
             Command::Save => self.save(),
+            Command::Snapshot { index } => self.snapshot(*index),
+            Command::Tempo { bpm } => self.tempo(*bpm),
         };
         if *cmd == Command::Chain {
             if let Ok(text) = &out {
-                self.shown = Some(format!("{text}{:?}", self.natives()));
+                self.shown = Some(format!("{text}{:?}", self.extra()));
             }
         }
         // Some writes swallow their own notifications (a select reads them
@@ -668,7 +676,12 @@ impl Worker {
                 Command::Enable { .. } | Command::Set { .. } | Command::SetNative { .. } => {
                     self.publish_doc(Cause::Edit)
                 }
-                Command::Rename { .. } | Command::Save => self.want_reload(Cause::Other),
+                // A snapshot changes which blocks are on and their values:
+                // read the document again rather than guess.
+                Command::Rename { .. } | Command::Save | Command::Snapshot { .. } => {
+                    self.want_reload(Cause::Other)
+                }
+                Command::Tempo { .. } => self.want_reload(Cause::Edit),
                 _ => {}
             }
         }
@@ -918,6 +931,22 @@ impl Worker {
         ))
     }
 
+    /// `snapshot`: opcode 88, zero-based. Confirmed on an HX Stomp by
+    /// TonePush; on the HX Effects not yet (AGENTS.md 6: first use needs the
+    /// user's go-ahead). A snapshot the preset lacks is refused (-46).
+    fn snapshot(&mut self, index: u32) -> Result<String> {
+        self.with(|s| s.select_snapshot(i64::from(index)))?;
+        Ok(format!("snapshot {}\n", index + 1))
+    }
+
+    /// `tempo`: TonePush has no tempo opcode, so it rewrites the preset
+    /// document (op21) and reads it back until the change shows.
+    fn tempo(&mut self, bpm: f32) -> Result<String> {
+        self.with(|s| s.set_tempo(bpm))?;
+        self.doc = None;
+        Ok(format!("tempo {bpm:.1} BPM\n"))
+    }
+
     /// Mirror our own parameter write into `doc`; forget it if it cannot be.
     fn patch_param(&mut self, slot: i64, param: u32, value: f32) {
         let patch = Patch::Param {
@@ -995,6 +1024,21 @@ pub fn watch(seconds: u64) -> std::result::Result<(), String> {
         println!("skipped {skipped} bytes of events sent out of order");
     }
     Ok(())
+}
+
+/// The active snapshot, zero-based: tone key 10 (snapshots), key 6, as
+/// TonePush's GUI reads it (`session.rs`, `active_snapshot`). Not verified
+/// on the HX Effects yet.
+fn active_snapshot(preset: &hx_proto::Preset) -> Option<u32> {
+    const SNAPSHOT_SECTION: i64 = 10;
+    const ACTIVE: i64 = 6;
+    let index = preset
+        .tone
+        .get(SNAPSHOT_SECTION)?
+        .get(ACTIVE)?
+        .as_i64()
+        .and_then(|n| u32::try_from(n).ok())?;
+    ((index as usize) < preset.snapshots().len()).then_some(index)
 }
 
 /// How long to wait before the next slider write so writes stay `gap` apart.
@@ -1253,6 +1297,10 @@ mod tests {
         );
         assert_eq!(notice(22, &slot), Some(Cause::Preset));
         assert_eq!(notice(30, &event(6, 20, Value::Nil)), Some(Cause::Edit));
+        // Snapshot switched on the pedal (42/46 {92: index}, TonePush
+        // session.rs): re-read, which also picks up the active snapshot.
+        let picked = msgmap! { 92 => Value::Int(2) };
+        assert_eq!(notice(42, &picked), Some(Cause::Other));
         assert_eq!(notice(46, &Value::Nil), Some(Cause::Other));
         assert_eq!(notice(77, &Value::Nil), Some(Cause::Other));
     }

@@ -33,6 +33,8 @@ the chain; the UI does this for parameter and bypass edits.
 | POST | `/api/blocks/{position}/params/{index}` | `{value}` or `{native, model}` | `tonepush set -- P I V`; native: `usb`/`fake` only | Set a parameter. Edit buffer only |
 | POST | `/api/presets/{index}/rename` | `{name, setlist?}` | `tonepush rename --setlist=S -- I N` | Rename a stored preset. Written at once |
 | POST | `/api/save` | `{}` | `tonepush save` | Commit the edit buffer over the loaded preset |
+| POST | `/api/snapshot` | `{index}` | `tonepush snapshot -- N` (1-based) | Switch snapshot, zero-based. Does not mark the preset unsaved |
+| POST | `/api/tempo` | `{bpm}` | `tonepush tempo -- BPM` | Set the preset's tempo, 40–240, rounded to 0.1. Edit buffer only |
 
 - `position` and `index` are the numbers `/api/chain` returns. `setlist` defaults to 0.
 - `value` is typed in display units, as `/api/chain` shows them (`40`, `40 %`,
@@ -47,8 +49,12 @@ the chain; the UI does this for parameter and bypass edits.
 - Edits change the device's edit buffer: audible at once, lost on the next load unless
   saved. `save` keeps the current name and slot; it never writes another slot.
 - User text goes after `--`, so `-22.1` is not read as a flag.
+- Snapshot switch is opcode 88 (`{92: index}`); a snapshot the preset lacks is refused by
+  the pedal (502 `failed`, "error -46"). Tempo has no opcode: TonePush rewrites the whole
+  preset document (opcode 21) and reads it back, about 1 s. Both are confirmed on an HX
+  Stomp by TonePush and **not yet verified on the HX Effects**.
 - Not exposed: reorder (`tonepush move`, marked untested on hardware by TonePush),
-  model change, snapshots, tempo, routing, IRs, settings, restore.
+  model change, snapshot rename, routing, IRs, settings, restore.
 
 ## `/api/chain` blocks
 
@@ -66,6 +72,9 @@ the chain; the UI does this for parameter and bypass edits.
 - `value` is the display string (`"2.2 kHz"`, `"+0.0 dB"`). Without HX Edit data on the
   host, models read `model 269`, params `param 0` and values are raw numbers.
 - `cab` (model + params) appears only on Amp+Cab blocks; never on HX Effects.
+- `snapshot` (top level): the active snapshot, zero-based, from the preset document
+  (tone key 10, key 6, as TonePush's GUI reads it). `usb` and `fake` only; `tonepush chain`
+  does not print it, so `cli` omits it. The fake starts on the first snapshot.
 - `model_id` (block) and `native` (param) appear only when the server has parameter
   metadata: `usb` with HX Edit data in `/vendor`, or `fake` (synthetic). `native` is the
   value as stored (`0.02` for `2 %`); primary model only.

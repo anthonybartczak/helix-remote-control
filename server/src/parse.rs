@@ -146,6 +146,10 @@ pub struct Chain {
     pub name: Option<String>,
     pub tempo: Option<f32>,
     pub snapshots: Vec<String>,
+    /// Active snapshot, zero-based. Only from backends that read the preset
+    /// document (`usb`, `fake`); `tonepush chain` does not print it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub snapshot: Option<u32>,
     pub blocks: Vec<Block>,
 }
 
@@ -240,6 +244,7 @@ pub fn chain(out: &str) -> Result<Chain> {
         name: None,
         tempo: None,
         snapshots: Vec::new(),
+        snapshot: None,
         blocks: Vec::new(),
     };
 
@@ -311,6 +316,16 @@ pub fn chain(out: &str) -> Result<Chain> {
         }
     }
     Ok(chain)
+}
+
+/// Add what the backend knows beyond the text: active snapshot, natives.
+pub fn add_extra(chain: &mut Chain, extra: &crate::device::ChainExtra) {
+    chain.snapshot = extra
+        .snapshot
+        .filter(|&i| (i as usize) < chain.snapshots.len());
+    if let Some(natives) = &extra.natives {
+        add_natives(chain, natives);
+    }
 }
 
 /// Add model numbers and native values to a parsed chain, matching blocks by

@@ -15,7 +15,7 @@ use serde_json::json;
 
 use tokio::sync::broadcast;
 
-use crate::device::{Cause, Command, Device, DeviceError, Live, Natives};
+use crate::device::{Cause, ChainExtra, Command, Device, DeviceError, Live};
 use crate::parse;
 
 /// Shared by every request.
@@ -65,6 +65,8 @@ pub fn router<D: Device>(state: AppState<D>) -> Router {
         )
         .route("/api/presets/{index}/rename", post(rename::<D>))
         .route("/api/save", post(save::<D>))
+        .route("/api/snapshot", post(snapshot::<D>))
+        .route("/api/tempo", post(tempo::<D>))
         .route("/api/live", get(live::<D>))
         .route("/", get(index))
         .route("/app.css", get(app_css))
@@ -263,19 +265,17 @@ struct ChainView {
     unsaved: bool,
 }
 
-/// Parse `chain` output and join the native values behind it, if any.
-fn full_chain(text: &str, natives: Option<&Natives>) -> crate::device::Result<parse::Chain> {
+/// Parse `chain` output and join what the backend knows beyond it.
+fn full_chain(text: &str, extra: &ChainExtra) -> crate::device::Result<parse::Chain> {
     let mut chain = parse::chain(text)?;
-    if let Some(natives) = natives {
-        parse::add_natives(&mut chain, natives);
-    }
+    parse::add_extra(&mut chain, extra);
     Ok(chain)
 }
 
 async fn chain<D: Device>(State(app): Shared<D>) -> ApiResult<ChainView> {
-    let (out, natives) = app.device.chain().await?;
+    let (out, extra) = app.device.chain().await?;
     Ok(Json(ChainView {
-        chain: full_chain(&out, natives.as_ref())?,
+        chain: full_chain(&out, &extra)?,
         unsaved: app.unsaved.load(Ordering::Relaxed),
     }))
 }
@@ -389,7 +389,10 @@ async fn write<D: Device>(
 ) -> ApiResult<WriteResult> {
     let is_set = matches!(cmd, Command::Set { .. } | Command::SetNative { .. });
     let unsaved = match cmd {
-        Command::Enable { .. } | Command::Set { .. } | Command::SetNative { .. } => Some(true),
+        Command::Enable { .. }
+        | Command::Set { .. }
+        | Command::SetNative { .. }
+        | Command::Tempo { .. } => Some(true),
         Command::Select { .. } | Command::Save => Some(false),
         _ => None,
     };
@@ -512,6 +515,50 @@ async fn save<D: Device>(State(app): Shared<D>, access: WriteAccess) -> ApiResul
     write(&app, access, Command::Save).await
 }
 
+/// HX devices have at most 8 snapshots (the HX Effects 4); the device
+/// refuses a missing one with error -46, this catches nonsense first.
+const MAX_SNAPSHOTS: u32 = 8;
+
+#[derive(Deserialize)]
+struct SnapshotBody {
+    /// Zero-based, as in `/api/chain`'s `snapshots` and `snapshot`.
+    index: u32,
+}
+
+async fn snapshot<D: Device>(
+    State(app): Shared<D>,
+    access: WriteAccess,
+    Json(body): Json<SnapshotBody>,
+) -> ApiResult<WriteResult> {
+    if body.index >= MAX_SNAPSHOTS {
+        return Err(ApiError::BadRequest(format!(
+            "snapshots are numbered 0 to {}",
+            MAX_SNAPSHOTS - 1
+        )));
+    }
+    write(&app, access, Command::Snapshot { index: body.index }).await
+}
+
+#[derive(Deserialize)]
+struct TempoBody {
+    bpm: f32,
+}
+
+async fn tempo<D: Device>(
+    State(app): Shared<D>,
+    access: WriteAccess,
+    Json(body): Json<TempoBody>,
+) -> ApiResult<WriteResult> {
+    if !(body.bpm.is_finite() && (40.0..=240.0).contains(&body.bpm)) {
+        return Err(ApiError::BadRequest(
+            "tempo must be between 40 and 240 BPM".into(),
+        ));
+    }
+    // HX shows one decimal; send what it will show.
+    let bpm = (body.bpm * 10.0).round() / 10.0;
+    write(&app, access, Command::Tempo { bpm }).await
+}
+
 // ---------- Live updates ----------
 
 /// Turn device changes into client messages, keeping `unsaved` current:
@@ -519,17 +566,13 @@ async fn save<D: Device>(State(app): Shared<D>, access: WriteAccess) -> ApiResul
 async fn relay<D: Device>(app: Arc<AppState<D>>, mut changes: broadcast::Receiver<Live>) {
     loop {
         let msg = match changes.recv().await {
-            Ok(Live::Chain {
-                text,
-                cause,
-                natives,
-            }) => {
+            Ok(Live::Chain { text, cause, extra }) => {
                 match cause {
                     Cause::Preset => app.unsaved.store(false, Ordering::Relaxed),
                     Cause::Edit => app.unsaved.store(true, Ordering::Relaxed),
                     Cause::Other => {}
                 }
-                match full_chain(&text, natives.as_ref()) {
+                match full_chain(&text, &extra) {
                     Ok(chain) => json!({
                         "type": "chain",
                         "chain": ChainView {
@@ -757,6 +800,50 @@ mod tests {
             assert_eq!(status, StatusCode::BAD_REQUEST, "{body}: {res}");
             assert_eq!(res["code"], "bad_request");
         }
+    }
+
+    #[tokio::test]
+    async fn snapshot_and_tempo() {
+        let app = app();
+        let t = Some(TOKEN);
+        let (_, chain) = send(
+            &app,
+            Request::get("/api/chain").body(Body::empty()).unwrap(),
+        )
+        .await;
+        assert_eq!(chain["snapshot"], 0);
+
+        let (status, res) = post(&app, "/api/snapshot", t, json!({ "index": 2 })).await;
+        assert_eq!(status, StatusCode::OK, "{res}");
+        assert_eq!(res["message"], "snapshot 3");
+        // A snapshot switch is not an edit.
+        assert_eq!(res["unsaved"], false);
+
+        let (status, res) = post(&app, "/api/tempo", t, json!({ "bpm": 96.04 })).await;
+        assert_eq!(status, StatusCode::OK, "{res}");
+        assert_eq!(res["message"], "tempo 96.0 BPM");
+        assert_eq!(res["unsaved"], true);
+
+        let (_, chain) = send(
+            &app,
+            Request::get("/api/chain").body(Body::empty()).unwrap(),
+        )
+        .await;
+        assert_eq!(chain["snapshot"], 2);
+        assert_eq!(chain["tempo"], 96.0);
+
+        for (uri, body) in [
+            ("/api/snapshot", json!({ "index": 8 })),
+            ("/api/tempo", json!({ "bpm": 39.9 })),
+            ("/api/tempo", json!({ "bpm": 241 })),
+        ] {
+            let (status, res) = post(&app, uri, t, body.clone()).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{uri} {body}: {res}");
+        }
+        // Snapshot 5 on a pedal with 4: the pedal refuses it (error -46).
+        let (status, res) = post(&app, "/api/snapshot", t, json!({ "index": 4 })).await;
+        assert_eq!(status, StatusCode::BAD_GATEWAY);
+        assert_eq!(res["code"], "failed");
     }
 
     #[tokio::test]

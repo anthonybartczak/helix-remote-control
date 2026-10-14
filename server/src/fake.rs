@@ -23,7 +23,9 @@ use std::time::Duration;
 use tokio::sync::broadcast;
 
 use crate::controls::{self, Kind, ModelInfo};
-use crate::device::{BlockNatives, Cause, Command, Device, DeviceError, Live, Natives, Result};
+use crate::device::{
+    BlockNatives, Cause, ChainExtra, Command, Device, DeviceError, Live, Natives, Result,
+};
 use crate::parse;
 
 pub struct FakeDevice {
@@ -52,6 +54,9 @@ struct Edits {
     values: HashMap<(u32, u32), String>,
     /// Native values set by slider, by (block, param).
     natives: HashMap<(u32, u32), f32>,
+    tempo: Option<f32>,
+    /// Active snapshot; `None` = the first (the recording does not say).
+    snapshot: Option<u32>,
 }
 
 impl FakeDevice {
@@ -139,17 +144,24 @@ impl FakeDevice {
     async fn echo(&self, cmd: &Command) {
         let cause = match cmd {
             Command::Select { .. } => Cause::Preset,
-            Command::Enable { .. } | Command::Set { .. } | Command::SetNative { .. } => Cause::Edit,
-            Command::Rename { .. } => Cause::Other,
+            Command::Enable { .. }
+            | Command::Set { .. }
+            | Command::SetNative { .. }
+            | Command::Tempo { .. } => Cause::Edit,
+            Command::Rename { .. } | Command::Snapshot { .. } => Cause::Other,
             _ => return,
         };
         if let Ok(text) = self.chain().await {
-            let natives = self.natives().await;
-            let _ = self.live.send(Live::Chain {
-                text,
-                cause,
-                natives,
-            });
+            let extra = self.extra().await;
+            let _ = self.live.send(Live::Chain { text, cause, extra });
+        }
+    }
+
+    async fn extra(&self) -> ChainExtra {
+        let natives = self.natives().await;
+        ChainExtra {
+            natives,
+            snapshot: Some(self.state().buffer.snapshot.unwrap_or(0)),
         }
     }
 
@@ -180,9 +192,9 @@ impl Device for FakeDevice {
         Some(self.live.subscribe())
     }
 
-    async fn chain(&self) -> Result<(String, Option<Natives>)> {
+    async fn chain(&self) -> Result<(String, ChainExtra)> {
         let text = self.run(Command::Chain).await?;
-        Ok((text, self.natives().await))
+        Ok((text, self.extra().await))
     }
 
     fn model(&self, id: u32) -> Option<ModelInfo> {
@@ -321,6 +333,19 @@ impl FakeDevice {
                 state.saved.insert(index, buffer);
                 Ok(format!("saved to {label} in setlist 0 as {name:?}\n"))
             }
+            Command::Snapshot { index } => {
+                let chain = parse::chain(&self.fixture("chain.txt").await?)?;
+                if index as usize >= chain.snapshots.len() {
+                    // What hx-usb reports for the pedal's refusal.
+                    return Err(DeviceError::Failed("the device refused: error -46".into()));
+                }
+                self.state().buffer.snapshot = Some(index);
+                Ok(format!("snapshot {}\n", index + 1))
+            }
+            Command::Tempo { bpm } => {
+                self.state().buffer.tempo = Some(bpm);
+                Ok(format!("tempo {bpm:.1} BPM\n"))
+            }
             other @ (Command::Presets { .. } | Command::Select { .. } | Command::Rename { .. }) => {
                 Err(DeviceError::NoFixture(other))
             }
@@ -381,6 +406,9 @@ impl State {
     fn apply_chain(&self, mut chain: parse::Chain, label: &str, name: &str) -> parse::Chain {
         chain.label = Some(label.to_owned());
         chain.name = Some(name.to_owned());
+        if let Some(bpm) = self.buffer.tempo {
+            chain.tempo = Some(bpm);
+        }
         for block in &mut chain.blocks {
             if let Some(&on) = self.buffer.enabled.get(&block.position) {
                 block.enabled = on;
@@ -739,9 +767,9 @@ mod tests {
         let out = dev.run(set(5, 3, 0.8, 141)).await.unwrap();
         assert_eq!(out, "block 5: param 3 = On\n");
 
-        let (text, natives) = Device::chain(&dev).await.unwrap();
+        let (text, extra) = Device::chain(&dev).await.unwrap();
         let mut c = parse::chain(&text).unwrap();
-        parse::add_natives(&mut c, &natives.unwrap());
+        parse::add_extra(&mut c, &extra);
         assert_eq!(c.blocks[0].params[0].value, "40 %");
         assert_eq!(c.blocks[0].params[0].native, Some(0.4));
         assert_eq!(c.blocks[1].params[0].native, Some(5.0));
@@ -756,9 +784,9 @@ mod tests {
         })
         .await
         .unwrap();
-        let (text, natives) = Device::chain(&dev).await.unwrap();
+        let (text, extra) = Device::chain(&dev).await.unwrap();
         let mut c = parse::chain(&text).unwrap();
-        parse::add_natives(&mut c, &natives.unwrap());
+        parse::add_extra(&mut c, &extra);
         assert_eq!(c.blocks[0].params[1].native, Some(1200.0));
 
         for (cmd, stale) in [

@@ -64,6 +64,16 @@ pub enum Command {
     },
     /// Commit the edit buffer over the loaded preset, keeping its name.
     Save,
+    /// Switch snapshot, zero-based (`tonepush snapshot` counts from 1).
+    /// Opcode 88; changes the edit buffer's state, not stored presets.
+    Snapshot {
+        index: u32,
+    },
+    /// Set the loaded preset's tempo in BPM (40-240). Edit buffer only, but
+    /// TonePush writes the whole preset document for it (no tempo opcode).
+    Tempo {
+        bpm: f32,
+    },
 }
 
 impl Command {
@@ -116,6 +126,10 @@ impl Command {
                 name.clone(),
             ],
             Command::Save => vec!["save".into()],
+            Command::Snapshot { index } => {
+                vec!["snapshot".into(), "--".into(), (index + 1).to_string()]
+            }
+            Command::Tempo { bpm } => vec!["tempo".into(), "--".into(), format!("{bpm:.1}")],
             Command::SetNative { .. } => return None,
         })
     }
@@ -130,6 +144,8 @@ impl Command {
                 | Command::SetNative { .. }
                 | Command::Rename { .. }
                 | Command::Save
+                | Command::Snapshot { .. }
+                | Command::Tempo { .. }
         )
     }
 }
@@ -187,10 +203,11 @@ pub trait Device: Send + Sync + 'static {
         None
     }
 
-    /// `chain` output plus the native values behind it, for sliders. Natives
-    /// are `None` unless the backend has parameter metadata ([`Device::model`]).
-    fn chain(&self) -> impl Future<Output = Result<(String, Option<Natives>)>> + Send {
-        async move { Ok((self.run(Command::Chain).await?, None)) }
+    /// `chain` output plus what `tonepush chain` does not print: native
+    /// values for sliders and the active snapshot. Empty unless the backend
+    /// reads the preset document itself.
+    fn chain(&self) -> impl Future<Output = Result<(String, ChainExtra)>> + Send {
+        async move { Ok((self.run(Command::Chain).await?, ChainExtra::default())) }
     }
 
     /// Parameter metadata for a model number (`/api/models/{id}`). `None`
@@ -198,6 +215,15 @@ pub trait Device: Send + Sync + 'static {
     fn model(&self, _id: u32) -> Option<ModelInfo> {
         None
     }
+}
+
+/// What a backend knows about the loaded preset beyond `chain` text.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct ChainExtra {
+    /// Native values, only with parameter metadata ([`Device::model`]).
+    pub natives: Option<Natives>,
+    /// Active snapshot, zero-based.
+    pub snapshot: Option<u32>,
 }
 
 /// Native parameter values of the loaded preset, per block.
@@ -221,7 +247,7 @@ pub enum Live {
     Chain {
         text: String,
         cause: Cause,
-        natives: Option<Natives>,
+        extra: ChainExtra,
     },
     /// The device session came up (`true`) or was lost (`false`).
     Connected(bool),
@@ -415,6 +441,12 @@ mod tests {
             model: 269,
         };
         assert!(native.is_write() && native.args().is_none());
+        // tonepush counts snapshots from 1; the API from 0.
+        let snap = Command::Snapshot { index: 1 };
+        assert_eq!(snap.args().unwrap(), ["snapshot", "--", "2"]);
+        let tempo = Command::Tempo { bpm: 96.04 };
+        assert_eq!(tempo.args().unwrap(), ["tempo", "--", "96.0"]);
+        assert!(snap.is_write() && tempo.is_write());
         assert!(!Command::Chain.is_write());
     }
 
