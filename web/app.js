@@ -1333,6 +1333,17 @@ function lanes() {
   return { main, cells, branch: divides ? cells : [], split, join };
 }
 
+/**
+ * A block drawn as a pedal: an expression pedal for wahs and volume, else a
+ * stompbox. Its colour is the category's (--c on the slot).
+ */
+function pedal(cat) {
+  const plate = `<span class="plate">${esc(cat.short)}</span>`;
+  return /^(wah|volume)/i.test(cat.name)
+    ? `<div class="node treadle"><span class="led"></span><span class="tread"></span>${plate}</div>`
+    : `<div class="node"><span class="led"></span>${plate}<span class="stomp"></span></div>`;
+}
+
 /** A slot as the UI names it: 1-9 on Path A, B1-B9 on Path B. */
 function slotLabel(n) {
   const i = lanes().cells.indexOf(n);
@@ -1377,7 +1388,7 @@ function renderChain() {
     const fs = b.footswitch ? ` · <span class="slot-fs">FS${b.footswitch}</span>` : '';
     return `<button class="${cls}" type="button" data-slot="${n}" style="--c:${cat.colour}"` +
       ` aria-pressed="${sel}" aria-label="Slot ${label}: ${esc(b.model)}, ${esc(cat.name)}${b.based_on ? `, based on ${esc(b.based_on)}` : ''}${b.enabled ? '' : ', bypassed'}${b.footswitch ? `, on footswitch ${b.footswitch}` : ''}"${b.based_on ? ` title="${esc(b.model)}: ${esc(b.based_on)}"` : ''}>` +
-      `<div class="slot-num">${label}${fs}</div><div class="node"><div class="node-code">${esc(cat.short)}</div><div class="node-band"></div></div>` +
+      `<div class="slot-num">${label}${fs}</div>${pedal(cat)}` +
       `<div class="slot-name">${esc(b.model)}</div></button>`;
   };
   // While a block moves and Path B is empty, Path B shows as a drop row.

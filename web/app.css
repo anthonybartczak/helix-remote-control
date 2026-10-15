@@ -18,7 +18,7 @@
   --s1: 4px; --s2: 8px; --s3: 12px; --s4: 16px; --s5: 20px; --s6: 28px; --s7: 40px;
   --r1: 4px; --r2: 8px; --r3: 14px; --r-pill: 999px;
   --fs-xs: 12px; --fs-s: 14px; --fs-m: 16px; --fs-l: 18px; --fs-xl: 22px; --fs-2xl: 28px; --fs-3xl: 40px;
-  --tap: 44px; --tap-l: 56px; --node: 68px;
+  --tap: 44px; --tap-l: 56px; --node: 80px; --node-w: 58px;
   /* Depth: a hairline top highlight and a soft drop, so panels sit above the page. */
   --hair: oklch(1 0 0 / .07);
   --edge: inset 0 1px 0 oklch(1 0 0 / .06);
@@ -202,42 +202,81 @@ button:not(:disabled):active { transform: scale(.95); }
 .slot { flex: 1; min-width: 0; position: relative; display: flex; flex-direction: column; align-items: center; gap: var(--s2); }
 .slot:disabled { cursor: default; }
 .slot-num { font: var(--fs-xs) var(--font-mono); color: var(--muted); height: 16px; }
+/* A block is drawn as a pedal (stompbox, or an expression pedal for wahs and
+   volume): an enclosure painted in its HX Edit category colour, a red LED
+   lit while it is on, a label plate, a footswitch. Bypassed, the paint goes
+   dull and the LED dark. Decoration only: parameters stay sliders, menus and
+   switches in the panel below (never knobs: they fail on a small touch screen). */
 .node {
-  --tint: color-mix(in oklab, var(--c) 16%, oklch(0.14 0.006 260));
-  width: var(--node); height: var(--node); border-radius: var(--r3);
-  border: 2px solid color-mix(in oklab, var(--c) 45%, var(--line));
-  background: linear-gradient(180deg, oklch(1 0 0 / .05), transparent 50%), var(--tint);
-  overflow: hidden; display: flex; flex-direction: column;
-  box-shadow: var(--edge), 0 4px 12px -4px oklch(0 0 0 / .6);
-  transition: transform .25s var(--ease-out), box-shadow .25s, border-color .25s;
+  width: var(--node-w); height: var(--node); position: relative;
+  border-radius: 9px 9px 12px 12px;
+  display: flex; flex-direction: column; align-items: center; gap: 5px; padding: 7px 5px 6px;
+  background:
+    linear-gradient(180deg, oklch(1 0 0 / .32), oklch(1 0 0 / .06) 22%, transparent 45%, oklch(0 0 0 / .18)),
+    linear-gradient(90deg, oklch(0 0 0 / .14), transparent 18%, transparent 82%, oklch(0 0 0 / .14)),
+    var(--c);
+  box-shadow:
+    inset 0 1px 0 oklch(1 0 0 / .45), inset 0 -3px 0 oklch(0 0 0 / .28),
+    0 1px 0 oklch(0 0 0 / .5), 0 8px 16px -6px oklch(0 0 0 / .75);
+  transition: transform .25s var(--ease-out), box-shadow .25s, filter .25s;
 }
-.node-code { flex: 1; display: grid; place-items: center; font: 700 var(--fs-s) var(--font-mono); color: color-mix(in oklab, var(--c) 70%, var(--muted)); }
-.node-band { height: 0; background: var(--c); }
+.led {
+  flex: none; width: 7px; height: 7px; border-radius: 50%;
+  background: oklch(0.32 0.06 25); box-shadow: inset 0 1px 1px oklch(0 0 0 / .6), 0 0 0 1.5px oklch(0 0 0 / .35);
+}
+.plate {
+  flex: none; width: 100%; padding: 3px 2px; border-radius: 3px; text-align: center;
+  background: linear-gradient(180deg, oklch(0.22 0.008 260), oklch(0.13 0.006 260));
+  box-shadow: inset 0 1px 0 oklch(1 0 0 / .1), 0 1px 0 oklch(1 0 0 / .25);
+  font: 700 10px/1.1 var(--font-mono); letter-spacing: -.02em; color: var(--ink);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+/* A metal footswitch on a stompbox. */
+.stomp {
+  margin-top: auto; flex: none; width: 24px; height: 24px; border-radius: 50%;
+  background: radial-gradient(circle at 36% 30%, oklch(0.98 0 0), oklch(0.74 0.005 260) 45%, oklch(0.45 0.005 260) 80%);
+  box-shadow: 0 0 0 2.5px oklch(0.3 0.005 260), 0 3px 4px oklch(0 0 0 / .55), inset 0 -1px 2px oklch(0 0 0 / .35);
+}
+/* An expression pedal: a rubber treadle over the painted base. */
+.node.treadle { padding-top: 5px; gap: 4px; }
+.tread {
+  flex: 1; width: 100%; border-radius: 6px 6px 3px 3px;
+  background: repeating-linear-gradient(180deg, oklch(0.27 0.005 260) 0 2px, oklch(0.17 0.005 260) 2px 5px);
+  box-shadow: inset 0 1px 0 oklch(1 0 0 / .18), inset 0 -2px 3px oklch(0 0 0 / .6), 0 2px 3px oklch(0 0 0 / .45);
+  transform: perspective(70px) rotateX(14deg); transform-origin: bottom;
+}
+.node.treadle .led { position: absolute; top: 4px; right: 5px; }
+.slot.on .led {
+  background: radial-gradient(circle at 40% 35%, oklch(0.92 0.12 30), oklch(0.66 0.25 27));
+  box-shadow: 0 0 0 1.5px oklch(0 0 0 / .35), 0 0 8px 2px oklch(0.66 0.25 27 / .75);
+}
 .slot.on .node {
-  --tint: color-mix(in oklab, var(--c) 26%, oklch(0.14 0.006 260));
-  border-color: var(--c);
-  box-shadow: var(--edge), 0 0 0 1px color-mix(in oklab, var(--c) 40%, transparent),
-              0 6px 26px -6px color-mix(in oklab, var(--c) 75%, transparent);
+  box-shadow:
+    inset 0 1px 0 oklch(1 0 0 / .45), inset 0 -3px 0 oklch(0 0 0 / .28),
+    0 1px 0 oklch(0 0 0 / .5), 0 8px 16px -6px oklch(0 0 0 / .75),
+    0 6px 26px -8px color-mix(in oklab, var(--c) 80%, transparent);
 }
-.slot.on .node-code { color: var(--ink); }
-.slot.on .node-band { height: 10px; box-shadow: 0 0 12px var(--c); }
-.slot:not(.on):not(.empty) .node { opacity: .75; }
+.slot:not(.on):not(.empty) .node { filter: saturate(.3) brightness(.55); }
+.slot:not(.on):not(.empty) .plate { color: var(--muted); }
 .slot.selected .node { transform: translateY(-4px); }
-.slot.selected .node, .slot.on.selected .node {
-  box-shadow: var(--edge), 0 0 0 3px oklch(0.12 0.005 260), 0 0 0 5px var(--ink),
-              0 10px 28px -6px color-mix(in oklab, var(--c) 70%, transparent);
+.slot.selected .node {
+  box-shadow:
+    inset 0 1px 0 oklch(1 0 0 / .45), inset 0 -3px 0 oklch(0 0 0 / .28),
+    0 0 0 3px oklch(0.12 0.005 260), 0 0 0 5px var(--ink),
+    0 12px 28px -6px color-mix(in oklab, var(--c) 70%, transparent);
 }
+.slot.selected:not(.on) .node { filter: saturate(.45) brightness(.7); }
 .slot.selected .slot-num { color: var(--ink); }
-.node-empty { width: var(--node); height: var(--node); display: grid; place-items: center; }
+.node-empty { width: var(--node-w); height: var(--node); display: grid; place-items: center; }
 .node-empty::after { content: ""; width: 12px; height: 12px; border-radius: 50%; background: oklch(0.12 0.005 260); border: 2px solid var(--line); box-sizing: border-box; }
 .node-skel {
-  width: var(--node); height: var(--node); border-radius: var(--r3);
+  width: var(--node-w); height: var(--node); border-radius: 9px 9px 12px 12px;
   background: linear-gradient(100deg, var(--surface-2) 30%, oklch(0.28 0.01 260) 50%, var(--surface-2) 70%) 0 0 / 300% 100%;
   animation: shimmer 1.6s linear infinite;
 }
 @keyframes shimmer { from { background-position: 100% 0; } to { background-position: 0 0; } }
 /* An empty slot is a button: selected (or hovered), it shows where a block would go. */
-.slot.empty .node-empty { border-radius: var(--r3); }
+.slot.empty .node-empty { border-radius: 9px 9px 12px 12px; }
 .slot.empty.selected .node-empty { border: 2px dashed var(--line-strong); background: oklch(0.14 0.006 260); }
 .slot.empty.selected .node-empty::after { content: "+"; width: auto; height: auto; border: 0; background: none; font: 600 var(--fs-xl) var(--font-mono); color: var(--ink); }
 @media (hover: hover) {
@@ -286,7 +325,7 @@ button:not(:disabled):active { transform: scale(.95); }
 .slot.moving .node { animation: moving 1.1s ease-in-out infinite; }
 @keyframes moving { 50% { transform: translateY(-4px) scale(1.06); } }
 .slot.target .node-empty {
-  border: 2px dashed var(--ok); border-radius: var(--r3); background: color-mix(in oklab, var(--ok) 10%, transparent);
+  border: 2px dashed var(--ok); border-radius: 9px 9px 12px 12px; background: color-mix(in oklab, var(--ok) 10%, transparent);
 }
 .slot.target .node-empty::after { content: "↓"; width: auto; height: auto; border: 0; background: none; font: 700 var(--fs-l) var(--font-ui); color: var(--ok); }
 @media (prefers-reduced-motion: reduce) { .slot.moving .node { animation: none; outline: 2px dashed var(--ink); } }
@@ -593,7 +632,7 @@ div.slot.empty { cursor: default; }
 /* ---------- Phone (< 768px): first pass, see design section 6 ---------- */
 
 @media (max-width: 767px) {
-  :root { --node: 34px; }
+  :root { --node: 46px; --node-w: 32px; }
   .presetbar { height: auto; flex-wrap: wrap; }
   .presets-btn, .arrow, .tempo { height: var(--tap-l); }
   .presets-btn { width: auto; flex: 1; }
@@ -608,9 +647,16 @@ div.slot.empty { cursor: default; }
   .chain.has-add-b { height: 150px; padding-bottom: 40px; }
   .io-bar { width: 14px; }
   .slot-name { display: none; }
-  .slot.on .node-band { height: 6px; }
-  .node { border-width: 2px; border-radius: var(--r2); }
-  .node-code { font-size: 8px; letter-spacing: -.06em; }
+  /* The block's name keeps its row; Move / Remove / Turn on wrap below it. */
+  .params-head { flex-wrap: wrap; row-gap: 0; padding-bottom: var(--s2); }
+  .params-head .ph-title { flex: 1 1 calc(100% - 70px); }
+  .params-head .spacer { display: none; }
+  .params-head .ph-toggle { flex: 1 1 0; }
+  .node { padding: 4px 2px 3px; gap: 3px; border-radius: 6px 6px 8px 8px; }
+  .led { width: 5px; height: 5px; }
+  .plate { padding: 2px 1px; font-size: 7px; letter-spacing: -.06em; }
+  .stomp { width: 12px; height: 12px; box-shadow: 0 0 0 1.5px oklch(0.3 0.005 260), 0 2px 2px oklch(0 0 0 / .5); }
+  .node.treadle .led { top: 3px; right: 3px; }
   .params-grid { grid-template-columns: minmax(0, 1fr); padding: var(--s2) var(--s4); }
   .ph-meta { display: none; }
   .banner { height: auto; min-height: 64px; flex-wrap: wrap; padding: var(--s2) var(--s2) var(--s2) var(--s4); }
