@@ -203,47 +203,55 @@ button:not(:disabled):active { transform: scale(.95); }
 .slot:disabled { cursor: default; }
 .slot-num { font: var(--fs-xs) var(--font-mono); color: var(--muted); height: 16px; }
 /* A block is drawn as a pedal (stompbox, or an expression pedal for wahs and
-   volume), flat: an enclosure in its HX Edit category colour, a red LED lit
-   while it is on, a label plate, a footswitch. Bypassed, the paint fades and
-   the LED goes dark. Decoration only: parameters stay sliders, menus and
+   volume): a dark body tinted with its HX Edit category colour, outlined and
+   glowing in it while on, a red LED, a label plate. Bypassed, it dims and the
+   LED goes dark. Decoration only: parameters stay sliders, menus and
    switches in the panel below (never knobs: they fail on a small touch screen). */
 .node {
+  --tint: color-mix(in oklab, var(--c) 14%, oklch(0.14 0.006 260));
   width: var(--node-w); height: var(--node); position: relative;
   border-radius: 8px 8px 11px 11px;
-  display: flex; flex-direction: column; align-items: center; gap: 5px; padding: 7px 5px 6px;
-  background: var(--c);
-  box-shadow: 0 2px 6px -2px oklch(0 0 0 / .55);
-  transition: transform .25s var(--ease-out), box-shadow .25s, background-color .25s;
+  display: flex; flex-direction: column; align-items: center; gap: 5px; padding: 8px 5px 7px;
+  border: 2px solid color-mix(in oklab, var(--c) 45%, var(--line));
+  background: linear-gradient(180deg, oklch(1 0 0 / .05), transparent 50%), var(--tint);
+  box-shadow: var(--edge), 0 4px 12px -4px oklch(0 0 0 / .6);
+  transition: transform .25s var(--ease-out), box-shadow .25s, border-color .25s;
 }
-.led { flex: none; width: 6px; height: 6px; border-radius: 50%; background: oklch(0 0 0 / .35); }
+.led { flex: none; width: 6px; height: 6px; border-radius: 50%; background: oklch(0 0 0 / .45); box-shadow: 0 0 0 1px color-mix(in oklab, var(--c) 35%, transparent); }
 .plate {
-  flex: none; width: 100%; padding: 3px 2px; border-radius: 3px; text-align: center;
-  background: oklch(0.17 0.006 260 / .9);
-  font: 700 10px/1.1 var(--font-mono); letter-spacing: -.02em; color: var(--ink);
+  margin-top: auto; flex: none; width: 100%; padding: 3px 2px; border-radius: 3px; text-align: center;
+  background: oklch(0 0 0 / .35);
+  font: 700 10px/1.1 var(--font-mono); letter-spacing: -.02em; color: color-mix(in oklab, var(--c) 70%, var(--muted));
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-/* A footswitch on a stompbox. */
-.stomp {
-  margin-top: auto; flex: none; width: 22px; height: 22px; border-radius: 50%;
-  background: oklch(0.88 0.003 260); box-shadow: 0 0 0 2.5px oklch(0 0 0 / .28);
-}
-/* An expression pedal: a ribbed treadle over the painted base. */
+/* An expression pedal: a ribbed treadle, tinted like the body. */
 .node.treadle { padding-top: 5px; gap: 4px; }
 .tread {
   flex: 1; width: 100%; border-radius: 5px 5px 3px 3px;
-  background: repeating-linear-gradient(180deg, oklch(0.24 0.005 260) 0 3px, oklch(0.19 0.005 260) 3px 6px);
+  background: repeating-linear-gradient(180deg, color-mix(in oklab, var(--c) 22%, transparent) 0 3px, transparent 3px 6px);
 }
 .node.treadle .led { position: absolute; top: 4px; right: 5px; }
-.slot.on .led { background: oklch(0.68 0.23 27); box-shadow: 0 0 6px oklch(0.68 0.23 27 / .7); }
-.slot.on .node { box-shadow: 0 2px 6px -2px oklch(0 0 0 / .55), 0 6px 20px -10px color-mix(in oklab, var(--c) 80%, transparent); }
-/* Bypassed: the paint fades toward the panel; the dark LED says the rest. */
-.slot:not(.on):not(.empty) .node { background: color-mix(in oklab, var(--c) 38%, oklch(0.22 0.006 260)); }
-.slot:not(.on):not(.empty) .plate { color: var(--muted); }
-.slot:not(.on):not(.empty) .stomp { background: oklch(0.6 0.003 260); }
+/* An FX loop: a squarer jack box, a cable from Send round to Return. */
+.node.loop { border-radius: 5px; }
+.loop-icon { flex: none; width: 80%; margin-top: auto; overflow: visible; color: color-mix(in oklab, var(--c) 75%, var(--muted)); }
+.loop-icon path { fill: none; stroke: currentColor; stroke-width: 2.5; stroke-linecap: round; stroke-dasharray: 3 3; }
+.loop-icon circle { fill: oklch(0.1 0.005 260); stroke: currentColor; stroke-width: 2; }
+.slot.on .loop-icon { color: var(--c); }
+.slot.on .loop-icon path { stroke-dasharray: none; }
+.node.treadle .plate { margin-top: 0; }
+.slot.on .led { background: oklch(0.68 0.23 27); box-shadow: 0 0 6px oklch(0.68 0.23 27 / .8); }
+.slot.on .node {
+  --tint: color-mix(in oklab, var(--c) 26%, oklch(0.14 0.006 260));
+  border-color: var(--c);
+  box-shadow: var(--edge), 0 0 0 1px color-mix(in oklab, var(--c) 40%, transparent),
+              0 6px 26px -6px color-mix(in oklab, var(--c) 75%, transparent);
+}
+.slot.on .plate { color: var(--ink); }
+.slot:not(.on):not(.empty) .node { opacity: .75; }
 .slot.selected .node { transform: translateY(-4px); }
 .slot.selected .node {
-  box-shadow: 0 0 0 3px oklch(0.12 0.005 260), 0 0 0 5px var(--ink),
-              0 10px 22px -10px color-mix(in oklab, var(--c) 70%, transparent);
+  box-shadow: var(--edge), 0 0 0 3px oklch(0.12 0.005 260), 0 0 0 5px var(--ink),
+              0 10px 28px -6px color-mix(in oklab, var(--c) 70%, transparent);
 }
 .slot.selected .slot-num { color: var(--ink); }
 .node-empty { width: var(--node-w); height: var(--node); display: grid; place-items: center; }
@@ -634,7 +642,6 @@ div.slot.empty { cursor: default; }
   .node { padding: 4px 2px 3px; gap: 3px; border-radius: 6px 6px 8px 8px; }
   .led { width: 5px; height: 5px; }
   .plate { padding: 2px 1px; font-size: 7px; letter-spacing: -.06em; }
-  .stomp { width: 12px; height: 12px; box-shadow: 0 0 0 1.5px oklch(0 0 0 / .28); }
   .node.treadle .led { top: 3px; right: 3px; }
   .params-grid { grid-template-columns: minmax(0, 1fr); padding: var(--s2) var(--s4); }
   .ph-meta { display: none; }

@@ -1339,9 +1339,17 @@ function lanes() {
  */
 function pedal(cat) {
   const plate = `<span class="plate">${esc(cat.short)}</span>`;
-  return /^(wah|volume)/i.test(cat.name)
-    ? `<div class="node treadle"><span class="led"></span><span class="tread"></span>${plate}</div>`
-    : `<div class="node"><span class="led"></span>${plate}<span class="stomp"></span></div>`;
+  if (/^(wah|volume)/i.test(cat.name)) {
+    return `<div class="node treadle"><span class="led"></span><span class="tread"></span>${plate}</div>`;
+  }
+  // An FX loop: a jack box, the cable going out of Send and back into Return.
+  if (/^send/i.test(cat.name)) {
+    return '<div class="node loop"><span class="led"></span>' +
+      '<svg class="loop-icon" viewBox="0 0 40 26" aria-hidden="true"><path d="M9 19V11a11 9 0 0 1 22 0v8"/>' +
+      '<circle cx="9" cy="20" r="4"/><circle cx="31" cy="20" r="4"/></svg>' +
+      `${plate}</div>`;
+  }
+  return `<div class="node"><span class="led"></span>${plate}</div>`;
 }
 
 /** A slot as the UI names it: 1-9 on Path A, B1-B9 on Path B. */
