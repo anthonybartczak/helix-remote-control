@@ -97,7 +97,14 @@ does: stop the service before using HX Edit or `tonepush` by hand.
 
 Plain HTML, CSS and JS, no build step. The server compiles the files into its binary, so
 rebuild (`cargo run`) after editing them. Design: `docs/design/stage-and-studio-layouts`
-(direction 2A "Rig").
+(direction 2A "Rig"); the bank tiles from that design are gone, the Presets sheet loads presets.
+On desktop widths (1280 px and up) the button at the top left shows or hides the preset
+list (remembered in the browser); hidden, the Presets button opens the sheet.
+
+Animation: [Motion](https://motion.dev) 13.4.6 (MIT), vendored as one file in `web/lib/`
+with its license. To bump it, replace the file and change the version in its name in
+`web/index.html` and `server/src/api.rs` (the browser caches it by name). Without it, or
+with Reduce Motion on, the UI works the same, only without animation.
 
 1. Start the server (see above), e.g. `cd server && cargo run`.
 2. Open http://localhost:8080 on the same machine, or `http://<machine-ip>:8080` on the iPad.
@@ -106,7 +113,7 @@ rebuild (`cargo run`) after editing them. Design: `docs/design/stage-and-studio-
 Writes (server needs `HELIX_TOKEN`; the UI asks for it on the first write and keeps it
 in the browser):
 
-- **Load a preset:** ‹ ›, a bank tile, or Presets → pick → Load. Asks first if there are
+- **Load a preset:** ‹ › or Presets → pick → Load. Asks first if there are
   unsaved edits.
 - **Block on/off:** select a block, tap Turn on / Turn off.
 - **Parameter:** drag its slider left or right (the value shows under your finger), pick
@@ -122,10 +129,12 @@ in the browser):
   it) and is sent once you pause for 1.5 s. Tap the BPM to type a value (40–240).
   Snapshot switch, tap and typed tempo verified 2026-10-14 on the HX Effects 3.80 (Pi 4).
 - **Add a block:** tap an empty slot (or select one and tap Add block). Pick a category;
-  its models are sorted by effect type (Distortion: Boost, Overdrive, Distortion, Fuzz,
-  Bass, Lo-fi), with a chip per type to jump to it. All / Mono / Stereo / Legacy narrows
-  the list (remembered in the browser). The filter searches names, types and the gear
-  they are based on. Tap Add, or tap the model a second time. The types are ours
+  each model shows once, sorted by effect type (Distortion: Boost, Overdrive, Distortion,
+  Fuzz, Bass, Lo-fi); a type chip shows only that type. Mono or Stereo is picked in the
+  footer, for models that have both. Legacy models hide behind the Legacy toggle; Recent
+  lists the last 8 models added. Version, Legacy toggle and Recent are remembered in the
+  browser. The filter searches names, types and the gear they are based on, Legacy
+  included. Tap Add, or tap the model a second time. The types are ours
   (`server/src/types.rs`), not Line 6's. The block lands in that
   slot, switched on, with HX Edit's default values. Needs HX Edit data on the server
   (`usb` with `/vendor`; `fake` uses it when the machine has HX Edit, else offers the 4

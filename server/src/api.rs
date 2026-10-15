@@ -88,6 +88,7 @@ pub fn router<D: Device>(state: AppState<D>) -> Router {
         .route("/app.css", get(app_css))
         .route("/app.js", get(app_js))
         .route("/latest.js", get(latest_js))
+        .route("/lib/motion-13.4.6.js", get(motion_js))
         .with_state(state)
 }
 
@@ -126,6 +127,18 @@ async fn latest_js() -> impl IntoResponse {
             NO_CACHE,
         ],
         include_str!("../../web/latest.js"),
+    )
+}
+
+/// Motion (motion.dev, MIT, web/lib/motion-LICENSE.md). The version is in the
+/// path, so Safari may keep it; bump the name with the file.
+async fn motion_js() -> impl IntoResponse {
+    (
+        [
+            (header::CONTENT_TYPE, "text/javascript; charset=utf-8"),
+            (header::CACHE_CONTROL, "public, max-age=31536000, immutable"),
+        ],
+        include_str!("../../web/lib/motion-13.4.6.js"),
     )
 }
 
@@ -827,6 +840,7 @@ mod tests {
             ("/app.css", "text/css"),
             ("/app.js", "text/javascript"),
             ("/latest.js", "text/javascript"),
+            ("/lib/motion-13.4.6.js", "text/javascript"),
         ] {
             let res = app()
                 .oneshot(Request::get(uri).body(Body::empty()).unwrap())

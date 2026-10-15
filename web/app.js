@@ -1,4 +1,4 @@
-// Helix Bridge UI. No build step, no dependencies.
+// Helix Bridge UI. No build step; one vendored library (Motion, web/lib) for animation.
 // Talks to the server's REST API (docs/api.md). Every device call runs one
 // `tonepush` command on the server, about 1–3 s each, serialised.
 // Phase 6 writes: load preset, block on/off, parameter value, rename, save.
@@ -85,8 +85,9 @@ const state = {
   selectedSlot: null, // 1..SLOTS; may be an empty slot
   selectionLabel: null, // preset label the selection belongs to
   catalog: null, // /api/catalog .categories | CATALOG_PENDING | { error }
-  // selected: model id; shelf: All | Mono | Stereo | Legacy, kept in this browser
-  picker: { open: false, slot: null, category: 0, filter: '', selected: null, shelf: 'All', fs: 'none' },
+  // category: index or RECENT; type: TYPE_ALL or a type filter; selected: a model group's key;
+  // variant: Mono | Stereo, the version to add; legacy: show Legacy models. Last two kept in this browser.
+  picker: { open: false, slot: null, category: 0, type: 'All', filter: '', selected: null, variant: 'Mono', legacy: false, fs: 'none' },
   loading: false,
   banner: null, // non-blocking error: { message, context }
   blocked: null, // blocking error: { icon, title, text, detail }
@@ -422,33 +423,79 @@ function loadCatalog() {
   ).finally(() => { if (state.picker.open) renderPicker(); });
 }
 
-const SHELF_ALL = 'All';
-const SHELF_KEY = 'helix-bridge-shelf';
+// The picker shows each model once: its Mono and Stereo versions are one tile,
+// and the footer picks the version (the last one used, kept in this browser).
+// Legacy models (HX Edit's older HD-era shelf) hide behind a toggle; a search
+// finds them anyway. "Recent" lists the models added last.
+const TYPE_ALL = 'All';
+const RECENT = -1; // picker.category for the Recent list
+const RECENT_MAX = 8;
+const VARIANT_KEY = 'helix-bridge-variant';
+const LEGACY_KEY = 'helix-bridge-legacy';
+const RECENT_KEY = 'helix-bridge-recent';
+const LEGACY = 'Legacy';
 
-function storedShelf() {
-  try { return localStorage.getItem(SHELF_KEY) || SHELF_ALL; } catch { return SHELF_ALL; }
+function stored(key, fallback) {
+  try { return localStorage.getItem(key) ?? fallback; } catch { return fallback; }
 }
 
-function storeShelf(shelf) {
-  try { localStorage.setItem(SHELF_KEY, shelf); } catch { /* private mode: forget it */ }
+function store(key, value) {
+  try { localStorage.setItem(key, value); } catch { /* private mode: forget it */ }
+}
+
+function storedRecent() {
+  try {
+    const ids = JSON.parse(stored(RECENT_KEY, '[]'));
+    return Array.isArray(ids) ? ids.filter(Number.isInteger) : [];
+  } catch { return []; }
+}
+
+function rememberRecent(id) {
+  store(RECENT_KEY, JSON.stringify([id, ...storedRecent().filter((x) => x !== id)].slice(0, RECENT_MAX)));
 }
 
 /**
- * A category's models in sections: by effect type when the server sends
- * types (Boost, Overdrive, Fuzz…; ours, not Line 6's), else by shelf.
- * Returns [name, models] pairs, empty sections left out.
+ * A category's groups in sections: by effect type when the server sends
+ * types (Boost, Overdrive, Fuzz…; ours, not Line 6's), else one unnamed one.
+ * Returns [name, groups] pairs, empty sections left out.
  */
 function sections(c, list) {
-  const keys = c.types?.length ? c.types : [...new Set(list.map((m) => m.shelf ?? ''))];
-  const keyOf = c.types?.length ? (m) => m.type : (m) => m.shelf ?? '';
-  return keys.map((k) => [k, list.filter((m) => keyOf(m) === k)]).filter(([, ms]) => ms.length);
+  if (!c.types?.length) return list.length ? [['', list]] : [];
+  const keys = [...c.types, ...new Set(list.map((g) => g.type).filter((t) => !c.types.includes(t)))];
+  return keys.map((k) => [k, list.filter((g) => g.type === k)]).filter(([, gs]) => gs.length);
 }
 
-/** Same-named models side by side (Mono, then Stereo), else catalog order. */
-function byName(list) {
-  const first = new Map();
-  for (const m of list) if (!first.has(m.name)) first.set(m.name, first.size);
-  return [...list].sort((a, b) => first.get(a.name) - first.get(b.name));
+let groupCache = { catalog: null, groups: [] };
+
+/**
+ * Models merged by name within a category: { key, name, type, based_on,
+ * category, ci, legacy, variants: [{ shelf, id }] }. Legacy models stay apart
+ * (a few share a name with a current one).
+ */
+function modelGroups() {
+  if (!Array.isArray(state.catalog)) return [];
+  if (groupCache.catalog === state.catalog) return groupCache.groups;
+  const byKey = new Map();
+  for (const m of catalogModels()) {
+    const legacy = m.shelf === LEGACY;
+    const key = `${m.ci}|${legacy ? 'L' : ''}|${m.name}`;
+    if (!byKey.has(key)) {
+      byKey.set(key, { key, name: m.name, type: m.type ?? null, based_on: m.based_on ?? null,
+        category: m.category, ci: m.ci, legacy, variants: [] });
+    }
+    byKey.get(key).variants.push({ shelf: m.shelf, id: m.id });
+  }
+  groupCache = { catalog: state.catalog, groups: [...byKey.values()] };
+  return groupCache.groups;
+}
+
+/** The model id a group adds: the version picked in the footer, else its only one. */
+function variantOf(g) {
+  return g.variants.find((v) => v.shelf === state.picker.variant) ?? g.variants[0];
+}
+
+function selectedGroup() {
+  return modelGroups().find((g) => g.key === state.picker.selected) ?? null;
 }
 
 /** Every model in the list, with its category and shelf. */
@@ -466,10 +513,13 @@ function selectSlot(n) {
 }
 
 function openPicker(slot) {
-  state.picker = { ...state.picker, open: true, slot, filter: '', selected: null, shelf: storedShelf(), fs: storedAddFs() };
+  state.picker = {
+    ...state.picker, open: true, slot, filter: '', selected: null, type: TYPE_ALL,
+    variant: stored(VARIANT_KEY, 'Mono'), legacy: stored(LEGACY_KEY, '') === '1', fs: storedAddFs(),
+  };
   state.connOpen = false;
   $('model-filter').value = '';
-  $('picker').hidden = false;
+  showSheet($('picker'));
   loadCatalog();
   renderConnection();
   renderPicker();
@@ -478,19 +528,29 @@ function openPicker(slot) {
   document.querySelector('.cat.active')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
 }
 
+/** Redraw the model list from its top, tiles rising in. */
+function showModels() {
+  renderPicker();
+  const models = $('models');
+  models.scrollTop = 0;
+  fx(models.querySelectorAll('.group-name, .mtile'), { opacity: [0, 1], y: [8, 0] }, { ...RISE, delay: stagger(0.008) });
+}
+
 function closePicker() {
   state.picker.open = false;
-  $('picker').hidden = true;
+  hideSheet($('picker'), () => !state.picker.open);
 }
 
 async function addBlock() {
-  const { slot, selected } = state.picker;
-  const m = catalogModels().find((x) => x.id === selected);
-  if (slot == null || !m || slotMap().has(slot) || !canWrite()) return;
+  const { slot } = state.picker;
+  const g = selectedGroup();
+  if (slot == null || !g || slotMap().has(slot) || !canWrite()) return;
+  const m = { name: g.name, id: variantOf(g).id };
   const fs = addFootswitch();
   closePicker();
   state.selectedSlot = slot;
   const added = await write(`Adding ${m.name}…`, `/api/blocks/${slot + 1}`, { model: m.id });
+  if (added) rememberRecent(m.id);
   if (added && fs) {
     await write(`Putting ${m.name} on FS${fs}…`, `/api/blocks/${slot + 1}/footswitch`, { switch: fs, model: m.id });
   }
@@ -970,6 +1030,106 @@ function percentOf(value) {
   return Math.max(0, Math.min(100, Number(m[1])));
 }
 
+// ---------- Motion ----------
+// Springs from Motion (web/lib/motion-*.js, motion.dev, MIT). Each render
+// rebuilds its elements, so CSS transitions never see a change; the renders
+// call these when they see one. Without Motion, or with Reduce Motion on, the
+// UI is the same, only still.
+
+const M = window.Motion ?? null;
+const calm = window.matchMedia('(prefers-reduced-motion: reduce)');
+const SPRING = { type: 'spring', bounce: 0.3, visualDuration: 0.35 };
+const FADE = { duration: 0.2, ease: 'easeOut' };
+const RISE = { duration: 0.28, ease: [0.2, 0.8, 0.2, 1] };
+
+/** Animate `els`, then hand transform and opacity back to the stylesheet. */
+function fx(els, keyframes, options) {
+  const list = els instanceof Element ? [els] : [...(els || [])];
+  if (!M || calm.matches || !list.length) return Promise.resolve();
+  return M.animate(list, keyframes, options).then(() => {
+    for (const el of list) {
+      el.style.removeProperty('transform');
+      el.style.removeProperty('opacity');
+    }
+  });
+}
+
+const stagger = (s) => (M ? M.stagger(s) : 0);
+
+function showSheet(el) {
+  el.hidden = false;
+  fx(el, { opacity: [0, 1], y: [28, 0] }, { ...SPRING, opacity: FADE });
+}
+
+/** Slide a sheet away; `stillClosed` guards against a reopen mid-way. */
+function hideSheet(el, stillClosed) {
+  if (!M || calm.matches) {
+    el.hidden = true;
+    return;
+  }
+  M.animate(el, { opacity: 0, y: 20 }, { duration: 0.16, ease: 'easeIn' }).then(() => {
+    el.style.removeProperty('transform');
+    el.style.removeProperty('opacity');
+    if (stillClosed()) el.hidden = true;
+  });
+}
+
+// What the last render showed, to animate only what changed.
+const seen = { label: undefined, slot: null, blocks: new Map(), params: null, barLabel: undefined, snap: null, banner: false };
+
+/** Chain: a new preset deals its blocks in; an added, removed or switched block pops. */
+function chainFx(map) {
+  const label = state.chain ? state.chain.label : null;
+  const blocks = new Map([...map].map(([n, b]) => [n, `${b.model}/${b.enabled}`]));
+  const before = { ...seen };
+  seen.label = label;
+  seen.slot = state.selectedSlot;
+  seen.blocks = blocks;
+  if (label == null) return;
+  const chain = $('chain');
+  if (label !== before.label) {
+    fx(chain.querySelectorAll('.slot'), { opacity: [0, 1], y: [14, 0], scale: [0.86, 1] },
+      { ...SPRING, opacity: FADE, delay: stagger(0.03) });
+    return;
+  }
+  const at = (n) => chain.querySelector(`.slot[data-slot="${n}"]`);
+  let moved = false;
+  for (let n = 1; n <= SLOTS; n++) {
+    const was = before.blocks.get(n);
+    const now = blocks.get(n);
+    if (was === now) continue;
+    moved ||= n === state.selectedSlot;
+    if (now && !was) fx(at(n), { scale: [0.5, 1], opacity: [0, 1] }, { ...SPRING, bounce: 0.45, opacity: FADE });
+    else if (now) fx(at(n), { scale: [0.88, 1.06, 1] }, { duration: 0.35, ease: 'easeOut' });
+    else fx(at(n), { opacity: [0, 1], scale: [0.7, 1] }, SPRING);
+  }
+  if (!moved && state.selectedSlot !== before.slot) {
+    fx(at(state.selectedSlot), { scale: [0.9, 1] }, { ...SPRING, bounce: 0.5 });
+  }
+}
+
+/** Parameters: another block (or preset) rises in, row by row. */
+function paramsFx(el, key) {
+  if (key === seen.params) return;
+  seen.params = key;
+  if (key == null) return;
+  fx(el.querySelectorAll('.params-head, .fs-row, .param, .params-empty'), { opacity: [0, 1], y: [10, 0] },
+    { ...RISE, delay: stagger(0.012) });
+}
+
+/** Preset bar: a new name slides in; a new snapshot springs. */
+function presetBarFx(label, snap) {
+  const before = { label: seen.barLabel, snap: seen.snap };
+  seen.barLabel = label;
+  seen.snap = snap;
+  if (label == null) return;
+  if (label !== before.label) {
+    fx([$('nb-label'), $('nb-name')], { opacity: [0, 1], x: [-10, 0] }, { ...RISE, delay: stagger(0.04) });
+  } else if (snap !== before.snap && snap != null) {
+    fx(document.querySelectorAll('.snap.active'), { scale: [0.86, 1] }, { ...SPRING, bounce: 0.5 });
+  }
+}
+
 // ---------- Rendering ----------
 
 const $ = (id) => document.getElementById(id);
@@ -985,7 +1145,6 @@ function render() {
   renderBanner();
   renderChain();
   renderParams();
-  renderBank();
   renderPresetList();
   renderStatusLine();
   renderBlocker();
@@ -1075,11 +1234,15 @@ function renderPresetBar() {
   const tempo = state.tempoPending ?? state.chain?.tempo;
   $('tempo').textContent = tempo == null ? '–' : (Number.isInteger(tempo) ? String(tempo) : tempo.toFixed(1));
   $('tempo-btn').classList.toggle('pending', state.tempoPending != null);
+  presetBarFx(state.chain?.label ?? null, active ?? null);
 }
 
 function renderBanner() {
   const b = state.banner;
-  $('banner').hidden = !b || !!state.blocked;
+  const shown = !!b && !state.blocked;
+  $('banner').hidden = !shown;
+  if (shown && !seen.banner) fx($('banner'), { opacity: [0, 1], y: [-10, 0] }, { ...SPRING, opacity: FADE });
+  seen.banner = shown;
   if (!b) return;
   $('banner-msg').textContent = b.message;
   $('banner-msg').title = b.message;
@@ -1113,10 +1276,17 @@ function renderChain() {
   }
   html += '</div><div class="io">Out</div>';
   $('chain').innerHTML = html;
+  chainFx(map);
 }
 
 function renderParams() {
   if (state.drag) return; // never rebuild a slider under the finger; sliderUp renders
+  paintParams();
+  const b = state.chain && slotMap().get(state.selectedSlot);
+  paramsFx($('params'), state.chain ? `${state.chain.label}/${state.selectedSlot}/${b?.model ?? ''}` : null);
+}
+
+function paintParams() {
   const el = $('params');
   if (!state.chain) {
     const cells = Array.from({ length: 6 }, () => '<div class="param"><div class="skel-line"></div><div class="track"></div></div>').join('');
@@ -1201,25 +1371,6 @@ function controlHtml(b, p, c, live) {
     ` aria-valuemin="0" aria-valuemax="${c.steps}" aria-valuenow="${i}" aria-valuetext="${esc(label)}"` +
     ` aria-disabled="${!live}" style="--pos:${(i / c.steps) * 100}%">` +
     '<div class="track-fill"></div><div class="track-thumb"></div></div></div>';
-}
-
-function renderBank() {
-  const loaded = loadedPreset();
-  if (!loaded) {
-    $('bank').innerHTML = '<div class="tile skel"></div>'.repeat(4);
-    return;
-  }
-  const bank = bankOf(loaded.label);
-  const tiles = state.presets.filter((p) => bankOf(p.label) === bank);
-  const live = canWrite();
-  $('bank').innerHTML = tiles.map((p) => {
-    const inner = `<div class="tile-top"><span class="tile-tag">${p.loaded ? 'LOADED' : ''}</span>` +
-      `<span class="tile-label"><span>${esc(bank)}</span>${esc(p.label.slice(-1))}</span></div>` +
-      `<div class="tile-name">${esc(p.name)}</div>`;
-    return state.writes && !p.loaded
-      ? `<button class="tile" type="button" data-load="${p.index}"${live ? '' : ' disabled'} aria-label="Load ${esc(p.label)} ${esc(p.name)}">${inner}</button>`
-      : `<div class="tile${p.loaded ? ' loaded' : ''}">${inner}</div>`;
-  }).join('');
 }
 
 let listKey = '';
@@ -1342,73 +1493,89 @@ function renderPicker() {
   }
 
   const q = p.filter.trim().toLowerCase();
-  cats.innerHTML = state.catalog.map((c, i) =>
-    `<button class="cat${!q && i === p.category ? ' active' : ''}" type="button" data-cat="${i}" style="--c:${esc(c.colour)}"` +
-    ` aria-pressed="${!q && i === p.category}"><span class="cat-sw"></span><span class="cat-name">${esc(c.name)}</span></button>`).join('');
+  const groups = modelGroups();
+  const recentIds = storedRecent();
+  const recent = recentIds.map((id) => groups.find((g) => g.variants.some((v) => v.id === id))).filter(Boolean)
+    .filter((g, i, list) => list.indexOf(g) === i);
+  if (p.category === RECENT && !recent.length) p.category = 0;
+  const catBtn = (i, name, colour, extra = '') =>
+    `<button class="cat${!q && i === p.category ? ' active' : ''}${extra}" type="button" data-cat="${i}" style="--c:${esc(colour)}"` +
+    ` aria-pressed="${!q && i === p.category}"><span class="cat-sw"></span><span class="cat-name">${esc(name)}</span></button>`;
+  cats.innerHTML = (recent.length ? catBtn(RECENT, 'Recent', 'var(--ink)', ' cat-recent') : '') +
+    state.catalog.map((c, i) => catBtn(i, c.name, c.colour)).join('');
 
-  // With "All" shelves, a tile says which one it is from.
-  const badge = p.shelf === SHELF_ALL;
-  const tile = (m) => `<button class="mtile${m.id === p.selected ? ' selected' : ''}" type="button" data-model="${m.id}"` +
-    ` style="--c:${esc(m.category.colour)}" aria-pressed="${m.id === p.selected}"` +
-    ` aria-label="${esc(m.name)}${m.shelf ? `, ${esc(m.shelf)}` : ''}${m.based_on ? `, based on ${esc(m.based_on)}` : ''}">` +
-    `<span class="mtile-top"><span class="mtile-name">${esc(m.name)}</span>` +
-    `${badge && m.shelf ? `<span class="mtile-shelf">${esc(m.shelf)}</span>` : ''}</span>` +
-    `<span class="mtile-based">${esc(m.based_on ?? '')}</span></button>`;
-  const grid = (ms) => `<div class="shelf">${byName(ms).map(tile).join('')}</div>`;
+  // A badge only where it tells something: Legacy, or a model with one version.
+  const badge = (g) => g.legacy ? LEGACY : g.variants.length === 1 && g.variants[0].shelf ? g.variants[0].shelf : '';
+  const tile = (g) => {
+    const sel = g.key === p.selected;
+    const b = badge(g);
+    return `<button class="mtile${sel ? ' selected' : ''}" type="button" data-group="${esc(g.key)}"` +
+      ` style="--c:${esc(g.category.colour)}" aria-pressed="${sel}"` +
+      ` aria-label="${esc(g.name)}${b ? `, ${esc(b)} only` : ''}${g.based_on ? `, based on ${esc(g.based_on)}` : ''}">` +
+      `<span class="mtile-top"><span class="mtile-name">${esc(g.name)}</span>${b ? `<span class="mtile-shelf">${esc(b)}</span>` : ''}</span>` +
+      `<span class="mtile-based">${esc(g.based_on ?? '')}</span></button>`;
+  };
+  const grid = (gs) => `<div class="shelf">${gs.map(tile).join('')}</div>`;
+  const head = (name, colour) => `<div class="group-name"${colour ? ` style="--c:${esc(colour)}"` : ''}>${esc(name)}</div>`;
 
-  const all = catalogModels();
-  const shown = all.filter((m) => p.shelf === SHELF_ALL || !m.shelf || m.shelf === p.shelf);
-  // The shelf filter offers the shelves the visible models come from.
-  const pool = q ? all : all.filter((m) => m.ci === p.category);
-  const shelfNames = [...new Set(pool.map((m) => m.shelf).filter(Boolean))];
-  const shelfBar = shelfNames.length > 1
-    ? `<div class="seg" role="group" aria-label="Mono, stereo or legacy">${[SHELF_ALL, ...shelfNames].map((s) =>
-      `<button class="seg-btn${s === p.shelf ? ' active' : ''}" type="button" data-shelf="${esc(s)}" aria-pressed="${s === p.shelf}">${esc(s)}</button>`).join('')}</div>`
-    : '';
-
+  let body;
+  let bar = '';
   if (q) {
-    // Across every category, grouped by category then type.
-    const hits = shown.filter((m) => m.name.toLowerCase().includes(q) ||
-      (m.based_on ?? '').toLowerCase().includes(q) || (m.type ?? '').toLowerCase().includes(q));
-    const body = hits.length
-      ? state.catalog.map((c, ci) => {
-        const mine = hits.filter((m) => m.ci === ci);
-        if (!mine.length) return '';
-        return sections(c, mine).map(([name, ms]) =>
-          `<div class="group-name" style="--c:${esc(c.colour)}">${esc(c.name)}${name ? ` · ${esc(name)}` : ''}</div>${grid(ms)}`).join('');
-      }).join('')
+    // Across every category, Legacy included: a search means a specific model.
+    const hits = groups.filter((g) => g.name.toLowerCase().includes(q) ||
+      (g.based_on ?? '').toLowerCase().includes(q) || (g.type ?? '').toLowerCase().includes(q));
+    body = hits.length
+      ? state.catalog.map((c, ci) => sections(c, hits.filter((g) => g.ci === ci)).map(([name, gs]) =>
+        head(`${c.name}${name ? ` · ${name}` : ''}`, c.colour) + grid(gs)).join('')).join('')
       : `<div class="no-results">No model matches “${esc(p.filter)}”.</div>`;
-    models.innerHTML = (shelfBar ? `<div class="mbar"><div class="spacer"></div>${shelfBar}</div>` : '') + body;
+  } else if (p.category === RECENT) {
+    body = head('Added last') + grid(recent);
   } else {
     const c = state.catalog[p.category];
-    const secs = sections(c, shown.filter((m) => m.ci === p.category));
-    // Jump to a type: Boost, Overdrive, Distortion, Fuzz…
-    const jumps = c.types?.length
-      ? `<div class="tjumps">${secs.map(([name]) =>
-        `<button class="tjump" type="button" data-type-jump="${esc(name)}">${esc(name)}</button>`).join('')}</div>`
+    const mine = groups.filter((g) => g.ci === p.category);
+    const legacyCount = mine.filter((g) => g.legacy).length;
+    const pool = mine.filter((g) => p.legacy || !g.legacy);
+    const secs = sections(c, pool);
+    if (!secs.some(([name]) => name === p.type)) p.type = TYPE_ALL;
+    // Type chips filter: one type at a time, or all of them in sections.
+    const chip = (name, n) => `<button class="tchip${name === p.type ? ' active' : ''}" type="button" data-type="${esc(name)}"` +
+      ` aria-pressed="${name === p.type}">${esc(name)}<span class="tchip-n">${n}</span></button>`;
+    const chips = c.types?.length && secs.length > 1
+      ? `<div class="tjumps" role="group" aria-label="Type">${chip(TYPE_ALL, pool.length)}${secs.map(([name, gs]) => chip(name, gs.length)).join('')}</div>`
       : '<div class="spacer"></div>';
-    const bar = c.types?.length || shelfBar ? `<div class="mbar">${jumps}${shelfBar}</div>` : '';
-    models.innerHTML = bar + (secs.length
-      ? secs.map(([name, ms]) =>
-        `<section class="msec" data-sec="${esc(name)}">${name ? `<div class="shelf-name">${esc(name)}</div>` : ''}${grid(ms)}</section>`).join('')
-      : `<div class="no-results">No ${esc(p.shelf)} models in ${esc(c.name)}.</div>`);
+    const legacy = legacyCount
+      ? `<button class="tchip legacy-toggle${p.legacy ? ' active' : ''}" type="button" data-legacy aria-pressed="${p.legacy}"` +
+        ` title="HX Edit's older (HD-era) models">Legacy<span class="tchip-n">${legacyCount}</span></button>`
+      : '';
+    bar = (chips + legacy) === '<div class="spacer"></div>' ? '' : `<div class="mbar">${chips}${legacy}</div>`;
+    const shown = p.type === TYPE_ALL ? secs : secs.filter(([name]) => name === p.type);
+    body = shown.length
+      ? shown.map(([name, gs]) => (name && shown.length > 1 ? head(name) : '') + grid(gs)).join('')
+      : `<div class="no-results">No models in ${esc(c.name)}.</div>`;
   }
+  models.innerHTML = bar + body;
 
-  const sel = all.find((m) => m.id === p.selected);
-  $('pf-name').textContent = sel?.name ?? 'Pick a model';
-  $('pf-note').textContent = sel
-    ? [sel.category.name, sel.type, sel.shelf, sel.based_on && `based on ${sel.based_on}`].filter(Boolean).join(' · ')
+  const g = selectedGroup();
+  const v = g && variantOf(g);
+  $('pf-name').textContent = g?.name ?? 'Pick a model';
+  $('pf-note').textContent = g
+    ? [g.category.name, g.type, g.legacy && LEGACY, g.based_on && `based on ${g.based_on}`].filter(Boolean).join(' · ')
     : footswitches() ? PICK_FOOTSWITCH : NO_FOOTSWITCH;
+  // Mono or Stereo, for a model that has both.
+  const variants = $('pf-variant');
+  variants.hidden = !g || g.variants.length < 2;
+  variants.innerHTML = variants.hidden ? '' : g.variants.map((x) =>
+    `<button class="seg-btn${x === v ? ' active' : ''}" type="button" data-variant="${esc(x.shelf)}" aria-pressed="${x === v}">${esc(x.shelf)}</button>`).join('');
   renderAddFootswitch();
-  add.textContent = sel ? `Add to slot ${slot}` : 'Add';
-  setControl(add, canWrite() && !!sel && !slotMap().has(slot));
+  add.textContent = g ? `Add to slot ${slot}` : 'Add';
+  setControl(add, canWrite() && !!g && !slotMap().has(slot));
 }
 
 function openBrowser() {
   state.browser.open = true;
   state.browser.selected = state.browser.selected ?? loadedPreset()?.index ?? null;
   state.connOpen = false;
-  $('browser').hidden = false;
+  showSheet($('browser'));
   renderConnection();
   renderBrowser();
   const sel = $('banks').querySelector('.selected') || $('banks').querySelector('.loaded');
@@ -1418,10 +1585,32 @@ function openBrowser() {
 
 function closeBrowser() {
   state.browser.open = false;
-  $('browser').hidden = true;
+  hideSheet($('browser'), () => !state.browser.open);
 }
 
 // ---------- Events ----------
+
+// ---------- Preset list (desktop sidebar) ----------
+// Shown or hidden from the top bar, kept in this browser. Hidden, the Presets
+// button opens the full sheet instead.
+
+const SIDEBAR_KEY = 'helix-bridge-sidebar';
+
+function setSidebar(open, animate) {
+  $('app').classList.toggle('no-sidebar', !open);
+  const btn = document.querySelector('[data-sidebar]');
+  btn.setAttribute('aria-pressed', String(open));
+  btn.title = open ? 'Hide the preset list' : 'Show the preset list';
+  if (!open || !animate) return;
+  fx($('sidebar'), { opacity: [0, 1], x: [-24, 0] }, { ...SPRING, opacity: FADE });
+  $('preset-list').querySelector('.loaded')?.scrollIntoView({ block: 'center' });
+}
+
+function toggleSidebar() {
+  const open = $('app').classList.contains('no-sidebar');
+  store(SIDEBAR_KEY, open ? '' : 'hidden');
+  setSidebar(open, true);
+}
 
 document.addEventListener('click', (e) => {
   const t = e.target.closest('button, [data-conn]');
@@ -1430,9 +1619,12 @@ document.addEventListener('click', (e) => {
     renderConnection();
   }
   if (!t) return;
-  if (t.matches('[data-conn]')) {
+  if (t.matches('[data-sidebar]')) {
+    toggleSidebar();
+  } else if (t.matches('[data-conn]')) {
     state.connOpen = !state.connOpen;
     renderConnection();
+    if (state.connOpen) fx($('conn-popover'), { opacity: [0, 1], scale: [0.94, 1], y: [-8, 0] }, { ...SPRING, opacity: FADE });
   } else if (t.matches('[data-retry]')) {
     state.connOpen = false;
     state.banner = null;
@@ -1449,25 +1641,25 @@ document.addEventListener('click', (e) => {
   } else if (t.matches('[data-close-picker]')) {
     closePicker();
   } else if (t.matches('[data-cat]')) {
-    state.picker.category = Number(t.dataset.cat);
-    state.picker.filter = '';
+    Object.assign(state.picker, { category: Number(t.dataset.cat), type: TYPE_ALL, filter: '' });
     $('model-filter').value = '';
-    renderPicker();
-    $('models').scrollTop = 0;
-  } else if (t.matches('[data-model]')) {
+    showModels();
+  } else if (t.matches('[data-type]')) {
+    state.picker.type = t.dataset.type;
+    showModels();
+  } else if (t.matches('[data-legacy]')) {
+    state.picker.legacy = !state.picker.legacy;
+    store(LEGACY_KEY, state.picker.legacy ? '1' : '');
+    showModels();
+  } else if (t.matches('[data-group]')) {
     // A second tap on the picked model adds it.
-    const id = Number(t.dataset.model);
-    if (state.picker.selected === id) addBlock();
-    else { state.picker.selected = id; renderPicker(); }
-  } else if (t.matches('[data-shelf]')) {
-    state.picker.shelf = t.dataset.shelf;
-    storeShelf(state.picker.shelf);
+    const key = t.dataset.group;
+    if (state.picker.selected === key) addBlock();
+    else { state.picker.selected = key; renderPicker(); }
+  } else if (t.matches('[data-variant]')) {
+    state.picker.variant = t.dataset.variant;
+    store(VARIANT_KEY, state.picker.variant);
     renderPicker();
-  } else if (t.matches('[data-type-jump]')) {
-    const models = $('models');
-    const sec = [...models.querySelectorAll('[data-sec]')].find((s) => s.dataset.sec === t.dataset.typeJump);
-    const bar = models.querySelector('.mbar');
-    if (sec) models.scrollTop = sec.offsetTop - (bar ? bar.offsetHeight : 0);
   } else if (t.id === 'add-btn') {
     addBlock();
   } else if (t.matches('[data-open-browser]')) {
@@ -1479,8 +1671,6 @@ document.addEventListener('click', (e) => {
     renderBrowser();
   } else if (t.matches('[data-step]')) {
     stepPreset(Number(t.dataset.step));
-  } else if (t.matches('[data-load]')) {
-    loadPreset(Number(t.dataset.load));
   } else if (t.id === 'load-btn') {
     const index = state.browser.selected;
     closeBrowser();
@@ -1554,5 +1744,6 @@ document.addEventListener('visibilitychange', () => {
   connectLive();
 });
 
+setSidebar(stored(SIDEBAR_KEY, '') !== 'hidden', false);
 render();
 refresh();
