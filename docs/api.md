@@ -83,7 +83,9 @@ the chain; the UI does this for parameter and bypass edits.
   one switch at most. 0 is 400 `bad_request`, a number past the device's last switch 400
   too; an empty slot, or `model` other than the slot's, 409 `stale`. `cli` can assign but
   not take off (400) and does not take a block off a previous switch. Confirmed on an HX
-  Stomp by TonePush; **not verified on the HX Effects yet** (steps in README).
+  Stomp by TonePush; assigning from the iPad worked on the HX Effects 3.80 (Pi 4,
+  2026-10-15, checked by hand). Switch numbering not cross-checked with
+  `probe-switches` yet (README).
 - Not exposed: reorder (`tonepush move`, marked untested on hardware by TonePush),
   changing an existing block's model, snapshot rename, routing, IRs, settings, restore.
 
@@ -124,8 +126,8 @@ the chain; the UI does this for parameter and bypass edits.
   every chain read except a live re-read after a knob or bypass edit that left the slots
   as they were; a footswitch bypass is not in the preset document (PROTOCOL.md). `usb`
   decodes the reply itself and skips entries it cannot read: hx-usb's strict decoder
-  counts one as a protocol error, which ends the session (seen on the HX Effects after
-  front-panel edits, 2026-10-15).
+  counts one as a protocol error, which would end the session (a precaution; not seen
+  on hardware).
   Opcode 33 also lists parameters a switch drives; an entry the document's controller
   table (key 4, footswitch n = ordinal n + 2) holds as a parameter is left out, as
   TonePush's GUI does. `usb` and `fake` only (`footswitches` absent with `cli`, or when

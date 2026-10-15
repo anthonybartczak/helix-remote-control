@@ -143,7 +143,9 @@ in the browser):
   is on (also `· FS3` above it in the chain) and puts it on None or FS1–FS6. A dot on a
   switch means another block is on it too; the line beside says which. A block moves
   off its old switch. Edit buffer only (Save keeps it). Needs `usb` or `fake`; hidden
-  with `cli`. **Not verified on the HX Effects yet:** run the hardware check below first.
+  with `cli`. Assigning from the iPad worked on the HX Effects 3.80 (Pi 4, iPad Safari,
+  2026-10-15, checked by hand on the pedal). The switch numbering has not been
+  cross-checked with `probe-switches` yet (hardware check below).
 - **Rename / Save:** buttons in the preset bar. Save asks first and overwrites the
   loaded preset. "Unsaved" in the bar means edits are only in the edit buffer.
 

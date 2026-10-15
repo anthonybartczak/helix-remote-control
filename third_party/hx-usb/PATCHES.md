@@ -142,4 +142,8 @@ notification this rejects would already have ended the session in
 (not MessagePack, MessagePack but not RPC, the float-zero case). All hx-usb
 tests and the replay test pass.
 
-**On hardware:** not verified yet.
+**On hardware: verified** 2026-10-15, HX Effects 3.80, Pi 4: knob turns on several
+blocks for about 1.5 minutes, 39 out-of-order frames stepped over (7-56 bytes each,
+under a second apart at times), no session lost. Unpatched, the same use ended the
+session within about a minute, twice. Each slip still costs the notification it cut
+through, so a knob value can lag until its next change.

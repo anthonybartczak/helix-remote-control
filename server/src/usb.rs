@@ -833,8 +833,8 @@ impl Worker {
     ///
     /// The raw reply, decoded here: hx-usb's `read_switch` turns any entry
     /// it does not expect into a protocol error, and every error but a
-    /// refusal ends the session ([`Worker::check`]). On the HX Effects that
-    /// dropped the session after front-panel edits (2026-10-15).
+    /// refusal ends the session ([`Worker::check`]). A precaution: not seen
+    /// on hardware (the 2026-10-15 drops were hx-usb PATCHES.md 3).
     fn read_switches(&mut self) -> Result<()> {
         use hx_proto::rpc::{key, op};
         let count = self.session.as_ref().map_or(0, |s| s.profile.switches);
