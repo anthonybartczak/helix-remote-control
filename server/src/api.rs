@@ -78,6 +78,14 @@ pub fn router<D: Device>(state: AppState<D>) -> Router {
         .route("/api/blocks/{position}/move", post(move_block::<D>))
         .route("/api/routing", post(junction::<D>))
         .route(
+            "/api/blocks/{position}/params/{index}/controller",
+            post(controller::<D>),
+        )
+        .route(
+            "/api/blocks/{position}/params/{index}/controller/range",
+            post(controller_range::<D>),
+        )
+        .route(
             "/api/blocks/{position}/params/{index}",
             post(set_param::<D>),
         )
@@ -621,6 +629,56 @@ async fn junction<D: Device>(
     let cmd = Command::Junction {
         which: body.junction,
         before: body.before,
+    };
+    write(&app, access, cmd).await
+}
+
+#[derive(Deserialize)]
+struct ControllerBody {
+    /// Expression pedal 1 or 2; `null` takes the parameter off its controller.
+    pedal: Option<u8>,
+    /// The block's `model_id` as the client saw it; another model there is 409.
+    model: Option<u32>,
+}
+
+/// Put a parameter under an expression pedal, or take it off.
+async fn controller<D: Device>(
+    State(app): Shared<D>,
+    access: WriteAccess,
+    Path((position, index)): Path<(u32, u32)>,
+    Json(body): Json<ControllerBody>,
+) -> ApiResult<WriteResult> {
+    let cmd = Command::Controller {
+        block: checked_position(position)?,
+        param: index,
+        pedal: body.pedal,
+        model: body.model,
+    };
+    write(&app, access, cmd).await
+}
+
+#[derive(Deserialize)]
+struct RangeBody {
+    /// Heel end, native value (as `params[].native`).
+    min: Option<f32>,
+    /// Toe end, native value.
+    max: Option<f32>,
+    model: Option<u32>,
+}
+
+/// Move the heel and/or toe end of a parameter's pedal travel.
+async fn controller_range<D: Device>(
+    State(app): Shared<D>,
+    access: WriteAccess,
+    Path((position, index)): Path<(u32, u32)>,
+    Json(body): Json<RangeBody>,
+) -> ApiResult<WriteResult> {
+    let cmd = Command::ControllerRange {
+        block: checked_position(position)?,
+        param: index,
+        min: body.min,
+        max: body.max,
+        model: body.model,
     };
     write(&app, access, cmd).await
 }
@@ -1288,6 +1346,65 @@ mod tests {
         assert_eq!(status, StatusCode::OK, "{res}");
         let routing = chain(app.clone()).await["routing"].clone();
         assert!(routing["split"].get("before").is_none(), "{routing}");
+    }
+
+    #[tokio::test]
+    async fn expression_pedals() {
+        let app = app();
+        let t = Some(TOKEN);
+        let blocks = |app: Router| async move {
+            send(
+                &app,
+                Request::get("/api/chain").body(Body::empty()).unwrap(),
+            )
+            .await
+            .1["blocks"]
+                .clone()
+        };
+        // As recorded: Fassel's Position and on/off on expression pedal 1.
+        let b = blocks(app.clone()).await;
+        let fassel = b[0]["assignments"].as_array().unwrap();
+        assert_eq!(fassel.len(), 2, "{fassel:?}");
+        let position = fassel.iter().find(|a| a["param"] == 0).unwrap();
+        assert_eq!(position["source"], "exp1");
+        assert_eq!(position["min_value"], "0 %");
+        assert_eq!(position["max_value"], "100 %");
+        let on_off = fassel.iter().find(|a| a.get("param").is_none()).unwrap();
+        assert_eq!(on_off["source"], "exp1");
+
+        // Simple Pitch (3) Cents (1) onto pedal 2: the whole range at first.
+        let uri = "/api/blocks/3/params/1/controller";
+        let (status, res) = post(&app, uri, t, json!({ "pedal": 2, "model": 296 })).await;
+        assert_eq!(status, StatusCode::OK, "{res}");
+        let b = blocks(app.clone()).await;
+        let a = &b[1]["assignments"][0];
+        assert_eq!(
+            (a["param"].clone(), a["source"].clone()),
+            (json!(1), json!("exp2"))
+        );
+        assert_eq!(
+            (a["min"].clone(), a["max"].clone()),
+            (json!(-50.0), json!(50.0))
+        );
+
+        // Heel and toe; outside the range is refused.
+        let range = "/api/blocks/3/params/1/controller/range";
+        let (status, res) = post(&app, range, t, json!({ "min": 0.0, "max": 25.0 })).await;
+        assert_eq!(status, StatusCode::OK, "{res}");
+        let (status, _) = post(&app, range, t, json!({ "max": 99.0 })).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let b = blocks(app.clone()).await;
+        assert_eq!(b[1]["assignments"][0]["min"], 0.0);
+        assert_eq!(b[1]["assignments"][0]["max"], 25.0);
+
+        // Off again; then a range has nothing to move. Pedal 3 does not exist.
+        let (status, _) = post(&app, uri, t, json!({ "pedal": null })).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(blocks(app.clone()).await[1].get("assignments").is_none());
+        let (status, _) = post(&app, range, t, json!({ "min": 0.0 })).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let (status, _) = post(&app, uri, t, json!({ "pedal": 3 })).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]

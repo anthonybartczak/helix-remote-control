@@ -608,6 +608,10 @@ impl Worker {
             snapshot: self.doc.as_ref().and_then(|d| active_snapshot(&d.preset)),
             footswitches: self.doc.as_ref().and_then(|d| d.switches.clone()),
             routing: self.doc.as_ref().and_then(|d| routing_of(&d.preset)),
+            assignments: self
+                .doc
+                .as_ref()
+                .map(|d| assignments_of(&d.preset, self.catalog.as_deref())),
         }
     }
 
@@ -691,6 +695,19 @@ impl Worker {
             } => self.footswitch(*block, *switch, *model),
             Command::MoveBlock { block, to, model } => self.move_block(*block, *to, *model),
             Command::Junction { which, before } => self.junction(*which, *before),
+            Command::Controller {
+                block,
+                param,
+                pedal,
+                model,
+            } => self.controller(*block, *param, *pedal, *model),
+            Command::ControllerRange {
+                block,
+                param,
+                min,
+                max,
+                model,
+            } => self.controller_range(*block, *param, *min, *max, *model),
         };
         if *cmd == Command::Chain {
             if let Ok(text) = &out {
@@ -711,7 +728,9 @@ impl Worker {
                 | Command::RemoveBlock { .. }
                 | Command::Footswitch { .. }
                 | Command::MoveBlock { .. }
-                | Command::Junction { .. } => self.publish_doc(Cause::Edit),
+                | Command::Junction { .. }
+                | Command::Controller { .. }
+                | Command::ControllerRange { .. } => self.publish_doc(Cause::Edit),
                 // A snapshot changes which blocks are on and their values:
                 // read the document again rather than guess.
                 Command::Rename { .. } | Command::Save | Command::Snapshot { .. } => {
@@ -1166,6 +1185,109 @@ impl Worker {
         Ok(format!("{name} now before cell {}\n", before + 1))
     }
 
+    /// Put parameter `param` of the block at `block` under expression pedal
+    /// `pedal`, or take it off any controller: opcode 37, hx-usb's
+    /// `assign_parameter`, as HX Edit's Controller Assign page. Then the
+    /// document is read again: the controller table is in it. Confirmed on
+    /// an HX Stomp by TonePush; unverified on the HX Effects.
+    fn controller(
+        &mut self,
+        block: u32,
+        param: u32,
+        pedal: Option<u8>,
+        model: Option<u32>,
+    ) -> Result<String> {
+        if let Some(n) = pedal.filter(|n| !(1..=2).contains(n)) {
+            return Err(DeviceError::Invalid(format!(
+                "expression pedals are 1 and 2; {n} is not one"
+            )));
+        }
+        let name = self.param_name(block, param, model)?;
+        let slot = i64::from(block) - 1;
+        let source = pedal.map(hx_proto::rpc::Source::Expression);
+        self.with(|s| s.assign_parameter(slot, i64::from(param), source))?;
+        self.read_doc()?;
+        Ok(match pedal {
+            Some(n) => format!("{name} on expression pedal {n}\n"),
+            None => format!("{name} on no controller\n"),
+        })
+    }
+
+    /// Move the heel and/or toe end of a parameter's controller travel:
+    /// opcodes 65 and 66 (hx-usb `set_assign_range`), which take a fraction
+    /// of the parameter's range; `min` and `max` are native values. The
+    /// parameter must be under a controller. Unverified on the HX Effects.
+    fn controller_range(
+        &mut self,
+        block: u32,
+        param: u32,
+        min: Option<f32>,
+        max: Option<f32>,
+        model: Option<u32>,
+    ) -> Result<String> {
+        use hx_proto::preset::Target;
+        let name = self.param_name(block, param, model)?;
+        let slot = i64::from(block) - 1;
+        let doc = self.doc.as_ref().expect("read by param_name");
+        let held = self.block_at(block, model)?;
+        let assigned = doc
+            .preset
+            .assignments()
+            .iter()
+            .any(|a| a.block == slot && a.target == Target::Param(i64::from(param)));
+        if !assigned {
+            return Err(DeviceError::Invalid(format!(
+                "{name} is not under a controller; assign one first"
+            )));
+        }
+        let catalog = self.catalog.clone().expect("checked by param_name");
+        let p = catalog
+            .param(held, param as usize)
+            .expect("checked by param_name");
+        let (low, high) = (p.min, p.max);
+        let fraction = |v: f32| {
+            if v.is_finite() && (low..=high).contains(&v) && high > low {
+                Ok((v - low) / (high - low))
+            } else {
+                Err(DeviceError::Invalid(format!(
+                    "{name} runs from {low} to {high}; {v} is outside it"
+                )))
+            }
+        };
+        let ends = [(min, false), (max, true)];
+        let ends: Vec<(f32, bool)> = ends
+            .into_iter()
+            .filter_map(|(v, high_end)| v.map(|v| fraction(v).map(|f| (f, high_end))))
+            .collect::<Result<_>>()?;
+        if ends.is_empty() {
+            return Err(DeviceError::Invalid("give min, max or both".into()));
+        }
+        for (f, high_end) in ends {
+            self.with(|s| s.set_assign_range(slot, i64::from(param), f, high_end))?;
+        }
+        self.read_doc()?;
+        Ok(format!("{name} travel set\n"))
+    }
+
+    /// Read the document and name parameter `param` of the block at
+    /// `block`, which must hold `model` if given; needs the catalog.
+    fn param_name(&mut self, block: u32, param: u32, model: Option<u32>) -> Result<String> {
+        let catalog = self.catalog.clone().ok_or_else(|| {
+            DeviceError::Invalid("controllers need HX Edit data on the server (/vendor)".into())
+        })?;
+        self.read_doc()?;
+        let held = self.block_at(block, model)?;
+        catalog
+            .param(held, param as usize)
+            .map(|p| p.name.clone())
+            .ok_or_else(|| {
+                DeviceError::Invalid(format!(
+                    "{} has no parameter {param}",
+                    model_name(Some(&*catalog), held)
+                ))
+            })
+    }
+
     /// Change a copy of the cached document and write it back whole (op21).
     /// hx-usb's write settles empty branches and waits for the commit.
     fn rewrite(
@@ -1482,6 +1604,45 @@ fn routing_of(preset: &hx_proto::Preset) -> Option<parse::Routing> {
         split: junction(path.split),
         join: junction(path.join),
     })
+}
+
+/// What controllers move, by block position, from the preset's controller
+/// table (TonePush `Preset::assignments`, document key 4). The ends of a
+/// parameter's travel are native values; with the catalog they are also
+/// formatted as the device shows them.
+fn assignments_of(
+    preset: &hx_proto::Preset,
+    catalog: Option<&hx_catalog::Catalog>,
+) -> Vec<(u32, parse::Assignment)> {
+    use hx_proto::preset::Target;
+    preset
+        .assignments()
+        .into_iter()
+        .filter_map(|a| {
+            let position = u32::try_from(a.block).ok()? + 1;
+            let model = preset.slots.get(a.block as usize).and_then(|s| s.model);
+            let param = match a.target {
+                Target::Bypass => None,
+                Target::Param(i) => Some(u32::try_from(i).ok()?),
+            };
+            let shown = |v: f32| {
+                let c = catalog?;
+                c.param(model?, param? as usize).map(|p| c.format(p, v))
+            };
+            let ends = param.map(|_| (a.min, a.max));
+            Some((
+                position,
+                parse::Assignment {
+                    param,
+                    source: parse::source_name(a.source.ordinal()),
+                    min: ends.map(|e| e.0),
+                    max: ends.map(|e| e.1),
+                    min_value: ends.and_then(|e| shown(e.0)),
+                    max_value: ends.and_then(|e| shown(e.1)),
+                },
+            ))
+        })
+        .collect()
 }
 
 /// Attach the first path's split after its input and its merge before its

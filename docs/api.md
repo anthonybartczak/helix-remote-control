@@ -41,6 +41,8 @@ the chain; the UI does this for parameter and bypass edits.
 | POST | `/api/blocks/{position}/footswitch` | `{switch, model?}` | `tonepush switch-assign -- P S`; `null`: `usb`/`fake` only | Put the block's bypass on footswitch `switch` (1–6), or take it off (`null`). Edit buffer only |
 | POST | `/api/blocks/{position}/move` | `{to, model?}` | none: `usb`/`fake` only | Move a block into the empty cell `to` on Path A or Path B. Edit buffer only |
 | POST | `/api/routing` | `{junction, before}` | none: `usb`/`fake` only | Put the split (`"split"`) or merge (`"join"`) before cell `before` of `routing.main`. Edit buffer only |
+| POST | `/api/blocks/{position}/params/{index}/controller` | `{pedal, model?}` | none: `usb`/`fake` only | Put a parameter under expression pedal `pedal` (1 or 2), or take it off whatever controls it (`null`). Edit buffer only |
+| POST | `/api/blocks/{position}/params/{index}/controller/range` | `{min?, max?, model?}` | none: `usb`/`fake` only | Move the heel (`min`) and/or toe (`max`) end of its travel, native values. Edit buffer only |
 
 - `position` and `index` are the numbers `/api/chain` returns. `setlist` defaults to 0.
 - `value` is typed in display units, as `/api/chain` shows them (`40`, `40 %`,
@@ -91,6 +93,15 @@ the chain; the UI does this for parameter and bypass edits.
   and around every Path B block; anything else is 400. `model` as for removing. A
   footswitch is not in the document: after a move the switches are read back, so a pedal
   that keeps the switch on the cell shows it there. `cli` refuses both (400).
+- Expression pedals: opcode 37 (hx-usb `assign_parameter`, source ordinal 1 or 2) puts a
+  parameter under a pedal, or off any controller (`null`, ordinal 0); the device starts
+  the travel at the parameter's full range. Opcodes 65 and 66 (`set_assign_range`) move
+  the heel and toe as a fraction of the parameter's range: the server converts the native
+  values with the catalog (`min..max` of the parameter), as TonePush's GUI does; outside
+  the range is 400, and so is a range for a parameter nothing controls. Needs HX Edit
+  data on the server. Confirmed on an HX Stomp by TonePush; **unverified on the HX
+  Effects**. A moved block's assignments stay with the cell on `usb` (the table is keyed
+  by slot and a move does not rewrite it); the fake moves them with the block.
 - Footswitch: `switch` is one-based as printed on the pedal (FS1–FS6 on the HX Effects),
   `null` takes the block off. `usb` sends opcode 57 (unassign) for any other switch the
   block is on, then opcode 56 (assign), the calls TonePush's GUI makes; both take a
@@ -149,6 +160,17 @@ the chain; the UI does this for parameter and bypass edits.
   TonePush's GUI does. `usb` and `fake` only (`footswitches` absent with `cli`, or when
   the pedal refuses the read). The fake starts with no block on a footswitch and has
   six switches. Only a block on a footswitch shows in the HX Effects' Stomp view.
+- `assignments` (block) lists what controllers move on it, from the preset's controller
+  table (document key 4, TonePush `Preset::assignments`):
+  `{"param": 0, "source": "exp1", "min": 0.0, "max": 1.0, "min_value": "0 %",
+  "max_value": "100 %"}`. `param` is absent when the controller switches the block on and
+  off. `source` is `exp1`/`exp2` for the expression pedals (confirmed on the HX Effects by
+  the recorded `controllers.txt`), else `ctlN` with the device's source ordinal N
+  (footswitches, MIDI, snapshots; their numbering is unconfirmed on the HX Effects,
+  TonePush #9, so the UI only shows them). `min`/`max` are the heel and toe ends in the
+  parameter's native units, `*_value` as the device shows them (with the catalog).
+  Absent when empty, and with `cli`. The fake starts with the recording: Fassel's Position
+  and on/off on pedal 1, full range.
 - `routing` (top level) is how the blocks are wired:
   `{"main": [2, …, 10], "branch": [13, …, 21], "split": {"position": 12, "before": 1},
   "join": {"position": 22, "before": 5}}`. `main` and `branch` are the `position`s of

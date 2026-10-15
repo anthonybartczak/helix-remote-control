@@ -73,6 +73,63 @@ struct Edits {
     /// Where the split and merge attach, as cells of Path A ([`ROW`]):
     /// (split before, merge before). Only counts while Path B has a block.
     split: Option<(u32, u32)>,
+    /// Controller assignments by (position, parameter or `None` for on/off);
+    /// `None` = as recorded (`controllers.txt`).
+    assignments: Option<Assignments>,
+}
+
+/// One controller assignment: source ordinal, travel ends (native values).
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Assigned {
+    ordinal: i64,
+    min: f32,
+    max: f32,
+}
+
+type Assignments = BTreeMap<(u32, Option<u32>), Assigned>;
+
+/// `tonepush controllers` lines, `block 1 Param(0)  Expression Pedal 1
+/// 0%..100%`, as assignments. Blocks count from 0 there. Only expression
+/// pedals; the recorded ends span the whole range, so they are the model's
+/// range. `models`: model number by position.
+fn recorded_assignments(text: &str, models: &HashMap<u32, u32>) -> Assignments {
+    let mut found = Assignments::new();
+    for line in text.lines() {
+        let words: Vec<&str> = line.split_whitespace().collect();
+        let (["block", block, target, rest @ ..], Some(&pedal)) = (words.as_slice(), words.get(5))
+        else {
+            continue;
+        };
+        if rest.get(..2) != Some(&["Expression", "Pedal"][..]) {
+            continue;
+        }
+        let (Ok(block), Ok(ordinal)) = (block.parse::<u32>(), pedal.parse::<i64>()) else {
+            continue;
+        };
+        let position = block + 1;
+        let param = match target
+            .strip_prefix("Param(")
+            .and_then(|t| t.strip_suffix(')'))
+        {
+            Some(i) => match i.parse::<u32>() {
+                Ok(i) => Some(i),
+                Err(_) => continue,
+            },
+            None if *target == "Bypass" => None,
+            None => continue,
+        };
+        let (min, max) = param
+            .and_then(|i| {
+                let p = describe(*models.get(&position)?)?
+                    .params
+                    .into_iter()
+                    .nth(i as usize)?;
+                Some((p.min, p.max))
+            })
+            .unwrap_or((0.0, 1.0));
+        found.insert((position, param), Assigned { ordinal, min, max });
+    }
+    found
 }
 
 impl Edits {
@@ -173,6 +230,7 @@ fn added_block(position: u32, model: u32) -> Option<parse::Block> {
             })
             .collect(),
         cab: None,
+        assignments: Vec::new(),
     })
 }
 
@@ -310,7 +368,9 @@ impl FakeDevice {
             | Command::RemoveBlock { .. }
             | Command::Footswitch { .. }
             | Command::MoveBlock { .. }
-            | Command::Junction { .. } => Cause::Edit,
+            | Command::Junction { .. }
+            | Command::Controller { .. }
+            | Command::ControllerRange { .. } => Cause::Edit,
             Command::Rename { .. } | Command::Snapshot { .. } => Cause::Other,
             _ => return,
         };
@@ -320,8 +380,76 @@ impl FakeDevice {
         }
     }
 
+    /// Model number by block position, from the natives.
+    async fn models(&self) -> HashMap<u32, u32> {
+        self.natives()
+            .await
+            .map(|n| n.0.iter().map(|b| (b.position, b.model)).collect())
+            .unwrap_or_default()
+    }
+
+    /// The loaded preset's controller assignments: as edited, else as
+    /// recorded.
+    async fn assignments(&self) -> Assignments {
+        if let Some(edited) = self.state().buffer.assignments.clone() {
+            return edited;
+        }
+        let text = self.fixture("controllers.txt").await.unwrap_or_default();
+        recorded_assignments(&text, &self.models().await)
+    }
+
+    /// Parameter `param` of the block at `block`, which must hold `model` if
+    /// given.
+    async fn param_info(
+        &self,
+        block: u32,
+        param: u32,
+        model: Option<u32>,
+    ) -> Result<controls::ParamInfo> {
+        let held = self.models().await.get(&block).copied().ok_or_else(|| {
+            DeviceError::Stale(format!("no block at position {block}; reload the chain"))
+        })?;
+        if model.is_some_and(|m| m != held) {
+            return Err(DeviceError::Stale(format!(
+                "block {block} now holds model {held}, not {}; reload the chain",
+                model.unwrap_or_default()
+            )));
+        }
+        describe(held)
+            .and_then(|m| m.params.into_iter().find(|p| p.index == param))
+            .ok_or_else(|| DeviceError::Invalid(format!("model {held} has no parameter {param}")))
+    }
+
+    /// Change the assignments, starting from the recording if untouched.
+    async fn edit_assignments(&self, change: impl FnOnce(&mut Assignments)) {
+        let mut map = self.assignments().await;
+        change(&mut map);
+        self.state().buffer.assignments = Some(map);
+    }
+
     async fn extra(&self) -> ChainExtra {
         let natives = self.natives().await;
+        let models = self.models().await;
+        let assignments = self
+            .assignments()
+            .await
+            .into_iter()
+            .map(|((position, param), a)| {
+                let shown = |v| Some(shown(*models.get(&position)?, param?, v));
+                let ends = param.map(|_| (a.min, a.max));
+                (
+                    position,
+                    parse::Assignment {
+                        param,
+                        source: parse::source_name(a.ordinal),
+                        min: ends.map(|e| e.0),
+                        max: ends.map(|e| e.1),
+                        min_value: ends.and_then(|e| shown(e.0)),
+                        max_value: ends.and_then(|e| shown(e.1)),
+                    },
+                )
+            })
+            .collect();
         let state = self.state();
         let footswitches = (1..=SWITCHES)
             .map(|switch| parse::Footswitch {
@@ -341,6 +469,7 @@ impl FakeDevice {
             snapshot: Some(state.buffer.snapshot.unwrap_or(0)),
             footswitches: Some(footswitches),
             routing: Some(routing(&state.buffer)),
+            assignments: Some(assignments),
         }
     }
 
@@ -558,6 +687,8 @@ impl FakeDevice {
                         b.model
                     )));
                 }
+                self.edit_assignments(|m| m.retain(|&(p, _), _| p != block))
+                    .await;
                 let mut state = self.state();
                 state.buffer.forget(block);
                 state.buffer.added.insert(block, model);
@@ -585,6 +716,8 @@ impl FakeDevice {
                         )));
                     }
                 }
+                self.edit_assignments(|m| m.retain(|&(p, _), _| p != block))
+                    .await;
                 let mut state = self.state();
                 state.buffer.forget(block);
                 state.buffer.added.remove(&block);
@@ -668,6 +801,16 @@ impl FakeDevice {
                         b.model
                     )));
                 }
+                // The block keeps its controller assignments too.
+                self.edit_assignments(|m| {
+                    let moved: Vec<_> = m.keys().filter(|k| k.0 == block).copied().collect();
+                    for k in moved {
+                        if let Some(a) = m.remove(&k) {
+                            m.insert((to, k.1), a);
+                        }
+                    }
+                })
+                .await;
                 let mut state = self.state();
                 let edits = &mut state.buffer;
                 // The block keeps its values, bypass and footswitch.
@@ -714,6 +857,71 @@ impl FakeDevice {
                 };
                 state.buffer.split = Some((split, join));
                 Ok(format!("{name} now before cell {}\n", before + 1))
+            }
+            Command::Controller {
+                block,
+                param,
+                pedal,
+                model,
+            } => {
+                if let Some(n) = pedal.filter(|n| !(1..=2).contains(n)) {
+                    return Err(DeviceError::Invalid(format!(
+                        "expression pedals are 1 and 2; {n} is not one"
+                    )));
+                }
+                let p = self.param_info(block, param, model).await?;
+                self.edit_assignments(|map| match pedal {
+                    Some(n) => {
+                        let fresh = Assigned {
+                            ordinal: i64::from(n),
+                            min: p.min,
+                            max: p.max,
+                        };
+                        map.insert((block, Some(param)), fresh);
+                    }
+                    None => {
+                        map.remove(&(block, Some(param)));
+                    }
+                })
+                .await;
+                Ok(match pedal {
+                    Some(n) => format!("{} on expression pedal {n}\n", p.name),
+                    None => format!("{} on no controller\n", p.name),
+                })
+            }
+            Command::ControllerRange {
+                block,
+                param,
+                min,
+                max,
+                model,
+            } => {
+                let p = self.param_info(block, param, model).await?;
+                if !self.assignments().await.contains_key(&(block, Some(param))) {
+                    return Err(DeviceError::Invalid(format!(
+                        "{} is not under a controller; assign one first",
+                        p.name
+                    )));
+                }
+                if min.is_none() && max.is_none() {
+                    return Err(DeviceError::Invalid("give min, max or both".into()));
+                }
+                for v in [min, max].into_iter().flatten() {
+                    if !v.is_finite() || !(p.min..=p.max).contains(&v) {
+                        return Err(DeviceError::Invalid(format!(
+                            "{} runs from {} to {}; {v} is outside it",
+                            p.name, p.min, p.max
+                        )));
+                    }
+                }
+                self.edit_assignments(|map| {
+                    if let Some(a) = map.get_mut(&(block, Some(param))) {
+                        a.min = min.unwrap_or(a.min);
+                        a.max = max.unwrap_or(a.max);
+                    }
+                })
+                .await;
+                Ok(format!("{} travel set\n", p.name))
             }
             other @ (Command::Presets { .. } | Command::Select { .. } | Command::Rename { .. }) => {
                 Err(DeviceError::NoFixture(other))

@@ -236,6 +236,42 @@ pub struct Block {
     /// Second model of an Amp+Cab block. Never present on HX Effects.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cab: Option<Cab>,
+    /// What expression pedals and other controllers move on this block.
+    /// Only from backends that read the preset document (`usb`, `fake`).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub assignments: Vec<Assignment>,
+}
+
+/// A controller moving a block's parameter or its on/off, from the preset's
+/// controller table (TonePush `Preset::assignments`).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Assignment {
+    /// Parameter index; absent when the controller switches the block on/off.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub param: Option<u32>,
+    /// `exp1` or `exp2` for the expression pedals (confirmed on the HX
+    /// Effects), else `ctlN` with the device's source ordinal N
+    /// (footswitches, MIDI, snapshots: unconfirmed on the HX Effects).
+    pub source: String,
+    /// Heel and toe ends of the travel, native values (as `params[].native`).
+    /// Absent for on/off.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub min: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max: Option<f32>,
+    /// The ends as the device shows them (`0 %`, `2.2 kHz`), with the catalog.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub min_value: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_value: Option<String>,
+}
+
+/// The API name of a controller source ordinal.
+pub fn source_name(ordinal: i64) -> String {
+    match ordinal {
+        1 | 2 => format!("exp{ordinal}"),
+        n => format!("ctl{n}"),
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -385,6 +421,7 @@ pub fn chain(out: &str) -> Result<Chain> {
                 footswitch: None,
                 params: Vec::new(),
                 cab: None,
+                assignments: Vec::new(),
             });
         }
     }
@@ -403,6 +440,15 @@ pub fn add_extra(chain: &mut Chain, extra: &crate::device::ChainExtra) {
         add_footswitches(chain, switches);
     }
     chain.routing.clone_from(&extra.routing);
+    if let Some(assignments) = &extra.assignments {
+        for block in &mut chain.blocks {
+            block.assignments = assignments
+                .iter()
+                .filter(|(position, _)| *position == block.position)
+                .map(|(_, a)| a.clone())
+                .collect();
+        }
+    }
 }
 
 /// Say which footswitch each block is on. A block listed on several (the

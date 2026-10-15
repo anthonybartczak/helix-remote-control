@@ -102,6 +102,7 @@ const state = {
   tempoPending: null, // BPM tapped or typed, not yet confirmed by the server
   junction: null, // split | join: shown in the panel instead of a block
   moving: null, // slot of a block being moved (Move, then an empty cell)
+  expOpen: null, // position/param whose expression pedal row is open
 };
 
 // ---------- API ----------
@@ -717,6 +718,89 @@ function addPathB() {
   state.selectedSlot = first;
   state.junction = null;
   openPicker(first);
+}
+
+// ---------- Expression pedals ----------
+// A setting can follow expression pedal 1 or 2 between a heel and a toe end
+// (/api/blocks/{p}/params/{i}/controller). Its EXP tag opens a row: pick the
+// pedal, then set the heel or toe to the slider's current value. The device
+// table also holds footswitch, MIDI and snapshot controllers; their sources
+// are unconfirmed on the HX Effects, so they show as CTL n, read only.
+// Writes are unverified on the HX Effects.
+
+/** A block's assignment for parameter `index`, or for its on/off with null. */
+function assignmentOf(b, index) {
+  return (b?.assignments ?? []).find((a) => (a.param ?? null) === index) ?? null;
+}
+
+function sourceLabel(source) {
+  const m = /^exp(\d)$/.exec(source);
+  return m ? `EXP ${m[1]}` : `CTL ${source.replace(/^ctl/, '')}`;
+}
+
+/** Pedal assignments need the preset document (usb, fake), as moves do. */
+function pedalsEditable() {
+  return state.writes && !!state.chain?.routing;
+}
+
+/** A setting's EXP tag (a button with writes) and, when open, its pedal row. */
+function pedalParts(b, p, c, live) {
+  const a = assignmentOf(b, p.index);
+  if (!a && !pedalsEditable()) return { tag: '', row: '' };
+  const key = `${b.position}/${p.index}`;
+  const open = state.expOpen === key;
+  const label = a ? sourceLabel(a.source) : 'EXP';
+  const tag = pedalsEditable()
+    ? `<button class="exp-tag${a ? ' on' : ''}${open ? ' open' : ''}" type="button" data-exp="${p.index}"` +
+      ` aria-expanded="${open}" aria-label="${esc(p.name)}: expression pedal, ${a ? label : 'none'}">${label}</button>`
+    : `<span class="exp-tag on">${label}</span>`;
+  const travel = a && a.min != null
+    ? `<div class="exp-travel">Heel ${esc(a.min_value ?? a.min)} → Toe ${esc(a.max_value ?? a.max)}</div>`
+    : '';
+  if (!open) return { tag, row: travel };
+  const off = live ? '' : ' disabled';
+  const on = a?.source ?? null;
+  const seg = [0, 1, 2].map((n) => {
+    const active = n ? on === `exp${n}` : on == null;
+    return `<button class="seg-btn${active ? ' active' : ''}" type="button" data-exp-set="${n}" aria-pressed="${active}"${off}>${n ? `EXP ${n}` : 'None'}</button>`;
+  }).join('');
+  const other = on && !/^exp/.test(on) ? `<div class="exp-note">Now on ${sourceLabel(on)} (a footswitch, MIDI or snapshots); picking a pedal replaces it.</div>` : '';
+  const ends = a && a.min != null && c.kind === 'continuous'
+    ? `<button class="act exp-end" type="button" data-exp-end="min"${off}>Heel = ${esc(shownValue(b, p).label)}</button>` +
+      `<button class="act exp-end" type="button" data-exp-end="max"${off}>Toe = ${esc(shownValue(b, p).label)}</button>` +
+      `<button class="act exp-end" type="button" data-exp-end="full"${off}>Full range</button>` +
+      '<div class="exp-note">Move the slider to a value, then make it the heel or the toe.</div>'
+    : '';
+  return { tag, row: `${travel}<div class="exp-row" data-exp-row="${p.index}"><div class="seg">${seg}</div>${other}${ends}</div>` };
+}
+
+function toggleExp(index) {
+  const b = slotMap().get(state.selectedSlot);
+  if (!b) return;
+  const key = `${b.position}/${index}`;
+  state.expOpen = state.expOpen === key ? null : key;
+  renderParams();
+}
+
+function setPedal(index, pedal) {
+  const b = slotMap().get(state.selectedSlot);
+  const p = b?.params.find((x) => x.index === index);
+  if (!p) return;
+  const body = { pedal: pedal || null };
+  if (b.model_id != null) body.model = b.model_id;
+  write(pedal ? `Putting ${p.name} on EXP ${pedal}…` : `Taking ${p.name} off its pedal…`,
+    `/api/blocks/${b.position}/params/${index}/controller`, body);
+}
+
+function setTravel(index, end) {
+  const b = slotMap().get(state.selectedSlot);
+  const p = b?.params.find((x) => x.index === index);
+  const c = p && controlOf(b, p);
+  if (!c) return;
+  const body = end === 'full' ? { min: c.min, max: c.max } : { [end]: shownValue(b, p).native };
+  if (b.model_id != null) body.model = b.model_id;
+  const what = { min: 'heel', max: 'toe', full: 'travel' }[end];
+  write(`Setting ${p.name}'s ${what}…`, `/api/blocks/${b.position}/params/${index}/controller/range`, body);
 }
 
 // ---------- Parameter controls ----------
@@ -1396,7 +1480,9 @@ function renderChain() {
     }
     const cat = blockCategory(b);
     const cls = ['slot', b.enabled ? 'on' : '', sel ? 'selected' : '', n === moving ? 'moving' : ''].join(' ');
-    const fs = b.footswitch ? ` · <span class="slot-fs">FS${b.footswitch}</span>` : '';
+    const exp = [...new Set((b.assignments ?? []).map((a) => sourceLabel(a.source).replace(' ', '')))];
+    const fs = (b.footswitch ? ` · <span class="slot-fs">FS${b.footswitch}</span>` : '') +
+      exp.map((e) => ` · <span class="slot-fs slot-exp">${e}</span>`).join('');
     return `<button class="${cls}" type="button" data-slot="${n}" style="--c:${cat.colour}"` +
       ` aria-pressed="${sel}" aria-label="Slot ${label}: ${esc(b.model)}, ${esc(cat.name)}${b.based_on ? `, based on ${esc(b.based_on)}` : ''}${b.enabled ? '' : ', bypassed'}${b.footswitch ? `, on footswitch ${b.footswitch}` : ''}"${b.based_on ? ` title="${esc(b.model)}: ${esc(b.based_on)}"` : ''}>` +
       `<div class="slot-num">${label}${fs}</div>${pedal(cat)}` +
@@ -1506,7 +1592,9 @@ function paintParams() {
   const cat = blockCategory(b);
   el.style.setProperty('--c', cat.colour);
   const kind = cat.subcategory ? `${cat.name} · ${cat.subcategory}` : cat.name;
-  const meta = `${kind} · slot ${slotLabel(state.selectedSlot)} · ${b.enabled ? 'on' : 'bypassed'}`;
+  const onOff = assignmentOf(b, null);
+  const meta = `${kind} · slot ${slotLabel(state.selectedSlot)} · ${b.enabled ? 'on' : 'bypassed'}` +
+    (onOff ? ` · ${sourceLabel(onOff.source)} switches it` : '');
   // The real gear behind the model, from the Pilot's Guide (server: vendor/based-on.json).
   const based = b.based_on ? `<div class="ph-based">Based on ${esc(b.based_on)}</div>` : '';
   const params = b.params.map((p) => {
@@ -1547,17 +1635,18 @@ function controlHtml(b, p, c, live) {
   const { native, label } = shownValue(b, p);
   const i = indexOf(c, native);
   const off = live ? '' : ' disabled';
-  const name = `<span class="param-name">${esc(p.name)}</span>`;
+  const pedal = pedalParts(b, p, c, live);
+  const name = `<span class="param-label"><span class="param-name">${esc(p.name)}</span>${pedal.tag}</span>`;
   if (c.kind === 'menu') {
     const options = c.labels.map((l, n) => `<option value="${n}"${n === i ? ' selected' : ''}>${esc(l)}</option>`).join('');
     return `<div class="param ctl"><div class="param-top">${name}</div>` +
-      `<select class="menu" data-ctl="${p.index}" data-menu aria-label="${esc(p.name)}"${off}>${options}</select></div>`;
+      `<select class="menu" data-ctl="${p.index}" data-menu aria-label="${esc(p.name)}"${off}>${options}</select>${pedal.row}</div>`;
   }
   if (c.kind === 'switch') {
     const on = i === 1;
     return `<div class="param ctl"><div class="param-top">${name}</div>` +
       `<button class="switch" type="button" data-ctl="${p.index}" data-switch aria-pressed="${on}" aria-label="${esc(p.name)}"${off}>` +
-      `<span class="switch-knob"></span><span class="switch-label">${esc(c.labels[i])}</span></button></div>`;
+      `<span class="switch-knob"></span><span class="switch-label">${esc(c.labels[i])}</span></button>${pedal.row}</div>`;
   }
   const value = state.writes
     ? `<button class="param-value typed" type="button" data-param="${p.index}"${off} aria-label="${esc(p.name)}: ${esc(label)}. Tap to type a value">${esc(label)}</button>`
@@ -1566,7 +1655,7 @@ function controlHtml(b, p, c, live) {
     `<div class="slider" data-ctl="${p.index}" data-slider role="slider" tabindex="${live ? 0 : -1}" aria-label="${esc(p.name)}"` +
     ` aria-valuemin="0" aria-valuemax="${c.steps}" aria-valuenow="${i}" aria-valuetext="${esc(label)}"` +
     ` aria-disabled="${!live}" style="--pos:${(i / c.steps) * 100}%">` +
-    '<div class="track-fill"></div><div class="track-thumb"></div></div></div>';
+    `<div class="track-fill"></div><div class="track-thumb"></div></div>${pedal.row}</div>`;
 }
 
 let listKey = '';
@@ -1832,6 +1921,12 @@ document.addEventListener('click', (e) => {
     moveTo(Number(t.dataset.moveTo));
   } else if (t.matches('[data-slot]')) {
     selectSlot(Number(t.dataset.slot));
+  } else if (t.matches('[data-exp]')) {
+    toggleExp(Number(t.dataset.exp));
+  } else if (t.matches('[data-exp-set]')) {
+    setPedal(Number(t.closest('[data-exp-row]').dataset.expRow), Number(t.dataset.expSet));
+  } else if (t.matches('[data-exp-end]')) {
+    setTravel(Number(t.closest('[data-exp-row]').dataset.expRow), t.dataset.expEnd);
   } else if (t.matches('[data-move]')) {
     toggleMove();
   } else if (t.matches('[data-junction]')) {

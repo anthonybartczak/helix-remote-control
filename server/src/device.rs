@@ -120,6 +120,29 @@ pub enum Command {
         which: crate::routing::Junction,
         before: u32,
     },
+    /// Put parameter `param` of the block at `block` under expression pedal
+    /// `pedal` (1 or 2), or take it off whatever controls it with `None`.
+    /// Opcode 37, as HX Edit's Controller Assign page; the device starts the
+    /// travel at the parameter's full range. `model` as in
+    /// [`Command::RemoveBlock`]. Unverified on the HX Effects. Edit buffer
+    /// only. `usb` and `fake` only.
+    Controller {
+        block: u32,
+        param: u32,
+        pedal: Option<u8>,
+        model: Option<u32>,
+    },
+    /// Move the heel (`min`) and/or toe (`max`) end of a parameter's pedal
+    /// travel, as native values. Opcodes 65 and 66, which take a fraction of
+    /// the parameter's range. The parameter must be under a controller.
+    /// Unverified on the HX Effects. Edit buffer only. `usb` and `fake` only.
+    ControllerRange {
+        block: u32,
+        param: u32,
+        min: Option<f32>,
+        max: Option<f32>,
+        model: Option<u32>,
+    },
 }
 
 impl Command {
@@ -200,7 +223,9 @@ impl Command {
             Command::SetNative { .. }
             | Command::Footswitch { switch: None, .. }
             | Command::MoveBlock { .. }
-            | Command::Junction { .. } => return None,
+            | Command::Junction { .. }
+            | Command::Controller { .. }
+            | Command::ControllerRange { .. } => return None,
         })
     }
 
@@ -221,6 +246,8 @@ impl Command {
                 | Command::Footswitch { .. }
                 | Command::MoveBlock { .. }
                 | Command::Junction { .. }
+                | Command::Controller { .. }
+                | Command::ControllerRange { .. }
         )
     }
 }
@@ -317,6 +344,9 @@ pub struct ChainExtra {
     /// Path A, Path B, split and merge. `None` when the backend does not
     /// read the preset document (`cli`).
     pub routing: Option<crate::parse::Routing>,
+    /// Controller assignments by block position. `None` when the backend
+    /// does not read the preset document (`cli`).
+    pub assignments: Option<Vec<(u32, crate::parse::Assignment)>>,
 }
 
 /// Native parameter values of the loaded preset, per block.

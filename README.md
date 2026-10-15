@@ -114,6 +114,12 @@ with Reduce Motion on, the UI works the same, only without animation.
 Writes (server needs `HELIX_TOKEN`; the UI asks for it on the first write and keeps it
 in the browser):
 
+- **Expression pedals:** a pedal tagged `EXP1`/`EXP2` above it has a setting (or its
+  on/off) on that pedal; the panel shows it on the setting with its heel → toe range.
+  Tap a setting's **EXP** tag: pick None / EXP 1 / EXP 2, then move the slider and tap
+  **Heel = …** or **Toe = …** (or **Full range**). Needs HX Edit data on the server
+  (`usb`). **Unverified on the HX Effects**: the first assignment on the pedal needs a
+  go-ahead (AGENTS.md 6). Footswitch/MIDI/snapshot controllers show as `CTL n`, read only.
 - **Paths:** a preset with blocks on Path B shows two rows: Path B under Path A, with the
   split and the merge where they attach (`usb`; `cli` shows one row). Path B's slots are
   B1–B9. **+ Path B** (while it is empty) adds its first block, which parallels the whole
