@@ -646,7 +646,7 @@ function removeBlock() {
   const slot = state.selectedSlot;
   const b = slotMap().get(slot);
   if (!b) return;
-  if (!window.confirm(`Remove ${b.model} from slot ${slot}?\nThe preset stays unsaved until you save it.`)) return;
+  if (!window.confirm(`Remove ${b.model} from slot ${slotLabel(slot)}?\nThe preset stays unsaved until you save it.`)) return;
   // The model we show: if the pedal now has another one there, the server refuses (409).
   const seen = b.model_id != null ? `?model=${b.model_id}` : '';
   write(`Removing ${b.model}…`, `/api/blocks/${b.position}${seen}`, undefined, 'chain', 'DELETE');
@@ -1094,7 +1094,7 @@ function chainFx(map) {
   }
   const at = (n) => chain.querySelector(`.slot[data-slot="${n}"]`);
   let moved = false;
-  for (let n = 1; n <= SLOTS; n++) {
+  for (const n of new Set([...before.blocks.keys(), ...blocks.keys()])) {
     const was = before.blocks.get(n);
     const now = blocks.get(n);
     if (was === now) continue;
@@ -1249,33 +1249,73 @@ function renderBanner() {
   $('banner-ctx').textContent = b.context;
 }
 
+/**
+ * Path A and Path B from /api/chain .routing, as slot numbers (position - 1).
+ * Path B is listed only while it is in use: a block on it, the split and the
+ * merge attached. `split` and `join` are cells of Path A the fork and the
+ * merge sit just before. Without routing (`cli`), one row of SLOTS.
+ */
+function lanes() {
+  const r = state.chain?.routing;
+  const main = r?.main?.length ? r.main.map((p) => p - 1) : Array.from({ length: SLOTS }, (_, i) => i + 1);
+  const split = r?.split?.before;
+  const join = r?.join?.before;
+  const divides = !!r?.branch?.length && split != null && join != null && split < join;
+  return { main, branch: divides ? r.branch.map((p) => p - 1) : [], split, join };
+}
+
+/** A slot as the UI names it: 1-9 on Path A, B1-B9 on Path B. */
+function slotLabel(n) {
+  const i = lanes().branch.indexOf(n);
+  return i >= 0 ? `B${i + 1}` : String(n);
+}
+
 function renderChain() {
   const skeleton = !state.chain;
   const map = slotMap();
-  let html = '<div class="io"><div class="io-bar"></div>In</div><div class="slots">';
-  for (let n = 1; n <= SLOTS; n++) {
+  const { main, branch, split, join } = lanes();
+  const cell = (n, label) => {
     if (skeleton) {
-      html += '<div class="slot"><div class="slot-num"></div><div class="node-skel"></div><div class="slot-name"></div></div>';
-      continue;
+      return '<div class="slot"><div class="slot-num"></div><div class="node-skel"></div><div class="slot-name"></div></div>';
     }
     const b = map.get(n);
+    const sel = n === state.selectedSlot;
     if (!b) {
-      const sel = n === state.selectedSlot;
-      html += `<button class="slot empty${sel ? ' selected' : ''}" type="button" data-slot="${n}" aria-pressed="${sel}"` +
-        ` aria-label="Slot ${n}: empty${state.writes ? '. Tap to add a block' : ''}">` +
-        `<div class="slot-num">${n}</div><div class="node-empty"></div><div class="slot-name"></div></button>`;
-      continue;
+      // Adding to Path B comes with the path edits; for now its empty cells only show where it runs.
+      if (branch.includes(n)) {
+        return `<div class="slot empty"><div class="slot-num">${label}</div><div class="node-empty"></div><div class="slot-name"></div></div>`;
+      }
+      return `<button class="slot empty${sel ? ' selected' : ''}" type="button" data-slot="${n}" aria-pressed="${sel}"` +
+        ` aria-label="Slot ${label}: empty${state.writes ? '. Tap to add a block' : ''}">` +
+        `<div class="slot-num">${label}</div><div class="node-empty"></div><div class="slot-name"></div></button>`;
     }
     const cat = blockCategory(b);
-    const cls = ['slot', b.enabled ? 'on' : '', n === state.selectedSlot ? 'selected' : ''].join(' ');
+    const cls = ['slot', b.enabled ? 'on' : '', sel ? 'selected' : ''].join(' ');
     const fs = b.footswitch ? ` · <span class="slot-fs">FS${b.footswitch}</span>` : '';
-    html += `<button class="${cls}" type="button" data-slot="${n}" style="--c:${cat.colour}"` +
-      ` aria-pressed="${n === state.selectedSlot}" aria-label="Slot ${n}: ${esc(b.model)}, ${esc(cat.name)}${b.based_on ? `, based on ${esc(b.based_on)}` : ''}${b.enabled ? '' : ', bypassed'}${b.footswitch ? `, on footswitch ${b.footswitch}` : ''}"${b.based_on ? ` title="${esc(b.model)}: ${esc(b.based_on)}"` : ''}>` +
-      `<div class="slot-num">${n}${fs}</div><div class="node"><div class="node-code">${esc(cat.short)}</div><div class="node-band"></div></div>` +
+    return `<button class="${cls}" type="button" data-slot="${n}" style="--c:${cat.colour}"` +
+      ` aria-pressed="${sel}" aria-label="Slot ${label}: ${esc(b.model)}, ${esc(cat.name)}${b.based_on ? `, based on ${esc(b.based_on)}` : ''}${b.enabled ? '' : ', bypassed'}${b.footswitch ? `, on footswitch ${b.footswitch}` : ''}"${b.based_on ? ` title="${esc(b.model)}: ${esc(b.based_on)}"` : ''}>` +
+      `<div class="slot-num">${label}${fs}</div><div class="node"><div class="node-code">${esc(cat.short)}</div><div class="node-band"></div></div>` +
       `<div class="slot-name">${esc(b.model)}</div></button>`;
+  };
+  let html = '<div class="io"><div class="io-bar"></div>In</div>';
+  if (branch.length) {
+    // Two rows on one grid: Path B's cell k under Path A's cell k, as HX Edit
+    // draws it. The bracket runs from the split down to Path B and back up to
+    // the merge; Path B's cells outside it carry no signal and stay blank.
+    html += `<div class="slots two-rows" style="--cols:${main.length};--from:${split};--to:${join}">` +
+      '<div class="lane-b" aria-hidden="true"><span class="lane-tag">B</span></div>' +
+      main.map((n) => cell(n, String(n))).join('') +
+      branch.map((n, i) => (i < split || i >= join) && !map.has(n)
+        ? '<div class="slot off" aria-hidden="true"></div>'
+        : cell(n, `B${i + 1}`)).join('') +
+      '</div>';
+  } else {
+    html += `<div class="slots">${main.map((n) => cell(n, String(n))).join('')}</div>`;
   }
-  html += '</div><div class="io">Out</div>';
-  $('chain').innerHTML = html;
+  html += '<div class="io">Out</div>';
+  const chain = $('chain');
+  chain.classList.toggle('split', branch.length > 0);
+  chain.innerHTML = html;
   chainFx(map);
 }
 
@@ -1309,14 +1349,14 @@ function paintParams() {
     el.innerHTML =
       `<div class="params-head"><div class="ph-code">+</div>` +
       `<div class="ph-title"><div class="ph-model">Empty slot</div></div>` +
-      `<div class="ph-meta">slot ${slot}</div><div class="spacer"></div>${add}</div>` +
+      `<div class="ph-meta">slot ${slotLabel(slot)}</div><div class="spacer"></div>${add}</div>` +
       `<div class="params-empty">${state.writes ? `Add an effect here: tap Add block, pick a model.<br>${esc(footswitches() ? PICK_FOOTSWITCH : NO_FOOTSWITCH)}` : 'Nothing in this slot.'}</div>`;
     return;
   }
   const cat = blockCategory(b);
   el.style.setProperty('--c', cat.colour);
   const kind = cat.subcategory ? `${cat.name} · ${cat.subcategory}` : cat.name;
-  const meta = `${kind} · slot ${state.selectedSlot} · ${b.enabled ? 'on' : 'bypassed'}`;
+  const meta = `${kind} · slot ${slotLabel(state.selectedSlot)} · ${b.enabled ? 'on' : 'bypassed'}`;
   // The real gear behind the model, from the Pilot's Guide (server: vendor/based-on.json).
   const based = b.based_on ? `<div class="ph-based">Based on ${esc(b.based_on)}</div>` : '';
   const params = b.params.map((p) => {
@@ -1477,7 +1517,7 @@ function updateActiveJump() {
 function renderPicker() {
   const p = state.picker;
   const slot = p.slot;
-  $('picker-title').textContent = `Add to slot ${slot}`;
+  $('picker-title').textContent = `Add to slot ${slotLabel(slot)}`;
   $('pf-slot').textContent = slot == null ? '' : String(slot);
   const add = $('add-btn');
   const cats = $('cats');
@@ -1567,7 +1607,7 @@ function renderPicker() {
   variants.innerHTML = variants.hidden ? '' : g.variants.map((x) =>
     `<button class="seg-btn${x === v ? ' active' : ''}" type="button" data-variant="${esc(x.shelf)}" aria-pressed="${x === v}">${esc(x.shelf)}</button>`).join('');
   renderAddFootswitch();
-  add.textContent = g ? `Add to slot ${slot}` : 'Add';
+  add.textContent = g ? `Add to slot ${slotLabel(slot)}` : 'Add';
   setControl(add, canWrite() && !!g && !slotMap().has(slot));
 }
 

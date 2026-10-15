@@ -84,6 +84,7 @@ HTTP API over the device. Endpoints: [docs/api.md](docs/api.md). Writes need
 | `HELIX_FIXTURES` | bundled `server/fixtures` | Fixture directory for `fake` |
 | `HELIX_SESSION_COOLDOWN_MS` | `3000` | `cli` only: gap between two `tonepush` sessions. 3 s was needed on Windows; try `500` on the Pi |
 | `HELIX_FAKE_DELAY_MS` | `0` | `fake` only: wait before each reply, e.g. `1500` to see loading states |
+| `HELIX_FAKE_SPLIT` | unset | `fake` only: `1` starts the loaded preset with two blocks on Path B (synthetic), to see the two-row chain |
 | `HELIX_TOKEN` | unset | Shared token for writes. Unset or empty = read-only. Keep it in `.env` or the Pi's settings file, never in git |
 | `RUST_LOG` | `info` | Log filter |
 
@@ -113,6 +114,10 @@ with Reduce Motion on, the UI works the same, only without animation.
 Writes (server needs `HELIX_TOKEN`; the UI asks for it on the first write and keeps it
 in the browser):
 
+- **Paths (read only):** a preset with blocks on Path B shows two rows: Path B under
+  Path A, with the split and the merge where they attach (`usb`; `cli` shows one row).
+  Path B's slots are B1–B9. Not yet seen on the HX Effects (no recording with a split);
+  editing paths comes next.
 - **Load a preset:** ‹ › or Presets → pick → Load. Asks first if there are
   unsaved edits.
 - **Block on/off:** select a block, tap Turn on / Turn off.

@@ -606,6 +606,7 @@ impl Worker {
             natives: self.natives(),
             snapshot: self.doc.as_ref().and_then(|d| active_snapshot(&d.preset)),
             footswitches: self.doc.as_ref().and_then(|d| d.switches.clone()),
+            routing: self.doc.as_ref().and_then(|d| routing(&d.preset)),
         }
     }
 
@@ -1345,6 +1346,42 @@ fn probe_open() -> std::result::Result<Session, String> {
         );
     }
     Ok(session)
+}
+
+/// Path A, Path B and where the split and merge sit, from TonePush's reading
+/// of the slot array (`Preset::layout`). The first path only: an HX Effects
+/// has one. Positions count from 1, as `chain` prints them.
+///
+/// Unconfirmed on the HX Effects: no preset with a split has been recorded
+/// yet. TonePush's HX Stomp capture keeps an empty split and join after the
+/// output, with a branch cell per main-row cell.
+fn routing(preset: &hx_proto::Preset) -> Option<parse::Routing> {
+    let layout = preset.layout();
+    let path = layout.paths.first()?;
+    let (input, output) = (path.input?, path.output?);
+    let position = |slot: usize| slot as u32 + 1;
+    let branch = match (path.split, path.join) {
+        (Some(split), Some(join)) if split < join => (split + 1..join).map(position).collect(),
+        _ => Vec::new(),
+    };
+    // TonePush draws a split with nothing below it as one line, and so do we.
+    let divides = !path.lanes.is_empty();
+    let junction = |slot: Option<usize>| {
+        slot.map(|slot| parse::Junction {
+            position: position(slot),
+            before: preset
+                .attach_of(slot)
+                .filter(|_| divides)
+                .and_then(|at| at.checked_sub(input + 1))
+                .map(|cell| cell as u32),
+        })
+    };
+    Some(parse::Routing {
+        main: (input + 1..output).map(position).collect(),
+        branch,
+        split: junction(path.split),
+        join: junction(path.join),
+    })
 }
 
 /// The slot row (kind and model per index), the layout, and one raw slot.

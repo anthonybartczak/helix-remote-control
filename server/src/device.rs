@@ -290,6 +290,9 @@ pub struct ChainExtra {
     /// Every footswitch and the blocks whose bypass it carries (opcode 33).
     /// `None` when the backend cannot read them or the read failed.
     pub footswitches: Option<Vec<crate::parse::Footswitch>>,
+    /// Path A, Path B, split and merge. `None` when the backend does not
+    /// read the preset document (`cli`).
+    pub routing: Option<crate::parse::Routing>,
 }
 
 /// Native parameter values of the loaded preset, per block.

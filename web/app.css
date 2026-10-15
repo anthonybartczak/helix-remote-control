@@ -249,6 +249,37 @@ button:not(:disabled):active { transform: scale(.95); }
 }
 .slot.on .slot-name { color: var(--ink); }
 
+/* Path B: a second row on the same grid, cell k under Path A's cell k. A
+   slot is 16 px number + 8 px gap + node + 8 px gap + 16 px name, so a row is
+   --node + 48 px and its line runs 24 px + half a node from the top. */
+.chain.split { height: auto; align-items: flex-start; padding-top: var(--s4); padding-bottom: var(--s4); }
+.chain.split .io { margin-top: calc(24px + var(--node) / 2 - 52px); }
+.slots.two-rows {
+  --row: calc(var(--node) + 48px);
+  display: grid; grid-template-columns: repeat(var(--cols), minmax(0, 1fr));
+  grid-template-rows: var(--row) var(--row); row-gap: var(--s3); align-items: start; height: auto;
+}
+.slots.two-rows::before { top: calc(24px + var(--node) / 2); }
+/* The bracket: down at the split, along Path B, up at the merge. */
+.lane-b {
+  position: absolute; pointer-events: none;
+  left: calc(var(--from) / var(--cols) * 100%); width: calc((var(--to) - var(--from)) / var(--cols) * 100%);
+  top: calc(24px + var(--node) / 2 - 1px); height: calc(var(--row) + var(--s3) + 1px);
+  border: 2px solid var(--line-strong); border-top: 0; border-radius: 0 0 var(--r3) var(--r3); opacity: .7;
+}
+.lane-b::before, .lane-b::after {
+  content: ""; position: absolute; top: -5px; width: 10px; height: 10px; border-radius: 50%;
+  background: var(--line-strong); box-shadow: 0 0 0 3px oklch(0.14 0.006 260);
+}
+.lane-b::before { left: -6px; }
+.lane-b::after { right: -6px; }
+.lane-tag {
+  position: absolute; left: -9px; bottom: -9px; width: 16px; height: 16px; display: grid; place-items: center;
+  border-radius: 4px; background: var(--line-strong); color: var(--bg); font: 800 11px var(--font-ui);
+}
+.slot.off { visibility: hidden; }
+div.slot.empty { cursor: default; }
+
 /* ---------- Parameters ---------- */
 
 .lower { flex: 1; min-height: 0; display: flex; flex-direction: column; }
@@ -547,6 +578,7 @@ button:not(:disabled):active { transform: scale(.95); }
   .snaps-row .snap-name { display: none; }
   .chain { height: 120px; gap: var(--s1); }
   .io { width: 32px; height: 80px; font-size: var(--fs-xs); }
+  .chain.split .io { margin-top: calc(24px + var(--node) / 2 - 40px); }
   .io-bar { width: 14px; }
   .slot-name { display: none; }
   .slot.on .node-band { height: 6px; }

@@ -69,6 +69,9 @@ struct Edits {
     /// Footswitch carrying each block's bypass, by position. The recording
     /// has none: `tonepush chain` does not print them.
     footswitches: BTreeMap<u32, u8>,
+    /// Where the split and merge attach, as cells of Path A ([`ROW`]):
+    /// (split before, merge before). Only counts while Path B has a block.
+    split: Option<(u32, u32)>,
 }
 
 impl Edits {
@@ -86,6 +89,27 @@ impl Edits {
 /// Path A's block slots on the HX Effects, as `chain` numbers them
 /// (`topology.txt`: input at slot 0, output at slot 10).
 const ROW: RangeInclusive<u32> = 2..=10;
+
+/// Path B: the split, its cells and the join, after the output. **Assumed**,
+/// not recorded: TonePush's HX Stomp capture has an empty split and join
+/// after the output with a branch cell per main-row cell, so an HX Effects
+/// would put the split at 12, Path B at 13-21 and the join at 22.
+const SPLIT: u32 = 12;
+const BRANCH: RangeInclusive<u32> = 13..=21;
+const JOIN: u32 = 22;
+
+/// Path A, Path B and the split and merge, as `usb` reports them.
+fn routing(edits: &Edits) -> parse::Routing {
+    let divides = edits.added.keys().any(|p| BRANCH.contains(p));
+    let at = edits.split.filter(|_| divides);
+    let junction = |position, before| parse::Junction { position, before };
+    parse::Routing {
+        main: ROW.collect(),
+        branch: BRANCH.collect(),
+        split: Some(junction(SPLIT, at.map(|a| a.0))),
+        join: Some(junction(JOIN, at.map(|a| a.1))),
+    }
+}
 
 /// Footswitches an HX Effects can put a bypass on (TonePush's profile).
 const SWITCHES: u8 = 6;
@@ -165,6 +189,22 @@ impl FakeDevice {
     /// (1–3 s) when working on the UI's loading states.
     pub fn with_delay(mut self, delay: Duration) -> Self {
         self.delay = delay;
+        self
+    }
+
+    /// Start the loaded preset with Path B in use (`HELIX_FAKE_SPLIT=1`), for
+    /// working on the UI's two rows. **Synthetic**: Simple Pitch and Fassel
+    /// on Path B's second and third cells, the split before Path A's second
+    /// cell and the merge before its sixth (Path B's blocks start under the
+    /// split, as in TonePush's DIR:Relief export). No preset with a split was
+    /// recorded.
+    pub fn with_split_demo(self) -> Self {
+        {
+            let mut state = self.state();
+            state.buffer.added.insert(BRANCH.start() + 1, 296);
+            state.buffer.added.insert(BRANCH.start() + 2, 269);
+            state.buffer.split = Some((1, 5));
+        }
         self
     }
 
@@ -297,6 +337,7 @@ impl FakeDevice {
             natives,
             snapshot: Some(state.buffer.snapshot.unwrap_or(0)),
             footswitches: Some(footswitches),
+            routing: Some(routing(&state.buffer)),
         }
     }
 
@@ -1215,6 +1256,31 @@ mod tests {
         let mut c = parse::chain(&text).unwrap();
         parse::add_extra(&mut c, &extra);
         c
+    }
+
+    #[tokio::test]
+    async fn one_row_until_path_b_has_a_block() {
+        let routing = full(&FakeDevice::bundled()).await.routing.unwrap();
+        assert_eq!(routing.main, (2..=10).collect::<Vec<_>>());
+        assert_eq!(routing.branch, (13..=21).collect::<Vec<_>>());
+        let (split, join) = (routing.split.unwrap(), routing.join.unwrap());
+        assert_eq!((split.position, split.before), (12, None));
+        assert_eq!((join.position, join.before), (22, None));
+    }
+
+    #[tokio::test]
+    async fn the_split_demo_puts_blocks_on_path_b() {
+        let c = full(&FakeDevice::bundled().with_split_demo()).await;
+        let routing = c.routing.as_ref().unwrap();
+        assert_eq!(routing.split.as_ref().unwrap().before, Some(1));
+        assert_eq!(routing.join.as_ref().unwrap().before, Some(5));
+        let on_b: Vec<_> = c
+            .blocks
+            .iter()
+            .filter(|b| routing.branch.contains(&b.position))
+            .map(|b| (b.position, b.model.as_str()))
+            .collect();
+        assert_eq!(on_b, [(14, "Simple Pitch"), (15, "Fassel")]);
     }
 
     fn switch_of(c: &parse::Chain, position: u32) -> Option<u8> {

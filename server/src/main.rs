@@ -131,10 +131,14 @@ async fn main() {
             result
         }
         "fake" => {
-            let fake = match &config.fixtures {
+            let mut fake = match &config.fixtures {
                 Some(dir) => FakeDevice::new(dir),
                 None => FakeDevice::bundled(),
             };
+            // Synthetic Path B for UI work (FakeDevice::with_split_demo).
+            if env_or("HELIX_FAKE_SPLIT", "") == "1" {
+                fake = fake.with_split_demo();
+            }
             serve(
                 fake.with_delay(config.fake_delay),
                 config.bind,

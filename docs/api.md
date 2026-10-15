@@ -133,6 +133,20 @@ the chain; the UI does this for parameter and bypass edits.
   TonePush's GUI does. `usb` and `fake` only (`footswitches` absent with `cli`, or when
   the pedal refuses the read). The fake starts with no block on a footswitch and has
   six switches. Only a block on a footswitch shows in the HX Effects' Stomp view.
+- `routing` (top level) is how the blocks are wired:
+  `{"main": [2, …, 10], "branch": [13, …, 21], "split": {"position": 12, "before": 1},
+  "join": {"position": 22, "before": 5}}`. `main` and `branch` are the `position`s of
+  Path A's and Path B's cells, left to right, occupied or not; Path B's cell `n` is drawn
+  under Path A's cell `n`, as HX Edit does. `split` and `join` are the fork and the
+  merge: their own `position`, and `before`, the cell of `main` (zero-based) they sit just
+  before (`main.length` = before the output). Path A's blocks before the split and after
+  the merge carry the whole signal; between them Path A and Path B run side by side.
+  `before` is absent while Path B has no block (the device keeps an empty branch's attach
+  points at zero), and so is all of `routing` with `cli`. From TonePush's
+  `Preset::layout` (PROTOCOL.md, "The slot array is a topology"). **Unconfirmed on the
+  HX Effects**: no preset with a split has been recorded; the fake's positions (split
+  12, Path B 13–21, join 22) assume the layout of TonePush's HX Stomp capture. The fake
+  starts with Path B empty; `HELIX_FAKE_SPLIT=1` gives it a synthetic one.
 - Preset names are not unique (factory slots are all `New Preset`). Key on `index`.
 
 ## Status codes

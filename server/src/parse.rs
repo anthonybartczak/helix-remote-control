@@ -155,6 +155,44 @@ pub struct Chain {
     /// them (`usb`, `fake`); absent means unknown, not "none".
     #[serde(skip_serializing_if = "Option::is_none")]
     pub footswitches: Option<Vec<Footswitch>>,
+    /// How the blocks are wired: Path A's row, Path B's row and where the
+    /// split and merge sit. Only from backends that read the preset document
+    /// (`usb`, `fake`); absent means one straight row, as before.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub routing: Option<Routing>,
+}
+
+/// A path's two rows, by block position (as in `blocks`).
+///
+/// The device keeps a path as one slot array: input, Path A's cells, output,
+/// split, Path B's cells, join (TonePush PROTOCOL.md, "The slot array is a
+/// topology"). The split and the merge each attach before one of Path A's
+/// cells: Path A's blocks before the split and after the merge carry the
+/// whole signal; between them Path A and Path B run side by side. Path B's
+/// cell `n` is drawn under Path A's cell `n`, as HX Edit draws it.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Routing {
+    /// Path A's cells, left to right, occupied or not.
+    pub main: Vec<u32>,
+    /// Path B's cells, left to right, occupied or not. Empty when the preset
+    /// has no split.
+    pub branch: Vec<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub split: Option<Junction>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub join: Option<Junction>,
+}
+
+/// The split or the merge.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Junction {
+    /// Its own position in the slot array (where its parameters live).
+    pub position: u32,
+    /// The cell of `main` (zero-based) it sits just before; `main.len()` is
+    /// "before the output". `None` while Path B is empty: the device keeps an
+    /// empty branch's attach points at zero.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub before: Option<u32>,
 }
 
 /// One footswitch, as opcode 33 reports it.
@@ -277,6 +315,7 @@ pub fn chain(out: &str) -> Result<Chain> {
         snapshot: None,
         blocks: Vec::new(),
         footswitches: None,
+        routing: None,
     };
 
     // Header: label + name and/or tempo; either half may be missing.
@@ -363,6 +402,7 @@ pub fn add_extra(chain: &mut Chain, extra: &crate::device::ChainExtra) {
     if let Some(switches) = &extra.footswitches {
         add_footswitches(chain, switches);
     }
+    chain.routing.clone_from(&extra.routing);
 }
 
 /// Say which footswitch each block is on. A block listed on several (the
