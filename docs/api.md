@@ -14,6 +14,7 @@ one. `/api/device` is cached after the first success (cleared when the device is
 | GET | `/api/preset` | `tonepush preset` | `{setlist, index, label, name, firmware, build}` |
 | GET | `/api/chain` | `tonepush chain` | `{label, name, tempo, snapshots, blocks, unsaved}` |
 | GET | `/api/models/{id}` | none (HX Edit catalog) | Parameter metadata for sliders, see below. 404 `no_catalog` without it |
+| GET | `/api/catalog` | none (HX Edit catalog) | Models a block can be added with, see below. 404 `no_catalog` without it |
 
 `unsaved` is true after a bypass or parameter change made through the bridge, until the
 next load or save. Edits made on the pedal itself are not seen; it resets on restart.
@@ -35,6 +36,8 @@ the chain; the UI does this for parameter and bypass edits.
 | POST | `/api/save` | `{}` | `tonepush save` | Commit the edit buffer over the loaded preset |
 | POST | `/api/snapshot` | `{index}` | `tonepush snapshot -- N` (1-based) | Switch snapshot, zero-based. Does not mark the preset unsaved |
 | POST | `/api/tempo` | `{bpm}` | `tonepush tempo -- BPM` | Set the preset's tempo, 40–240, rounded to 0.1. Edit buffer only |
+| POST | `/api/blocks/{position}` | `{model}` | `tonepush model -- P M` | Add a block into an empty slot. Edit buffer only |
+| DELETE | `/api/blocks/{position}?model=M` | none | `tonepush clear -- P` | Remove a block. `model` optional. Edit buffer only |
 
 - `position` and `index` are the numbers `/api/chain` returns. `setlist` defaults to 0.
 - `value` is typed in display units, as `/api/chain` shows them (`40`, `40 %`,
@@ -53,8 +56,20 @@ the chain; the UI does this for parameter and bypass edits.
   the pedal (502 `failed`, "error -46"). Tempo has no opcode: TonePush rewrites the whole
   preset document (opcode 21) and reads it back, about 1 s. Both are confirmed on an HX
   Stomp by TonePush and verified on the HX Effects 3.80 (Pi 4, 2026-10-14).
+- Adding a block is op78 (select the slot) then op40 (set its model), as HX Edit does;
+  removing is op78 then op28 (clear). Without the select the device answers success and
+  does nothing (PROTOCOL.md). `model` is a number from `/api/catalog`; anything else is
+  400 `bad_request`. Adding never replaces: a taken slot is 409 `stale`. Only Path A's
+  slots (positions 2–10 on the HX Effects, between input and output): the first block on
+  an empty parallel branch also needs its split and join rewired, a document write. The
+  device may refuse a model (not enough DSP for a polyphonic pitch model, an FX Loop the
+  device lacks): 502 `failed` with its error. `usb` reads the preset back until the
+  change shows (up to 1 s). Removing with `?model=M` (the block's `model_id`) refuses
+  with 409 `stale` if the slot now holds another model; an empty slot is 409 too. `cli`
+  cannot check either. Confirmed on an HX Stomp by TonePush; **not yet verified on the
+  HX Effects**.
 - Not exposed: reorder (`tonepush move`, marked untested on hardware by TonePush),
-  model change, snapshot rename, routing, IRs, settings, restore.
+  changing an existing block's model, snapshot rename, routing, IRs, settings, restore.
 
 ## `/api/chain` blocks
 
@@ -100,8 +115,8 @@ Device errors carry a stable `code` so clients need not parse messages:
 | 401 | `unauthorized` | Write without the right `Authorization: Bearer` token |
 | 403 | `writes_disabled` | Write, but the server has no `HELIX_TOKEN` |
 | 404 | `no_fixture` | Fake backend has no fixture for the request (only setlist 0 is recorded) |
-| 404 | `no_catalog` | `/api/models/{id}`: no HX Edit data on the server, or an unknown model |
-| 409 | `stale` | Native write for a model that is no longer in that slot |
+| 404 | `no_catalog` | `/api/models/{id}`: no HX Edit data on the server, or an unknown model. `/api/catalog`: no HX Edit data |
+| 409 | `stale` | Native write or remove for a model that is no longer in that slot; add to a taken slot; remove from an empty one |
 | 502 | `failed` | `tonepush` exited with an error (message is its stderr) |
 | 502 | `parse` | `tonepush` printed unexpected output |
 | 503 | `no_device` | `tonepush` found no HX device on USB (`no HX device found`) |
@@ -148,6 +163,45 @@ Rate limits for native writes:
   40 ms apart. HX Edit sends one op30 per move step (TonePush opcodes.md 4.3); this
   device wedges when hammered (PROTOCOL.md), so the bridge stays well below that.
 - A native write uses the cached document for the model (no preset read per step).
+
+## Model list: `GET /api/catalog`
+
+The models a block can be added with, from HX Edit's catalog. No device call; fetch once.
+
+```json
+{
+  "categories": [
+    { "name": "Delay", "short": "Delay", "colour": "#00cc00",
+      "types": ["Digital", "Analog", "Tape & Echo", "Multi-tap & Rhythmic", "Creative"],
+      "shelves": [
+        { "name": "Mono", "models": [{ "id": 80, "name": "Simple Delay", "type": "Digital", "based_on": "Line 6 Original" }] },
+        { "name": "Stereo", "models": [{ "id": 92, "name": "Simple Delay", "type": "Digital", "based_on": "Line 6 Original" }] }
+      ] }
+  ]
+}
+```
+
+- `type` and `types` are effect types inside a category: Distortion splits into Boost,
+  Overdrive, Distortion, Fuzz, Bass, Lo-fi. **Ours, not Line 6's**: HX Edit and the
+  device group only by category and shelf. The table is `server/src/types.rs`, written
+  from the gear each model is based on; a test fails if a model in HX Edit's catalog has
+  no type. `types` lists, in display order, only types some model has; empty (and no
+  `type`) for Wah, Volume/Pan and Send/Return.
+
+- Categories and shelves in HX Edit's order: Distortion, Dynamics, EQ, Modulation, Delay,
+  Reverb, Pitch/Synth, Filter, Wah, Volume/Pan, Send/Return. Left out, as the HX Effects
+  has none: Amp, Amp+Cab, Preamp, Cab, IR, Looper; also Favorites and the structural
+  categories (input, output, split, merge).
+- `id` is the device's model number for `POST /api/blocks/{position}`. HX Edit's catalog
+  keeps one model for the mono and stereo versions; the device numbers them apart
+  (`HD2_DelaySimpleDelayMono` 80, `…Stereo` 92), so the same name has another `id` on
+  each shelf.
+- Models HX Edit marks `hidden` (older versions kept so old presets load, e.g. a second
+  Glitch Delay and Poly Sustain) are left out, as HX Edit's browser does. So are models
+  whose `devices` list in HX Edit's `.models` files lacks the HX Effects (`0x00210005`):
+  FX Loop, Send and Return 3, 4 and 3/4 are Helix-only.
+- `based_on` needs `vendor/based-on.json`, as in `/api/chain`.
+- `fake`: the catalog when the machine has HX Edit, else the 4 recorded models.
 
 ## Live updates: `GET /api/live` (WebSocket)
 

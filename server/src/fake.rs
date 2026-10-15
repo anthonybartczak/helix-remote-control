@@ -13,16 +13,21 @@
 //! recording (`fixtures/no-catalog/chain.txt`, the same preset). Parameter
 //! ranges and formats are **synthetic**, written in [`synthetic`] below to
 //! reproduce the recorded display values; they are not HX Edit's data.
+//!
+//! Adding blocks: from HX Edit's catalog when this machine has one
+//! (`HX_EDIT_RESOURCES`), else only the four recorded models. A new block
+//! starts on, with its model's default values, as the device does.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt::Write as _;
+use std::ops::RangeInclusive;
 use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::Duration;
 
 use tokio::sync::broadcast;
 
-use crate::controls::{self, CategoryInfo, Kind, ModelInfo};
+use crate::controls::{self, CategoryInfo, Kind, ModelGroup, ModelInfo};
 use crate::device::{
     BlockNatives, Cause, ChainExtra, Command, Device, DeviceError, Live, Natives, Result,
 };
@@ -57,6 +62,83 @@ struct Edits {
     tempo: Option<f32>,
     /// Active snapshot; `None` = the first (the recording does not say).
     snapshot: Option<u32>,
+    /// Recorded blocks taken out, by position.
+    removed: HashSet<u32>,
+    /// Blocks put in, by position: model number.
+    added: BTreeMap<u32, u32>,
+}
+
+impl Edits {
+    /// Drop the bypass and values kept for a position whose block changed.
+    fn forget(&mut self, position: u32) {
+        self.enabled.remove(&position);
+        self.values.retain(|(b, _), _| *b != position);
+        self.natives.retain(|(b, _), _| *b != position);
+    }
+}
+
+/// Path A's block slots on the HX Effects, as `chain` numbers them
+/// (`topology.txt`: input at slot 0, output at slot 10).
+const ROW: RangeInclusive<u32> = 2..=10;
+
+/// HX Edit's catalog, when this machine has one (`HX_EDIT_RESOURCES`).
+fn catalog() -> Option<&'static hx_catalog::Catalog> {
+    static CATALOG: std::sync::OnceLock<Option<hx_catalog::Catalog>> = std::sync::OnceLock::new();
+    CATALOG
+        .get_or_init(|| hx_catalog::Catalog::load().ok())
+        .as_ref()
+}
+
+/// Parameter metadata: synthetic for the recorded models, else the catalog's.
+fn describe(model: u32) -> Option<ModelInfo> {
+    synthetic::model(model).or_else(|| controls::from_catalog(catalog()?, model))
+}
+
+/// A native value as the device would show it.
+fn shown(model: u32, param: u32, native: f32) -> String {
+    if synthetic::model(model).is_some() {
+        return synthetic::format(model, param, native);
+    }
+    catalog()
+        .and_then(|c| c.param(model, param as usize).map(|p| c.format(p, native)))
+        .unwrap_or_else(|| native.to_string())
+}
+
+/// A typed display value back to a native one.
+fn typed(model: u32, param: u32, text: &str) -> Option<f32> {
+    synthetic::parse(model, param, text).or_else(|| {
+        let c = catalog()?;
+        c.parse(c.param(model, param as usize)?, text)
+    })
+}
+
+/// Whether a block can be added with `model`.
+fn addable(model: u32) -> bool {
+    synthetic::model(model).is_some() || catalog().is_some_and(|c| controls::addable(c, model))
+}
+
+/// A block just put in: on, with its model's default values.
+fn added_block(position: u32, model: u32) -> Option<parse::Block> {
+    let info = describe(model)?;
+    Some(parse::Block {
+        position,
+        model: info.name,
+        model_id: None,
+        category: None,
+        based_on: None,
+        enabled: true,
+        params: info
+            .params
+            .iter()
+            .map(|p| parse::Param {
+                index: p.index,
+                name: p.name.clone(),
+                value: shown(model, p.index, p.default),
+                native: None,
+            })
+            .collect(),
+        cab: None,
+    })
 }
 
 impl FakeDevice {
@@ -88,13 +170,17 @@ impl FakeDevice {
             .map_err(|e| DeviceError::Spawn(format!("{}: {e}", path.display())))
     }
 
-    async fn chain(&self) -> Result<String> {
+    /// The loaded preset's chain, edit buffer applied.
+    async fn current(&self) -> Result<parse::Chain> {
         let chain = parse::chain(&self.fixture("chain.txt").await?)?;
         let presets = parse::presets(&self.fixture("presets.txt").await?)?;
         let state = self.state();
         let p = state.loaded_entry(&presets)?;
-        let chain = state.apply_chain(chain, &p.label, state.name(p));
-        Ok(render_chain(&chain))
+        Ok(state.apply_chain(chain, &p.label, state.name(p)))
+    }
+
+    async fn chain(&self) -> Result<String> {
+        Ok(render_chain(&self.current().await?))
     }
 
     /// Model numbers and recorded natives (no-catalog fixture), with the
@@ -102,23 +188,26 @@ impl FakeDevice {
     async fn natives(&self) -> Option<Natives> {
         let raw = parse::chain(&self.fixture("no-catalog/chain.txt").await.ok()?).ok()?;
         let state = self.state();
-        let blocks = raw
+        let edits = &state.buffer;
+        let value = |position, model, index, recorded: Option<f32>| match (
+            edits.natives.get(&(position, index)),
+            edits.values.get(&(position, index)),
+        ) {
+            (Some(v), _) => Some(*v),
+            (None, Some(text)) => typed(model, index, text),
+            (None, None) => recorded,
+        };
+        let mut blocks: Vec<BlockNatives> = raw
             .blocks
             .iter()
+            .filter(|b| !edits.removed.contains(&b.position))
+            .filter(|b| !edits.added.contains_key(&b.position))
             .filter_map(|b| {
                 let model = b.model.strip_prefix("model ")?.parse().ok()?;
                 let values = b
                     .params
                     .iter()
-                    .map(|p| {
-                        let set = state.buffer.natives.get(&(b.position, p.index));
-                        let typed = state.buffer.values.get(&(b.position, p.index));
-                        match (set, typed) {
-                            (Some(v), _) => Some(*v),
-                            (None, Some(text)) => synthetic::parse(model, p.index, text),
-                            (None, None) => p.value.parse().ok(),
-                        }
-                    })
+                    .map(|p| value(b.position, model, p.index, p.value.parse().ok()))
                     .collect::<Option<Vec<f32>>>()?;
                 Some(BlockNatives {
                     position: b.position,
@@ -127,6 +216,24 @@ impl FakeDevice {
                 })
             })
             .collect();
+        for (&position, &model) in &edits.added {
+            let Some(info) = describe(model) else {
+                continue;
+            };
+            let values = info
+                .params
+                .iter()
+                .map(|p| value(position, model, p.index, Some(p.default)))
+                .collect::<Option<Vec<f32>>>();
+            if let Some(values) = values {
+                blocks.push(BlockNatives {
+                    position,
+                    model,
+                    values,
+                });
+            }
+        }
+        blocks.sort_by_key(|b| b.position);
         Some(Natives(blocks))
     }
 
@@ -147,7 +254,9 @@ impl FakeDevice {
             Command::Enable { .. }
             | Command::Set { .. }
             | Command::SetNative { .. }
-            | Command::Tempo { .. } => Cause::Edit,
+            | Command::Tempo { .. }
+            | Command::AddBlock { .. }
+            | Command::RemoveBlock { .. } => Cause::Edit,
             Command::Rename { .. } | Command::Snapshot { .. } => Cause::Other,
             _ => return,
         };
@@ -197,8 +306,9 @@ impl Device for FakeDevice {
         Ok((text, self.extra().await))
     }
 
+    /// Synthetic for the recorded models; the catalog's for added ones.
     fn model(&self, id: u32) -> Option<ModelInfo> {
-        synthetic::model(id)
+        describe(id)
     }
 
     /// From HX Edit's catalog when this machine has one (`HX_EDIT_RESOURCES`),
@@ -206,10 +316,12 @@ impl Device for FakeDevice {
     /// fixtures' model names are the catalog's.
     /// The fake's model numbers are its own, not the catalog's: go by name.
     fn category(&self, _model_id: Option<u32>, name: &str) -> Option<CategoryInfo> {
-        static CATALOG: std::sync::OnceLock<Option<hx_catalog::Catalog>> =
-            std::sync::OnceLock::new();
-        let catalog = CATALOG.get_or_init(|| hx_catalog::Catalog::load().ok());
-        controls::category(catalog.as_ref()?, None, name)
+        controls::category(catalog()?, None, name)
+    }
+
+    /// The catalog's models when this machine has it, else the recorded four.
+    fn catalog(&self) -> Option<Vec<ModelGroup>> {
+        Some(catalog().map_or_else(synthetic::groups, controls::browser))
     }
 }
 
@@ -247,8 +359,7 @@ impl FakeDevice {
                 Ok(format!("selected {label} (setlist 0)\n"))
             }
             Command::Enable { block, on } => {
-                let chain = parse::chain(&self.fixture("chain.txt").await?)?;
-                find_block(&chain, block)?;
+                find_block(&self.current().await?, block)?;
                 self.state().buffer.enabled.insert(block, on);
                 Ok(format!(
                     "block {block} {}\n",
@@ -260,8 +371,7 @@ impl FakeDevice {
                 param,
                 value,
             } => {
-                let chain = parse::chain(&self.fixture("chain.txt").await?)?;
-                let name = find_block(&chain, block)?
+                let name = find_block(&self.current().await?, block)?
                     .params
                     .get(param as usize)
                     .map(|p| p.name.clone())
@@ -280,8 +390,7 @@ impl FakeDevice {
                 native,
                 model,
             } => {
-                let chain = parse::chain(&self.fixture("chain.txt").await?)?;
-                let name = find_block(&chain, block)?
+                let name = find_block(&self.current().await?, block)?
                     .params
                     .get(param as usize)
                     .map(|p| p.name.clone())
@@ -301,7 +410,7 @@ impl FakeDevice {
                         ))
                     }
                 }
-                let info = synthetic::model(model)
+                let info = describe(model)
                     .and_then(|m| m.params.into_iter().nth(param as usize))
                     .filter(|p| p.kind != Kind::Text)
                     .ok_or_else(|| {
@@ -319,7 +428,7 @@ impl FakeDevice {
                     Kind::Switch => info.min,
                     _ => native,
                 };
-                let shown = synthetic::format(model, param, held);
+                let shown = shown(model, param, held);
                 let mut state = self.state();
                 state.buffer.natives.insert((block, param), held);
                 state.buffer.values.insert((block, param), shown.clone());
@@ -356,6 +465,62 @@ impl FakeDevice {
             Command::Tempo { bpm } => {
                 self.state().buffer.tempo = Some(bpm);
                 Ok(format!("tempo {bpm:.1} BPM\n"))
+            }
+            Command::AddBlock { block, model } => {
+                let name = describe(model)
+                    .filter(|_| addable(model))
+                    .map(|m| m.name)
+                    .ok_or_else(|| {
+                        DeviceError::Invalid(format!(
+                            "model {model} is not an effect this device offers"
+                        ))
+                    })?;
+                if !ROW.contains(&block) {
+                    return Err(DeviceError::Invalid(format!(
+                        "position {block} is not a block slot on the main path"
+                    )));
+                }
+                if let Some(b) = self
+                    .current()
+                    .await?
+                    .blocks
+                    .iter()
+                    .find(|b| b.position == block)
+                {
+                    return Err(DeviceError::Stale(format!(
+                        "position {block} already holds {}; reload the chain",
+                        b.model
+                    )));
+                }
+                let mut state = self.state();
+                state.buffer.forget(block);
+                state.buffer.added.insert(block, model);
+                Ok(format!("block {block} is now {name}\n"))
+            }
+            Command::RemoveBlock { block, model } => {
+                let chain = self.current().await?;
+                let name = chain
+                    .blocks
+                    .iter()
+                    .find(|b| b.position == block)
+                    .map(|b| b.model.clone())
+                    .ok_or_else(|| {
+                        DeviceError::Stale(format!(
+                            "no block at position {block}; reload the chain"
+                        ))
+                    })?;
+                if let (Some(want), Some(held)) = (model, self.model_at(block).await) {
+                    if want != held {
+                        return Err(DeviceError::Stale(format!(
+                            "block {block} now holds model {held}, not {want}; reload the chain"
+                        )));
+                    }
+                }
+                let mut state = self.state();
+                state.buffer.forget(block);
+                state.buffer.added.remove(&block);
+                state.buffer.removed.insert(block);
+                Ok(format!("removed {name} from block {block}\n"))
             }
             other @ (Command::Presets { .. } | Command::Select { .. } | Command::Rename { .. }) => {
                 Err(DeviceError::NoFixture(other))
@@ -420,6 +585,17 @@ impl State {
         if let Some(bpm) = self.buffer.tempo {
             chain.tempo = Some(bpm);
         }
+        let edits = &self.buffer;
+        chain.blocks.retain(|b| {
+            !edits.removed.contains(&b.position) && !edits.added.contains_key(&b.position)
+        });
+        chain.blocks.extend(
+            edits
+                .added
+                .iter()
+                .filter_map(|(&position, &model)| added_block(position, model)),
+        );
+        chain.blocks.sort_by_key(|b| b.position);
         for block in &mut chain.blocks {
             if let Some(&on) = self.buffer.enabled.get(&block.position) {
                 block.enabled = on;
@@ -594,6 +770,38 @@ mod synthetic {
             synthetic: true,
             params,
         })
+    }
+
+    /// The model browser without the catalog: the four recorded models, in
+    /// their HX Edit categories and tints (app.css `--cat-*`).
+    pub(super) fn groups() -> Vec<ModelGroup> {
+        [
+            ("Dynamics", "Dyn", "#ddcc00", 123),
+            ("Pitch/Synth", "Pitch", "#ad46e2", 296),
+            ("Wah", "Wah", "#a844db", 269),
+            ("Send/Return", "Snd/Rtn", "#38a696", 141),
+        ]
+        .into_iter()
+        .map(|(category, short, colour, id)| {
+            let name = specs(id).map_or_else(String::new, |(n, _)| n.to_owned());
+            let shelves = vec![controls::Shelf {
+                name: None,
+                models: vec![controls::ModelEntry {
+                    id,
+                    effect_type: crate::types::of(category, &name).map(str::to_owned),
+                    name,
+                    based_on: None,
+                }],
+            }];
+            ModelGroup {
+                name: category.into(),
+                short: short.into(),
+                colour: colour.into(),
+                types: controls::used_types(category, &shelves),
+                shelves,
+            }
+        })
+        .collect()
     }
 
     pub(super) fn format(model: u32, param: u32, native: f32) -> String {
@@ -812,6 +1020,143 @@ mod tests {
                 other => panic!("{cmd:?}: {other:?}"),
             }
         }
+    }
+
+    #[tokio::test]
+    async fn add_and_remove_blocks() {
+        let dev = FakeDevice::bundled();
+        // Noise Gate (123) into the empty slot 4, between Simple Pitch and FX Loop.
+        let out = dev
+            .run(Command::AddBlock {
+                block: 4,
+                model: 123,
+            })
+            .await
+            .unwrap();
+        assert_eq!(out, "block 4 is now Noise Gate\n");
+        let c = chain(&dev).await;
+        let positions: Vec<u32> = c.blocks.iter().map(|b| b.position).collect();
+        assert_eq!(positions, [2, 3, 4, 5, 10]);
+        let added = &c.blocks[2];
+        assert_eq!(added.model, "Noise Gate");
+        assert!(added.enabled, "a new block starts on");
+        assert_eq!(added.params[0].value, "-48.0 dB", "the model's default");
+
+        // The new block takes edits like any other.
+        dev.run(Command::SetNative {
+            block: 4,
+            param: 0,
+            native: -30.0,
+            model: 123,
+        })
+        .await
+        .unwrap();
+        dev.run(Command::Enable {
+            block: 4,
+            on: false,
+        })
+        .await
+        .unwrap();
+        let (text, extra) = Device::chain(&dev).await.unwrap();
+        let mut c = parse::chain(&text).unwrap();
+        parse::add_extra(&mut c, &extra);
+        assert_eq!(c.blocks[2].params[0].value, "-30.0 dB");
+        assert_eq!(c.blocks[2].params[0].native, Some(-30.0));
+        assert_eq!(c.blocks[2].model_id, Some(123));
+        assert!(!c.blocks[2].enabled);
+
+        // Remove a recorded block, with the model the client saw.
+        let out = dev
+            .run(Command::RemoveBlock {
+                block: 2,
+                model: Some(269),
+            })
+            .await
+            .unwrap();
+        assert_eq!(out, "removed Fassel from block 2\n");
+        // And the added one, without.
+        let out = dev
+            .run(Command::RemoveBlock {
+                block: 4,
+                model: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(out, "removed Noise Gate from block 4\n");
+        let c = chain(&dev).await;
+        let positions: Vec<u32> = c.blocks.iter().map(|b| b.position).collect();
+        assert_eq!(positions, [3, 5, 10]);
+
+        // A slot freed by a removal takes a new block, which starts afresh.
+        dev.run(Command::AddBlock {
+            block: 2,
+            model: 296,
+        })
+        .await
+        .unwrap();
+        let c = chain(&dev).await;
+        assert_eq!(c.blocks[0].model, "Simple Pitch");
+        assert_eq!(c.blocks[0].params[0].value, "+0");
+
+        // Loading another preset drops it all; saving keeps it.
+        dev.run(Command::Save).await.unwrap();
+        dev.run(Command::Select {
+            setlist: 0,
+            index: 0,
+        })
+        .await
+        .unwrap();
+        assert_eq!(chain(&dev).await.blocks.len(), 4);
+        dev.run(Command::Select {
+            setlist: 0,
+            index: 2,
+        })
+        .await
+        .unwrap();
+        assert_eq!(chain(&dev).await.blocks[0].model, "Simple Pitch");
+    }
+
+    #[tokio::test]
+    async fn add_and_remove_refusals() {
+        let dev = FakeDevice::bundled();
+        let add = |block, model| Command::AddBlock { block, model };
+        let remove = |block, model| Command::RemoveBlock { block, model };
+        for (cmd, stale) in [
+            // Taken: add never replaces.
+            (add(2, 123), true),
+            // Outside Path A's slots: the input, the output, beyond.
+            (add(1, 123), false),
+            (add(11, 123), false),
+            // Not a model this device offers.
+            (add(4, 999_999), false),
+            // Nothing there, or another model than the client saw.
+            (remove(4, None), true),
+            (remove(2, Some(296)), true),
+        ] {
+            match dev.run(cmd.clone()).await {
+                Err(DeviceError::Stale(_)) if stale => {}
+                Err(DeviceError::Invalid(_)) if !stale => {}
+                other => panic!("{cmd:?}: {other:?}"),
+            }
+        }
+        // Nothing changed.
+        assert_eq!(chain(&dev).await.blocks.len(), 4);
+    }
+
+    #[tokio::test]
+    async fn offers_models() {
+        let groups = FakeDevice::bundled().catalog().unwrap();
+        let ids: Vec<u32> = groups
+            .iter()
+            .flat_map(|g| &g.shelves)
+            .flat_map(|s| &s.models)
+            .map(|m| m.id)
+            .collect();
+        // Without the catalog: the four recorded models. With it: those too.
+        for id in [123, 296] {
+            assert!(ids.contains(&id), "{id}");
+        }
+        assert!(ids.iter().all(|&id| addable(id)));
     }
 
     #[tokio::test]

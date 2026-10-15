@@ -68,6 +68,11 @@ pub fn router<D: Device>(state: AppState<D>) -> Router {
         .route("/api/chain", get(chain::<D>))
         .route("/api/models/{id}", get(model::<D>))
         .route("/api/select", post(select::<D>))
+        .route("/api/catalog", get(catalog::<D>))
+        .route(
+            "/api/blocks/{position}",
+            post(add_block::<D>).delete(remove_block::<D>),
+        )
         .route("/api/blocks/{position}/enabled", post(enable::<D>))
         .route(
             "/api/blocks/{position}/params/{index}",
@@ -133,6 +138,8 @@ enum ApiError {
     BadRequest(String),
     /// No parameter metadata for this model (no HX Edit catalog, or unknown).
     NoCatalog(u32),
+    /// No model list to add blocks from (no HX Edit catalog).
+    NoModelList,
 }
 
 impl ApiError {
@@ -148,7 +155,7 @@ impl ApiError {
             ApiError::Device(DeviceError::Parse(_)) => "parse",
             ApiError::Device(DeviceError::Stale(_)) => "stale",
             ApiError::Device(DeviceError::Invalid(_)) => "bad_request",
-            ApiError::NoCatalog(_) => "no_catalog",
+            ApiError::NoCatalog(_) | ApiError::NoModelList => "no_catalog",
             ApiError::Unauthorized => "unauthorized",
             ApiError::WritesDisabled => "writes_disabled",
             ApiError::BadRequest(_) => "bad_request",
@@ -167,7 +174,7 @@ impl ApiError {
                 DeviceError::Stale(_) => StatusCode::CONFLICT,
                 DeviceError::Invalid(_) => StatusCode::BAD_REQUEST,
             },
-            ApiError::NoCatalog(_) => StatusCode::NOT_FOUND,
+            ApiError::NoCatalog(_) | ApiError::NoModelList => StatusCode::NOT_FOUND,
             ApiError::Unauthorized => StatusCode::UNAUTHORIZED,
             ApiError::WritesDisabled => StatusCode::FORBIDDEN,
             ApiError::BadRequest(_) => StatusCode::BAD_REQUEST,
@@ -185,6 +192,9 @@ impl ApiError {
             ApiError::NoCatalog(id) => format!(
                 "no parameter data for model {id}: needs HX Edit data on the server (usb backend)"
             ),
+            ApiError::NoModelList => {
+                "no model list: needs HX Edit data on the server (usb backend)".into()
+            }
         }
     }
 }
@@ -312,6 +322,25 @@ async fn model<D: Device>(
         .ok_or(ApiError::NoCatalog(id))
 }
 
+#[derive(Serialize)]
+struct Catalog {
+    categories: Vec<crate::controls::ModelGroup>,
+}
+
+/// `GET /api/catalog`: the models a block can be added with, by category,
+/// with the gear each is based on. Catalog only, no device call.
+async fn catalog<D: Device>(State(app): Shared<D>) -> ApiResult<Catalog> {
+    let mut categories = app.device.catalog().ok_or(ApiError::NoModelList)?;
+    for model in categories
+        .iter_mut()
+        .flat_map(|c| &mut c.shelves)
+        .flat_map(|s| &mut s.models)
+    {
+        model.based_on = app.based_on.get(&model.name).cloned();
+    }
+    Ok(Json(Catalog { categories }))
+}
+
 // ---------- Writes ----------
 
 /// HX preset names are at most 16 characters (front panel and HX Edit).
@@ -412,7 +441,9 @@ async fn write<D: Device>(
         Command::Enable { .. }
         | Command::Set { .. }
         | Command::SetNative { .. }
-        | Command::Tempo { .. } => Some(true),
+        | Command::Tempo { .. }
+        | Command::AddBlock { .. }
+        | Command::RemoveBlock { .. } => Some(true),
         Command::Select { .. } | Command::Save => Some(false),
         _ => None,
     };
@@ -443,6 +474,45 @@ async fn select<D: Device>(
     let cmd = Command::Select {
         setlist: body.setlist,
         index: body.index,
+    };
+    write(&app, access, cmd).await
+}
+
+#[derive(Deserialize)]
+struct AddBody {
+    /// Model number, from `/api/catalog`.
+    model: u32,
+}
+
+/// Put a model into an empty slot. Never replaces: a taken slot is 409.
+async fn add_block<D: Device>(
+    State(app): Shared<D>,
+    access: WriteAccess,
+    Path(position): Path<u32>,
+    Json(body): Json<AddBody>,
+) -> ApiResult<WriteResult> {
+    let cmd = Command::AddBlock {
+        block: checked_position(position)?,
+        model: body.model,
+    };
+    write(&app, access, cmd).await
+}
+
+#[derive(Deserialize)]
+struct RemoveQuery {
+    /// The block's `model_id` as the client saw it; another model there is 409.
+    model: Option<u32>,
+}
+
+async fn remove_block<D: Device>(
+    State(app): Shared<D>,
+    access: WriteAccess,
+    Path(position): Path<u32>,
+    Query(q): Query<RemoveQuery>,
+) -> ApiResult<WriteResult> {
+    let cmd = Command::RemoveBlock {
+        block: checked_position(position)?,
+        model: q.model,
     };
     write(&app, access, cmd).await
 }
@@ -985,6 +1055,74 @@ mod tests {
         )
         .await;
         assert_eq!(list["presets"][2]["name"], "Clean Verb");
+    }
+
+    #[tokio::test]
+    async fn catalog_lists_models() {
+        let (status, body) = get_json("/api/catalog").await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let models: Vec<&Value> = body["categories"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|c| c["shelves"].as_array().unwrap())
+            .flat_map(|s| s["models"].as_array().unwrap())
+            .collect();
+        let gate = models.iter().find(|m| m["id"] == 123).expect("Noise Gate");
+        assert_eq!(gate["name"], "Noise Gate");
+        assert!(body["categories"][0]["colour"]
+            .as_str()
+            .unwrap()
+            .starts_with('#'));
+    }
+
+    #[tokio::test]
+    async fn add_and_remove_blocks() {
+        let app = app();
+        let t = Some(TOKEN);
+        let delete = |uri: &str, token: Option<&str>| {
+            let mut req = Request::delete(uri);
+            if let Some(t) = token {
+                req = req.header(header::AUTHORIZATION, format!("Bearer {t}"));
+            }
+            send(&app, req.body(Body::empty()).unwrap())
+        };
+
+        let (status, res) = post(&app, "/api/blocks/4", t, json!({ "model": 123 })).await;
+        assert_eq!(status, StatusCode::OK, "{res}");
+        assert_eq!(res["message"], "block 4 is now Noise Gate");
+        assert_eq!(res["unsaved"], true);
+        let (_, chain) = send(
+            &app,
+            Request::get("/api/chain").body(Body::empty()).unwrap(),
+        )
+        .await;
+        assert_eq!(chain["blocks"][2]["position"], 4);
+        assert_eq!(chain["blocks"][2]["model_id"], 123);
+
+        // Taken: adding never replaces.
+        let (status, res) = post(&app, "/api/blocks/4", t, json!({ "model": 296 })).await;
+        assert_eq!(status, StatusCode::CONFLICT, "{res}");
+        assert_eq!(res["code"], "stale");
+        // Another model than the client saw: nothing removed.
+        let (status, res) = delete("/api/blocks/4?model=296", t).await;
+        assert_eq!(status, StatusCode::CONFLICT, "{res}");
+
+        let (status, res) = delete("/api/blocks/4", None).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{res}");
+        let (status, res) = delete("/api/blocks/4?model=123", t).await;
+        assert_eq!(status, StatusCode::OK, "{res}");
+        assert_eq!(res["message"], "removed Noise Gate from block 4");
+        let (status, res) = delete("/api/blocks/4", t).await;
+        assert_eq!(status, StatusCode::CONFLICT, "{res}");
+
+        // Not a block slot; not a model; position 0.
+        let (status, _) = post(&app, "/api/blocks/1", t, json!({ "model": 123 })).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let (status, _) = post(&app, "/api/blocks/4", t, json!({ "model": 999999 })).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let (status, _) = post(&app, "/api/blocks/0", t, json!({ "model": 123 })).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]

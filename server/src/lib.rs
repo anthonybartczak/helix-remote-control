@@ -6,4 +6,5 @@ pub mod controls;
 pub mod device;
 mod fake;
 pub mod parse;
+pub mod types;
 pub mod usb;

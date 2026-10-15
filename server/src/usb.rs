@@ -20,10 +20,11 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use hx_proto::msgpack::Value;
+use hx_proto::preset::Kind;
 use hx_usb::Session;
 use tokio::sync::{broadcast, oneshot};
 
-use crate::controls::{self, CategoryInfo, ModelInfo};
+use crate::controls::{self, CategoryInfo, ModelGroup, ModelInfo};
 use crate::device::{
     BlockNatives, Cause, ChainExtra, Command, Device, DeviceError, Live, Natives, Result,
 };
@@ -67,6 +68,10 @@ const RECONNECT_MAX: Duration = Duration::from_secs(60);
 /// one op30 per move step (opcodes.md 4.3), but this device wedges when
 /// hammered (PROTOCOL.md), so stay well below that.
 const PARAM_GAP: Duration = Duration::from_millis(40);
+
+/// Reads of the document after adding or removing a block, until it shows.
+const SLOT_READS: u32 = 5;
+const SLOT_READ_GAP: Duration = Duration::from_millis(200);
 
 const NO_DEVICE: &str = "no HX device found - check the USB cable";
 
@@ -178,6 +183,10 @@ impl Device for UsbDevice {
 
     fn category(&self, model_id: Option<u32>, name: &str) -> Option<CategoryInfo> {
         controls::category(self.catalog.as_deref()?, model_id, name)
+    }
+
+    fn catalog(&self) -> Option<Vec<ModelGroup>> {
+        Some(controls::browser(self.catalog.as_deref()?))
     }
 }
 
@@ -665,6 +674,8 @@ impl Worker {
             Command::Save => self.save(),
             Command::Snapshot { index } => self.snapshot(*index),
             Command::Tempo { bpm } => self.tempo(*bpm),
+            Command::AddBlock { block, model } => self.add_block(*block, *model),
+            Command::RemoveBlock { block, model } => self.remove_block(*block, *model),
         };
         if *cmd == Command::Chain {
             if let Ok(text) = &out {
@@ -673,13 +684,16 @@ impl Worker {
         }
         // Some writes swallow their own notifications (a select reads them
         // while it waits), so every write publishes its result itself.
-        // Bypass and parameter writes patched `doc` already.
+        // Bypass and parameter writes patched `doc` already; adding and
+        // removing a block read it back.
         if out.is_ok() {
             match cmd {
                 Command::Select { .. } => self.want_reload(Cause::Preset),
-                Command::Enable { .. } | Command::Set { .. } | Command::SetNative { .. } => {
-                    self.publish_doc(Cause::Edit)
-                }
+                Command::Enable { .. }
+                | Command::Set { .. }
+                | Command::SetNative { .. }
+                | Command::AddBlock { .. }
+                | Command::RemoveBlock { .. } => self.publish_doc(Cause::Edit),
                 // A snapshot changes which blocks are on and their values:
                 // read the document again rather than guess.
                 Command::Rename { .. } | Command::Save | Command::Snapshot { .. } => {
@@ -791,11 +805,7 @@ impl Worker {
             let _ = writeln!(out, "snapshots: {}", snapshots.join(", "));
         }
         out.push('\n');
-        let model_name = |model: u32| {
-            catalog
-                .and_then(|c| c.model_number(model))
-                .map_or_else(|| format!("model {model}"), |m| m.name.clone())
-        };
+        let model_name = |model| model_name(catalog, model);
         for (position, block) in preset.blocks() {
             let model = block.model.unwrap_or_default();
             let _ = writeln!(
@@ -951,6 +961,111 @@ impl Worker {
         Ok(format!("tempo {bpm:.1} BPM\n"))
     }
 
+    /// Put `model` into the empty slot at chain position `block`. Only on a
+    /// path's main row, between its input and output: the first block on an
+    /// empty parallel branch also needs its split and join rewired (a
+    /// document write, TonePush GUI), and the UI does not draw branches yet.
+    /// Confirmed on an HX Stomp by TonePush; on the HX Effects not yet.
+    fn add_block(&mut self, block: u32, model: u32) -> Result<String> {
+        let catalog = self.catalog.clone().ok_or_else(|| {
+            DeviceError::Invalid("adding a block needs HX Edit data on the server (/vendor)".into())
+        })?;
+        if !controls::addable(&catalog, model) {
+            return Err(DeviceError::Invalid(format!(
+                "model {model} is not an effect this device offers"
+            )));
+        }
+        self.chain()?;
+        let slot = (block as usize).wrapping_sub(1);
+        let preset = &self.doc.as_ref().expect("just read").preset;
+        let on_row = preset
+            .layout()
+            .paths
+            .iter()
+            .any(|p| matches!((p.input, p.output), (Some(i), Some(o)) if i < slot && slot < o));
+        let target = preset
+            .slots
+            .get(slot)
+            .filter(|s| on_row && matches!(s.kind, Kind::Block | Kind::Empty));
+        match target {
+            None => {
+                return Err(DeviceError::Invalid(format!(
+                    "position {block} is not a block slot on the main path"
+                )))
+            }
+            Some(s) if s.model.is_some() => {
+                return Err(DeviceError::Stale(format!(
+                    "position {block} already holds {}; reload the chain",
+                    model_name(Some(&*catalog), s.model.unwrap_or_default())
+                )))
+            }
+            Some(_) => {}
+        }
+        self.with(|s| s.set_model(slot as i64, model))?;
+        self.settle_slot(slot, Some(model));
+        Ok(format!(
+            "block {block} is now {}\n",
+            model_name(Some(&*catalog), model)
+        ))
+    }
+
+    /// Empty the slot at chain position `block`. `model`, if given, must be
+    /// what the slot holds. Confirmed on an HX Stomp by TonePush; on the HX
+    /// Effects not yet.
+    fn remove_block(&mut self, block: u32, model: Option<u32>) -> Result<String> {
+        self.chain()?;
+        let slot = (block as usize).wrapping_sub(1);
+        let held = self
+            .doc
+            .as_ref()
+            .and_then(|d| d.preset.slots.get(slot))
+            .filter(|s| s.kind == Kind::Block)
+            .and_then(|s| s.model);
+        let held = match (held, model) {
+            (None, _) => {
+                return Err(DeviceError::Stale(format!(
+                    "no block at position {block}; reload the chain"
+                )))
+            }
+            (Some(h), Some(m)) if h != m => {
+                return Err(DeviceError::Stale(format!(
+                    "block {block} now holds model {h}, not {m}; reload the chain"
+                )))
+            }
+            (Some(h), _) => h,
+        };
+        self.with(|s| s.clear_block(slot as i64))?;
+        self.settle_slot(slot, None);
+        Ok(format!(
+            "removed {} from block {block}\n",
+            model_name(self.catalog.as_deref(), held)
+        ))
+    }
+
+    /// Read the document until slot `slot` holds `want`, for at most about a
+    /// second: a read right after a change can still return the old one.
+    /// The write stands either way; the device's notification re-reads later.
+    fn settle_slot(&mut self, slot: usize, want: Option<u32>) {
+        for attempt in 0..SLOT_READS {
+            if attempt > 0 {
+                thread::sleep(SLOT_READ_GAP);
+            }
+            let read = self.chain().map(|_| {
+                self.doc
+                    .as_ref()
+                    .and_then(|d| d.preset.slots.get(slot))
+                    .map(|s| s.model)
+            });
+            if read.as_ref().is_ok_and(|m| *m == Some(want)) {
+                return;
+            }
+            if self.session.is_none() {
+                return;
+            }
+        }
+        tracing::debug!(slot, ?want, "the document does not show the change yet");
+    }
+
     /// Mirror our own parameter write into `doc`; forget it if it cannot be.
     fn patch_param(&mut self, slot: i64, param: u32, value: f32) {
         let patch = Patch::Param {
@@ -1097,6 +1212,13 @@ fn list() -> Result<String> {
         );
     }
     Ok(out)
+}
+
+/// A model's name from the catalog, or `model 388` without it.
+fn model_name(catalog: Option<&hx_catalog::Catalog>, model: u32) -> String {
+    catalog
+        .and_then(|c| c.model_number(model))
+        .map_or_else(|| format!("model {model}"), |m| m.name.clone())
 }
 
 /// `show_params`.

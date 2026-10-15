@@ -47,9 +47,9 @@ and `docs/_reference/opcodes.md`. Bridge side: `docs/api.md`, `web/app.js`,
 | Tempo under external MIDI clock (op99) | GUI shows `[External]` | missing | unverified | R | low | 1 h |
 | **Model categories, colours, short names, artwork** | GUI board tiles (`Catalog::category`, `artwork`) | partial: category guessed from model name (`app.js` `CATEGORY_RULES`) | catalog data | R | none; artwork is Line 6 data, serve from `/vendor` only | 3 h |
 | Topology: parallel paths, split/join, lanes | CLI `topology`, GUI board | missing (fixture recorded) | confirmed read (`fixtures/topology.txt`) | R | none | 1 evening |
-| Change a block's model (op78 + op40) | CLI `model`, GUI browser with audition | missing | unverified | W | medium: rebuilds the slot; amp+cab pair inferred | 1 evening |
-| Model browser (catalog by category) | CLI `models`, GUI | missing | catalog data | R | none | 1 evening, with model change |
-| Clear block (op78 then op28) | CLI `clear`, GUI | missing | unverified | W | low, but silent no-op without op78 | 1 h |
+| Change a block's model (op78 + op40) | CLI `model`, GUI browser with audition | partial: into an empty Path A slot only (2026-10-15, not yet on hardware) | unverified | W | medium: rebuilds the slot; amp+cab pair inferred | 2 h for replacing |
+| Model browser (catalog by category) | CLI `models`, GUI | have (2026-10-15): `/api/catalog`, picker sheet | catalog data | R | none | – |
+| Clear block (op78 then op28) | CLI `clear`, GUI | have (2026-10-15, not yet on hardware) | unverified | W | low, but silent no-op without op78 | – |
 | Reorder blocks | CLI `move` (marked untested), GUI drag | missing | unverified | W | doc write; CLI says untested | 3 h |
 | Copy/paste block | CLI `copy-block`, GUI | missing | unverified | W | doc write | 3 h |
 | Undo / redo | GUI (client-side stack, op21) | missing | unverified | W | doc write per undo | 1 evening |

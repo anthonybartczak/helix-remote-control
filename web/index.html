@@ -106,6 +106,27 @@
   </div>
 </div>
 
+<div class="sheet" id="picker" role="dialog" aria-modal="true" aria-label="Add block" hidden>
+  <div class="sheet-head">
+    <button class="icon-btn close-btn portrait-only" type="button" data-close-picker aria-label="Close">×</button>
+    <div class="sheet-title landscape-only" id="picker-title">Add block</div>
+    <input class="filter" id="model-filter" type="search" placeholder="Filter by model or gear" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
+    <div class="spacer landscape-only"></div>
+    <button class="icon-btn close-btn landscape-only" type="button" data-close-picker aria-label="Close">×</button>
+  </div>
+  <div class="sheet-body picker-body">
+    <nav class="cats" id="cats" aria-label="Categories"></nav>
+    <div class="models" id="models"></div>
+  </div>
+  <div class="sheet-foot">
+    <span class="sf-label" id="pf-slot"></span>
+    <span class="sf-name" id="pf-name"></span>
+    <span class="sf-note landscape-only" id="pf-note"></span>
+    <div class="spacer"></div>
+    <button class="act later load-btn" type="button" id="add-btn" disabled>Add</button>
+  </div>
+</div>
+
 <div class="popover" id="conn-popover" role="dialog" aria-label="Connection" hidden>
   <div class="caps muted">CONNECTION</div>
   <dl class="kv" id="conn-info"></dl>

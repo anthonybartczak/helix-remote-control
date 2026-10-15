@@ -12,14 +12,15 @@ use std::time::{Duration, Instant};
 use tokio::process::Command as Process;
 use tokio::sync::{broadcast, Mutex};
 
-pub use crate::controls::{CategoryInfo, ModelInfo};
+pub use crate::controls::{CategoryInfo, ModelGroup, ModelInfo};
 pub use crate::fake::FakeDevice;
 
 /// The `tonepush` commands the bridge may run, and [`Command::SetNative`].
 ///
 /// Writes are limited to what phase 6 needs and TonePush has used on hardware:
-/// load, bypass, parameter, rename, save. `move` (reorder) is left out: TonePush
-/// marks it untested against hardware (AGENTS.md 6, unverified operations).
+/// load, bypass, parameter, rename, save, snapshot, tempo, and adding or
+/// removing a block. `move` (reorder) is left out: TonePush marks it untested
+/// against hardware (AGENTS.md 6, unverified operations).
 #[derive(Debug, Clone, PartialEq)]
 pub enum Command {
     List,
@@ -73,6 +74,22 @@ pub enum Command {
     /// TonePush writes the whole preset document for it (no tempo opcode).
     Tempo {
         bpm: f32,
+    },
+    /// Put a model into an empty block slot: op78 (select) then op40 (set
+    /// model), as HX Edit does. Adds, never replaces: an occupied slot is
+    /// refused with [`DeviceError::Stale`] (`usb`, `fake`; `cli` cannot check).
+    /// Edit buffer only.
+    AddBlock {
+        block: u32,
+        model: u32,
+    },
+    /// Remove a block: op78 (select) then op28 (clear). `model`, if given, is
+    /// the model the client saw there; another one answers
+    /// [`DeviceError::Stale`] (`usb`, `fake`; `cli` cannot check). Edit
+    /// buffer only.
+    RemoveBlock {
+        block: u32,
+        model: Option<u32>,
     },
 }
 
@@ -130,6 +147,15 @@ impl Command {
                 vec!["snapshot".into(), "--".into(), (index + 1).to_string()]
             }
             Command::Tempo { bpm } => vec!["tempo".into(), "--".into(), format!("{bpm:.1}")],
+            Command::AddBlock { block, model } => vec![
+                "model".into(),
+                "--".into(),
+                block.to_string(),
+                model.to_string(),
+            ],
+            Command::RemoveBlock { block, .. } => {
+                vec!["clear".into(), "--".into(), block.to_string()]
+            }
             Command::SetNative { .. } => return None,
         })
     }
@@ -146,6 +172,8 @@ impl Command {
                 | Command::Save
                 | Command::Snapshot { .. }
                 | Command::Tempo { .. }
+                | Command::AddBlock { .. }
+                | Command::RemoveBlock { .. }
         )
     }
 }
@@ -219,6 +247,12 @@ pub trait Device: Send + Sync + 'static {
     /// A block's category from HX Edit's catalog, by model number or name.
     /// `None` without the catalog; the UI then guesses from the name.
     fn category(&self, _model_id: Option<u32>, _name: &str) -> Option<CategoryInfo> {
+        None
+    }
+
+    /// The models a block can be added with, by category (`/api/catalog`).
+    /// `None` without HX Edit's catalog.
+    fn catalog(&self) -> Option<Vec<ModelGroup>> {
         None
     }
 }
@@ -453,6 +487,17 @@ mod tests {
         let tempo = Command::Tempo { bpm: 96.04 };
         assert_eq!(tempo.args().unwrap(), ["tempo", "--", "96.0"]);
         assert!(snap.is_write() && tempo.is_write());
+        let add = Command::AddBlock {
+            block: 4,
+            model: 388,
+        };
+        assert_eq!(add.args().unwrap(), ["model", "--", "4", "388"]);
+        let remove = Command::RemoveBlock {
+            block: 4,
+            model: Some(388),
+        };
+        assert_eq!(remove.args().unwrap(), ["clear", "--", "4"]);
+        assert!(add.is_write() && remove.is_write());
         assert!(!Command::Chain.is_write());
     }
 

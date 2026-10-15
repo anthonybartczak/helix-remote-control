@@ -121,6 +121,18 @@ in the browser):
 - **Tempo:** tap TAP on the beat; the BPM shows as you tap (amber until the pedal has
   it) and is sent once you pause for 1.5 s. Tap the BPM to type a value (40–240).
   Snapshot switch, tap and typed tempo verified 2026-10-14 on the HX Effects 3.80 (Pi 4).
+- **Add a block:** tap an empty slot (or select one and tap Add block). Pick a category;
+  its models are sorted by effect type (Distortion: Boost, Overdrive, Distortion, Fuzz,
+  Bass, Lo-fi), with a chip per type to jump to it. All / Mono / Stereo / Legacy narrows
+  the list (remembered in the browser). The filter searches names, types and the gear
+  they are based on. Tap Add, or tap the model a second time. The types are ours
+  (`server/src/types.rs`), not Line 6's. The block lands in that
+  slot, switched on, with HX Edit's default values. Needs HX Edit data on the server
+  (`usb` with `/vendor`; `fake` uses it when the machine has HX Edit, else offers the 4
+  recorded models). Path A slots 1–9 only; a taken slot is refused, never replaced.
+- **Remove a block:** select it, tap Remove, confirm. The slot stays selected, ready for
+  another block. Add and remove change the edit buffer only (Save keeps them). **Not yet
+  verified on the HX Effects.**
 - **Rename / Save:** buttons in the preset bar. Save asks first and overwrites the
   loaded preset. "Unsaved" in the bar means edits are only in the edit buffer.
 

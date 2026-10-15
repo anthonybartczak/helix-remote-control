@@ -13,6 +13,9 @@
 // are sliders, menus pickers and switches toggles (/api/models/{id}); writes
 // go out by native value through LatestSender (latest.js), at most one in
 // flight. Tapping a value still types it.
+// Blocks: tap an empty slot to add an effect there (model picker from
+// /api/catalog, HX Edit's categories and shelves); Remove takes the selected
+// block out. Both change the edit buffer only, like any other edit.
 'use strict';
 
 const SLOTS = 9; // HX Effects block slots. Slot = chain position - 1 (position 1 is the input).
@@ -76,7 +79,11 @@ const state = {
   info: null, // /api/device
   presets: [], // /api/presets .presets
   chain: null, // /api/chain
-  selectedSlot: null,
+  selectedSlot: null, // 1..SLOTS; may be an empty slot
+  selectionLabel: null, // preset label the selection belongs to
+  catalog: null, // /api/catalog .categories | CATALOG_PENDING | { error }
+  // selected: model id; shelf: All | Mono | Stereo | Legacy, kept in this browser
+  picker: { open: false, slot: null, category: 0, filter: '', selected: null, shelf: 'All' },
   loading: false,
   banner: null, // non-blocking error: { message, context }
   blocked: null, // blocking error: { icon, title, text, detail }
@@ -298,19 +305,20 @@ function canWrite() {
  * A read costs 3–5 s on hardware, so cheap edits use the function.
  * Returns true on success.
  */
-async function write(label, path, body, then = 'chain') {
+async function write(label, path, body, then = 'chain', method = 'POST') {
   if (!canWrite()) return false;
   state.busy = label;
   render();
   let ok = false;
   let res = null;
+  let stale = false;
   try {
     let token = sessionToken || storedToken();
     for (let attempt = 0; attempt < 2; attempt++) {
       if (!token) token = askToken(attempt > 0);
       if (!token) return false;
       try {
-        res = await api(path, { method: 'POST', body, token });
+        res = await api(path, { method, body, token });
         sessionToken = token;
         storeToken(token);
         state.unsaved = !!res.unsaved;
@@ -330,6 +338,8 @@ async function write(label, path, body, then = 'chain') {
       handleError(err);
     } else {
       state.banner = { message: err.message, context: `${label.replace(/…$/, '')} failed.` };
+      // The chain changed under us (409): show what is there now.
+      if (err.code === 'stale') stale = true;
     }
   } finally {
     state.busy = null;
@@ -338,7 +348,7 @@ async function write(label, path, body, then = 'chain') {
   if (ok && typeof then === 'function') {
     then(res);
     render();
-  } else if (ok) {
+  } else if (ok || stale) {
     await refresh({ full: then === 'full' });
   }
   return ok;
@@ -378,6 +388,106 @@ function editParam(index) {
   if (value == null || !value.trim() || value.trim() === p.value) return;
   write(`Setting ${p.name}…`, `/api/blocks/${b.position}/params/${p.index}`, { value: value.trim() },
     (res) => { p.value = res.value || value.trim(); });
+}
+
+// ---------- Adding and removing blocks ----------
+
+const CATALOG_PENDING = 'pending';
+
+/** Fetch the model list once (catalog data only, no device call); again after a failure. */
+function loadCatalog() {
+  if (state.catalog === CATALOG_PENDING || Array.isArray(state.catalog)) return;
+  state.catalog = CATALOG_PENDING;
+  api('/api/catalog').then(
+    (c) => { state.catalog = c.categories; },
+    (e) => {
+      state.catalog = {
+        error: e.code === 'no_catalog'
+          ? 'Adding blocks needs HX Edit data on the server (/vendor, usb backend).'
+          : e.message,
+      };
+    },
+  ).finally(() => { if (state.picker.open) renderPicker(); });
+}
+
+const SHELF_ALL = 'All';
+const SHELF_KEY = 'helix-bridge-shelf';
+
+function storedShelf() {
+  try { return localStorage.getItem(SHELF_KEY) || SHELF_ALL; } catch { return SHELF_ALL; }
+}
+
+function storeShelf(shelf) {
+  try { localStorage.setItem(SHELF_KEY, shelf); } catch { /* private mode: forget it */ }
+}
+
+/**
+ * A category's models in sections: by effect type when the server sends
+ * types (Boost, Overdrive, Fuzz…; ours, not Line 6's), else by shelf.
+ * Returns [name, models] pairs, empty sections left out.
+ */
+function sections(c, list) {
+  const keys = c.types?.length ? c.types : [...new Set(list.map((m) => m.shelf ?? ''))];
+  const keyOf = c.types?.length ? (m) => m.type : (m) => m.shelf ?? '';
+  return keys.map((k) => [k, list.filter((m) => keyOf(m) === k)]).filter(([, ms]) => ms.length);
+}
+
+/** Same-named models side by side (Mono, then Stereo), else catalog order. */
+function byName(list) {
+  const first = new Map();
+  for (const m of list) if (!first.has(m.name)) first.set(m.name, first.size);
+  return [...list].sort((a, b) => first.get(a.name) - first.get(b.name));
+}
+
+/** Every model in the list, with its category and shelf. */
+function catalogModels() {
+  if (!Array.isArray(state.catalog)) return [];
+  return state.catalog.flatMap((c, ci) => c.shelves.flatMap((s) =>
+    s.models.map((m) => ({ ...m, category: c, ci, shelf: s.name ?? null }))));
+}
+
+function selectSlot(n) {
+  state.selectedSlot = n;
+  renderChain();
+  renderParams();
+  if (!slotMap().has(n) && canWrite()) openPicker(n);
+}
+
+function openPicker(slot) {
+  state.picker = { ...state.picker, open: true, slot, filter: '', selected: null, shelf: storedShelf() };
+  state.connOpen = false;
+  $('model-filter').value = '';
+  $('picker').hidden = false;
+  loadCatalog();
+  renderConnection();
+  renderPicker();
+  $('models').scrollTop = 0;
+  // Portrait shows categories as a strip: bring the last one used into view.
+  document.querySelector('.cat.active')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+}
+
+function closePicker() {
+  state.picker.open = false;
+  $('picker').hidden = true;
+}
+
+async function addBlock() {
+  const { slot, selected } = state.picker;
+  const m = catalogModels().find((x) => x.id === selected);
+  if (slot == null || !m || slotMap().has(slot) || !canWrite()) return;
+  closePicker();
+  state.selectedSlot = slot;
+  await write(`Adding ${m.name}…`, `/api/blocks/${slot + 1}`, { model: m.id });
+}
+
+function removeBlock() {
+  const slot = state.selectedSlot;
+  const b = slotMap().get(slot);
+  if (!b) return;
+  if (!window.confirm(`Remove ${b.model} from slot ${slot}?\nThe preset stays unsaved until you save it.`)) return;
+  // The model we show: if the pedal now has another one there, the server refuses (409).
+  const seen = b.model_id != null ? `?model=${b.model_id}` : '';
+  write(`Removing ${b.model}…`, `/api/blocks/${b.position}${seen}`, undefined, 'chain', 'DELETE');
 }
 
 // ---------- Parameter controls ----------
@@ -735,11 +845,20 @@ function slotMap() {
   return map;
 }
 
+/**
+ * Keep the selected slot while the same preset stays loaded, even once it is
+ * empty (a block just removed: offer to add another). Another preset starts
+ * on its first block, or on slot 1 if it has none.
+ */
 function keepSelection() {
   const map = slotMap();
-  if (state.selectedSlot != null && map.has(state.selectedSlot)) return;
+  const label = state.chain?.label ?? null;
+  const samePreset = label === state.selectionLabel;
+  state.selectionLabel = label;
+  const s = state.selectedSlot;
+  if (s != null && (map.has(s) || (samePreset && s >= 1 && s <= SLOTS))) return;
   const first = [...map.keys()].sort((a, b) => a - b)[0];
-  state.selectedSlot = first ?? null;
+  state.selectedSlot = first ?? (state.chain ? 1 : null);
 }
 
 /** Fill fraction for a display value, only where the scale is certain. */
@@ -770,6 +889,7 @@ function render() {
   renderBlocker();
   renderControls();
   if (state.browser.open) renderBrowser();
+  if (state.picker.open) renderPicker();
 }
 
 const WRITES_OFF = 'Writes are off: set HELIX_TOKEN on the server';
@@ -875,7 +995,10 @@ function renderChain() {
     }
     const b = map.get(n);
     if (!b) {
-      html += `<div class="slot"><div class="slot-num">${n}</div><div class="node-empty"></div><div class="slot-name"></div></div>`;
+      const sel = n === state.selectedSlot;
+      html += `<button class="slot empty${sel ? ' selected' : ''}" type="button" data-slot="${n}" aria-pressed="${sel}"` +
+        ` aria-label="Slot ${n}: empty${state.writes ? '. Tap to add a block' : ''}">` +
+        `<div class="slot-num">${n}</div><div class="node-empty"></div><div class="slot-name"></div></button>`;
       continue;
     }
     const cat = blockCategory(b);
@@ -899,8 +1022,22 @@ function renderParams() {
     return;
   }
   const b = slotMap().get(state.selectedSlot);
+  const live = canWrite();
   if (!b) {
-    el.innerHTML = '<div class="params-empty">No blocks in this preset.</div>';
+    const slot = state.selectedSlot;
+    el.style.removeProperty('--c');
+    if (slot == null) {
+      el.innerHTML = '<div class="params-empty">No blocks in this preset.</div>';
+      return;
+    }
+    const add = state.writes
+      ? `<button class="act ph-toggle" type="button" data-add${live ? '' : ' disabled'}>Add block</button>`
+      : `<button class="later ph-toggle" type="button" disabled title="${esc(WRITES_OFF)}">Add block</button>`;
+    el.innerHTML =
+      `<div class="params-head"><div class="ph-code">+</div>` +
+      `<div class="ph-title"><div class="ph-model">Empty slot</div></div>` +
+      `<div class="ph-meta">slot ${slot}</div><div class="spacer"></div>${add}</div>` +
+      `<div class="params-empty">${state.writes ? 'Add an effect here: tap Add block, pick a model.' : 'Nothing in this slot.'}</div>`;
     return;
   }
   const cat = blockCategory(b);
@@ -909,7 +1046,6 @@ function renderParams() {
   const meta = `${kind} · slot ${state.selectedSlot} · ${b.enabled ? 'on' : 'bypassed'}`;
   // The real gear behind the model, from the Pilot's Guide (server: vendor/based-on.json).
   const based = b.based_on ? `<div class="ph-based">Based on ${esc(b.based_on)}</div>` : '';
-  const live = canWrite();
   const params = b.params.map((p) => {
     const c = controlOf(b, p);
     if (c) return controlHtml(b, p, c, live);
@@ -925,11 +1061,14 @@ function renderParams() {
   const toggle = state.writes
     ? `<button class="act ph-toggle" type="button" data-toggle${live ? '' : ' disabled'}>${b.enabled ? 'Turn off' : 'Turn on'}</button>`
     : `<button class="later ph-toggle" type="button" disabled title="${esc(WRITES_OFF)}">${b.enabled ? 'Turn off' : 'Turn on'}</button>`;
+  const remove = state.writes
+    ? `<button class="act ph-toggle ph-remove" type="button" data-remove${live ? '' : ' disabled'} aria-label="Remove ${esc(b.model)}">Remove</button>`
+    : '';
   el.innerHTML =
     `<div class="params-head"><div class="ph-code">${esc(cat.short)}</div>` +
     `<div class="ph-title"><div class="ph-model">${esc(b.model)}</div>${based}</div>` +
     `<div class="ph-meta">${esc(meta)}</div><div class="spacer"></div>` +
-    `${toggle}</div>` +
+    `${remove}${toggle}</div>` +
     `<div class="params-grid">${params}</div>`;
 }
 
@@ -1080,6 +1219,86 @@ function updateActiveJump() {
   }
 }
 
+function renderPicker() {
+  const p = state.picker;
+  const slot = p.slot;
+  $('picker-title').textContent = `Add to slot ${slot}`;
+  $('pf-slot').textContent = slot == null ? '' : String(slot);
+  const add = $('add-btn');
+  const cats = $('cats');
+  const models = $('models');
+
+  if (!Array.isArray(state.catalog)) {
+    cats.innerHTML = '';
+    models.innerHTML = `<div class="no-results">${esc(state.catalog?.error ?? 'Loading models…')}</div>`;
+    $('pf-name').textContent = '';
+    $('pf-note').textContent = '';
+    setControl(add, false);
+    return;
+  }
+
+  const q = p.filter.trim().toLowerCase();
+  cats.innerHTML = state.catalog.map((c, i) =>
+    `<button class="cat${!q && i === p.category ? ' active' : ''}" type="button" data-cat="${i}" style="--c:${esc(c.colour)}"` +
+    ` aria-pressed="${!q && i === p.category}"><span class="cat-sw"></span><span class="cat-name">${esc(c.name)}</span></button>`).join('');
+
+  // With "All" shelves, a tile says which one it is from.
+  const badge = p.shelf === SHELF_ALL;
+  const tile = (m) => `<button class="mtile${m.id === p.selected ? ' selected' : ''}" type="button" data-model="${m.id}"` +
+    ` style="--c:${esc(m.category.colour)}" aria-pressed="${m.id === p.selected}"` +
+    ` aria-label="${esc(m.name)}${m.shelf ? `, ${esc(m.shelf)}` : ''}${m.based_on ? `, based on ${esc(m.based_on)}` : ''}">` +
+    `<span class="mtile-top"><span class="mtile-name">${esc(m.name)}</span>` +
+    `${badge && m.shelf ? `<span class="mtile-shelf">${esc(m.shelf)}</span>` : ''}</span>` +
+    `<span class="mtile-based">${esc(m.based_on ?? '')}</span></button>`;
+  const grid = (ms) => `<div class="shelf">${byName(ms).map(tile).join('')}</div>`;
+
+  const all = catalogModels();
+  const shown = all.filter((m) => p.shelf === SHELF_ALL || !m.shelf || m.shelf === p.shelf);
+  // The shelf filter offers the shelves the visible models come from.
+  const pool = q ? all : all.filter((m) => m.ci === p.category);
+  const shelfNames = [...new Set(pool.map((m) => m.shelf).filter(Boolean))];
+  const shelfBar = shelfNames.length > 1
+    ? `<div class="seg" role="group" aria-label="Mono, stereo or legacy">${[SHELF_ALL, ...shelfNames].map((s) =>
+      `<button class="seg-btn${s === p.shelf ? ' active' : ''}" type="button" data-shelf="${esc(s)}" aria-pressed="${s === p.shelf}">${esc(s)}</button>`).join('')}</div>`
+    : '';
+
+  if (q) {
+    // Across every category, grouped by category then type.
+    const hits = shown.filter((m) => m.name.toLowerCase().includes(q) ||
+      (m.based_on ?? '').toLowerCase().includes(q) || (m.type ?? '').toLowerCase().includes(q));
+    const body = hits.length
+      ? state.catalog.map((c, ci) => {
+        const mine = hits.filter((m) => m.ci === ci);
+        if (!mine.length) return '';
+        return sections(c, mine).map(([name, ms]) =>
+          `<div class="group-name" style="--c:${esc(c.colour)}">${esc(c.name)}${name ? ` · ${esc(name)}` : ''}</div>${grid(ms)}`).join('');
+      }).join('')
+      : `<div class="no-results">No model matches “${esc(p.filter)}”.</div>`;
+    models.innerHTML = (shelfBar ? `<div class="mbar"><div class="spacer"></div>${shelfBar}</div>` : '') + body;
+  } else {
+    const c = state.catalog[p.category];
+    const secs = sections(c, shown.filter((m) => m.ci === p.category));
+    // Jump to a type: Boost, Overdrive, Distortion, Fuzz…
+    const jumps = c.types?.length
+      ? `<div class="tjumps">${secs.map(([name]) =>
+        `<button class="tjump" type="button" data-type-jump="${esc(name)}">${esc(name)}</button>`).join('')}</div>`
+      : '<div class="spacer"></div>';
+    const bar = c.types?.length || shelfBar ? `<div class="mbar">${jumps}${shelfBar}</div>` : '';
+    models.innerHTML = bar + (secs.length
+      ? secs.map(([name, ms]) =>
+        `<section class="msec" data-sec="${esc(name)}">${name ? `<div class="shelf-name">${esc(name)}</div>` : ''}${grid(ms)}</section>`).join('')
+      : `<div class="no-results">No ${esc(p.shelf)} models in ${esc(c.name)}.</div>`);
+  }
+
+  const sel = all.find((m) => m.id === p.selected);
+  $('pf-name').textContent = sel?.name ?? 'Pick a model';
+  $('pf-note').textContent = sel
+    ? [sel.category.name, sel.type, sel.shelf, sel.based_on && `based on ${sel.based_on}`].filter(Boolean).join(' · ')
+    : '';
+  add.textContent = sel ? `Add to slot ${slot}` : 'Add';
+  setControl(add, canWrite() && !!sel && !slotMap().has(slot));
+}
+
 function openBrowser() {
   state.browser.open = true;
   state.browser.selected = state.browser.selected ?? loadedPreset()?.index ?? null;
@@ -1117,9 +1336,35 @@ document.addEventListener('click', (e) => {
     state.banner = null;
     renderBanner();
   } else if (t.matches('[data-slot]')) {
-    state.selectedSlot = Number(t.dataset.slot);
-    renderChain();
-    renderParams();
+    selectSlot(Number(t.dataset.slot));
+  } else if (t.matches('[data-add]')) {
+    if (state.selectedSlot != null) openPicker(state.selectedSlot);
+  } else if (t.matches('[data-remove]')) {
+    removeBlock();
+  } else if (t.matches('[data-close-picker]')) {
+    closePicker();
+  } else if (t.matches('[data-cat]')) {
+    state.picker.category = Number(t.dataset.cat);
+    state.picker.filter = '';
+    $('model-filter').value = '';
+    renderPicker();
+    $('models').scrollTop = 0;
+  } else if (t.matches('[data-model]')) {
+    // A second tap on the picked model adds it.
+    const id = Number(t.dataset.model);
+    if (state.picker.selected === id) addBlock();
+    else { state.picker.selected = id; renderPicker(); }
+  } else if (t.matches('[data-shelf]')) {
+    state.picker.shelf = t.dataset.shelf;
+    storeShelf(state.picker.shelf);
+    renderPicker();
+  } else if (t.matches('[data-type-jump]')) {
+    const models = $('models');
+    const sec = [...models.querySelectorAll('[data-sec]')].find((s) => s.dataset.sec === t.dataset.typeJump);
+    const bar = models.querySelector('.mbar');
+    if (sec) models.scrollTop = sec.offsetTop - (bar ? bar.offsetHeight : 0);
+  } else if (t.id === 'add-btn') {
+    addBlock();
   } else if (t.matches('[data-open-browser]')) {
     openBrowser();
   } else if (t.matches('[data-close-browser]')) {
@@ -1177,11 +1422,17 @@ $('filter').addEventListener('input', (e) => {
   renderBrowser();
 });
 
+$('model-filter').addEventListener('input', (e) => {
+  state.picker.filter = e.target.value;
+  renderPicker();
+});
+
 $('banks').addEventListener('scroll', updateActiveJump, { passive: true });
 
 document.addEventListener('keydown', (e) => {
   if (e.key !== 'Escape') return;
-  if (state.connOpen) { state.connOpen = false; renderConnection(); } else if (state.browser.open) closeBrowser();
+  if (state.connOpen) { state.connOpen = false; renderConnection(); } else if (state.picker.open) closePicker();
+  else if (state.browser.open) closeBrowser();
 });
 
 // Re-read when the iPad comes back to the page (screen lock, app switch).

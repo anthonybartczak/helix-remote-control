@@ -175,6 +175,13 @@ button:disabled { cursor: default; }
 .node-empty { width: var(--node); height: var(--node); display: grid; place-items: center; }
 .node-empty::after { content: ""; width: 12px; height: 12px; border-radius: 50%; background: var(--bg); border: 2px solid var(--line); box-sizing: border-box; }
 .node-skel { width: var(--node); height: var(--node); border-radius: var(--r3); background: var(--surface-2); }
+/* An empty slot is a button: selected (or hovered), it shows where a block would go. */
+.slot.empty .node-empty { border-radius: var(--r3); }
+.slot.empty.selected .node-empty { border: 2px dashed var(--line-strong); background: var(--bg); }
+.slot.empty.selected .node-empty::after { content: "+"; width: auto; height: auto; border: 0; background: none; font: 600 var(--fs-xl) var(--font-mono); color: var(--ink); }
+@media (hover: hover) {
+  .slot.empty:hover .node-empty { border: 2px dashed var(--line); background: var(--bg); }
+}
 .slot-name {
   font-size: var(--fs-xs); font-weight: 600; height: 16px; max-width: 100%; padding: 0 2px;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--muted);
@@ -317,6 +324,54 @@ button.tile:disabled { opacity: .6; }
 .sf-note { font-size: var(--fs-s); color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .load-btn { height: 48px; padding: 0 var(--s6); border-color: var(--line-strong); border-radius: var(--r2); font-size: var(--fs-m); font-weight: 600; color: var(--ink); flex: none; }
 
+/* ---------- Model picker sheet (add a block) ---------- */
+
+.cats { width: 220px; flex: none; display: flex; flex-direction: column; gap: var(--s1); overflow-y: auto; -webkit-overflow-scrolling: touch; }
+.cat {
+  min-height: var(--tap); flex: none; display: flex; align-items: center; gap: var(--s3); padding: 0 var(--s4) 0 var(--s3);
+  border-radius: var(--r2); background: var(--surface); text-align: left; font-size: var(--fs-m); font-weight: 600;
+}
+.cat-sw { width: 6px; height: 24px; border-radius: 3px; background: var(--c); flex: none; }
+.cat-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cat.active { background: var(--ink); color: var(--bg); }
+.models {
+  flex: 1; min-width: 0; overflow-y: auto; -webkit-overflow-scrolling: touch;
+  background: var(--surface); border-radius: var(--r3); padding: var(--s3);
+  display: flex; flex-direction: column; gap: var(--s2); align-content: start;
+}
+.group-name { font-size: var(--fs-l); font-weight: 600; color: var(--c); padding: var(--s2) var(--s1) 0; }
+.shelf-name { font-size: 13px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; color: var(--muted); padding: var(--s2) var(--s1) 0; }
+.shelf { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: var(--s1); }
+.mtile {
+  min-height: var(--tap-l); min-width: 0; display: flex; flex-direction: column; justify-content: center; gap: 2px;
+  padding: var(--s2) var(--s3); border-radius: var(--r2); background: var(--surface-2); border-left: 4px solid var(--c); text-align: left;
+}
+.models { position: relative; }
+/* Type jumps and the shelf switch stay on top while the models scroll. */
+.mbar {
+  position: sticky; top: calc(-1 * var(--s3)); z-index: 1; flex: none;
+  display: flex; align-items: center; gap: var(--s2); min-width: 0;
+  margin: calc(-1 * var(--s3)) calc(-1 * var(--s3)) 0; padding: var(--s3); background: var(--surface);
+}
+.tjumps { flex: 1; min-width: 0; display: flex; gap: var(--s1); overflow-x: auto; scrollbar-width: none; }
+.tjumps::-webkit-scrollbar { display: none; }
+.tjump {
+  min-height: var(--tap); flex: none; padding: 0 var(--s3); border-radius: var(--r-pill);
+  background: var(--surface-2); font-size: var(--fs-s); font-weight: 600;
+}
+.seg { flex: none; display: flex; padding: 2px; gap: 2px; border-radius: var(--r2); background: var(--bg); }
+.seg-btn { min-height: var(--tap); padding: 0 var(--s3); border-radius: 6px; font-size: var(--fs-s); font-weight: 600; color: var(--muted); }
+.seg-btn.active { background: var(--ink); color: var(--bg); }
+.msec { display: flex; flex-direction: column; gap: var(--s2); }
+.mtile-top { display: flex; align-items: baseline; gap: var(--s2); min-width: 0; }
+.mtile-shelf { flex: none; margin-left: auto; font-size: 11px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+.mtile-name { font-size: var(--fs-m); font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.mtile-based { font-size: var(--fs-xs); color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mtile-based:empty { display: none; }
+.mtile.selected { box-shadow: inset 0 0 0 3px var(--ink); }
+.models .no-results { padding: var(--s6); }
+.ph-remove { color: var(--err); }
+
 /* ---------- Desktop (>= 1280px) ---------- */
 
 @media (min-width: 1280px) {
@@ -377,6 +432,10 @@ button.tile:disabled { opacity: .6; }
   .sheet-foot { height: 72px; gap: var(--s3); padding: 0 var(--s2) 0 var(--s4); }
   .sf-name { font-size: var(--fs-l); }
   .load-btn { height: var(--tap-l); }
+  .picker-body { flex-direction: column; }
+  .cats { width: auto; flex-direction: row; overflow-x: auto; overflow-y: hidden; scrollbar-width: none; }
+  .cats::-webkit-scrollbar { display: none; }
+  .shelf { grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); }
 }
 
 /* ---------- Phone (< 768px): first pass, see design section 6 ---------- */
