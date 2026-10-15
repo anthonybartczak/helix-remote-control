@@ -16,6 +16,9 @@
 // Blocks: tap an empty slot to add an effect there (model picker from
 // /api/catalog, HX Edit's categories and shelves); Remove takes the selected
 // block out. Both change the edit buffer only, like any other edit.
+// Footswitches: the block panel puts the selected block on FS1–FS6 or none
+// (/api/blocks/{position}/footswitch); the add picker can do it in the same
+// step. Only a block on a footswitch shows in the HX Effects' Stomp view.
 'use strict';
 
 const SLOTS = 9; // HX Effects block slots. Slot = chain position - 1 (position 1 is the input).
@@ -83,7 +86,7 @@ const state = {
   selectionLabel: null, // preset label the selection belongs to
   catalog: null, // /api/catalog .categories | CATALOG_PENDING | { error }
   // selected: model id; shelf: All | Mono | Stereo | Legacy, kept in this browser
-  picker: { open: false, slot: null, category: 0, filter: '', selected: null, shelf: 'All' },
+  picker: { open: false, slot: null, category: 0, filter: '', selected: null, shelf: 'All', fs: 'none' },
   loading: false,
   banner: null, // non-blocking error: { message, context }
   blocked: null, // blocking error: { icon, title, text, detail }
@@ -397,6 +400,11 @@ const CATALOG_PENDING = 'pending';
 // block added over USB (op40) gets none, and the HX Effects home
 // screen draws only footswitch blocks. Verified 2026-10-15 on the HX Effects.
 const NO_FOOTSWITCH = 'New blocks get no footswitch: on the pedal they show in Signal Flow (MENU → Signal Flow).';
+const PICK_FOOTSWITCH = 'Pick a footswitch to see it in the pedal’s Stomp view too.';
+// What the add picker does about a footswitch: 'none', 'free' (the first
+// switch carrying nothing, as the front panel does) or a number. Kept in this
+// browser.
+const ADD_FS_KEY = 'helix-bridge-add-footswitch';
 
 /** Fetch the model list once (catalog data only, no device call); again after a failure. */
 function loadCatalog() {
@@ -458,7 +466,7 @@ function selectSlot(n) {
 }
 
 function openPicker(slot) {
-  state.picker = { ...state.picker, open: true, slot, filter: '', selected: null, shelf: storedShelf() };
+  state.picker = { ...state.picker, open: true, slot, filter: '', selected: null, shelf: storedShelf(), fs: storedAddFs() };
   state.connOpen = false;
   $('model-filter').value = '';
   $('picker').hidden = false;
@@ -479,9 +487,99 @@ async function addBlock() {
   const { slot, selected } = state.picker;
   const m = catalogModels().find((x) => x.id === selected);
   if (slot == null || !m || slotMap().has(slot) || !canWrite()) return;
+  const fs = addFootswitch();
   closePicker();
   state.selectedSlot = slot;
-  await write(`Adding ${m.name}…`, `/api/blocks/${slot + 1}`, { model: m.id });
+  const added = await write(`Adding ${m.name}…`, `/api/blocks/${slot + 1}`, { model: m.id });
+  if (added && fs) {
+    await write(`Putting ${m.name} on FS${fs}…`, `/api/blocks/${slot + 1}/footswitch`, { switch: fs, model: m.id });
+  }
+}
+
+// ---------- Footswitches ----------
+
+/** The chain's footswitches, or null when the backend does not read them. */
+function footswitches() {
+  return state.chain?.footswitches ?? null;
+}
+
+/** Model names of the blocks on switch `s`, leaving out `position`. */
+function carriedBy(s, position) {
+  const blocks = state.chain?.blocks || [];
+  return s.blocks.filter((p) => p !== position)
+    .map((p) => blocks.find((b) => b.position === p)?.model ?? `slot ${p - 1}`);
+}
+
+function storedAddFs() {
+  try { return localStorage.getItem(ADD_FS_KEY) || 'none'; } catch { return 'none'; }
+}
+
+function storeAddFs(value) {
+  try { localStorage.setItem(ADD_FS_KEY, value); } catch { /* private mode: forget it */ }
+}
+
+/** The switch the add picker's choice means now, or null for none. */
+function addFootswitch() {
+  const switches = footswitches();
+  const choice = state.picker.fs;
+  if (!switches || choice === 'none') return null;
+  if (choice === 'free') return switches.find((s) => !s.blocks.length)?.switch ?? null;
+  const n = Number(choice);
+  return switches.some((s) => s.switch === n) ? n : null;
+}
+
+function setFootswitch(sw) {
+  const b = slotMap().get(state.selectedSlot);
+  if (!b || (b.footswitch ?? null) === sw) return;
+  const body = { switch: sw };
+  // The model we show: if the pedal now has another one there, the server refuses (409).
+  if (b.model_id != null) body.model = b.model_id;
+  write(sw ? `Putting ${b.model} on FS${sw}…` : `Taking ${b.model} off FS${b.footswitch}…`,
+    `/api/blocks/${b.position}/footswitch`, body);
+}
+
+/** The add picker's footswitch menu; hidden when the backend has no footswitches. */
+function renderAddFootswitch() {
+  const wrap = $('pf-fs-wrap');
+  const switches = footswitches();
+  wrap.hidden = !switches || !state.writes;
+  if (wrap.hidden) return;
+  const free = switches.find((s) => !s.blocks.length);
+  const opt = (value, label) => `<option value="${value}"${String(state.picker.fs) === String(value) ? ' selected' : ''}>${esc(label)}</option>`;
+  $('pf-fs').innerHTML = [
+    opt('none', 'No footswitch'),
+    opt('free', free ? `First free (FS${free.switch})` : 'First free (none free)'),
+    ...switches.map((s) => {
+      const others = carriedBy(s, null);
+      return opt(s.switch, others.length ? `FS${s.switch} · ${others.join(', ')}` : `FS${s.switch}`);
+    }),
+  ].join('');
+}
+
+/** The block panel's footswitch row: None, FS1…FS6, and what it means. */
+function footswitchRow(b, live) {
+  const switches = footswitches();
+  if (!switches) return '';
+  const on = b.footswitch ?? null;
+  const off = state.writes && live ? '' : ' disabled';
+  const btn = (n, label, title) => `<button class="seg-btn fs-btn${on === n ? ' active' : ''}" type="button" data-fs="${n ?? 0}"` +
+    ` aria-pressed="${on === n}" title="${esc(title)}"${off}>${label}</button>`;
+  const buttons = [btn(null, 'None', 'No footswitch')].concat(switches.map((s) => {
+    const others = carriedBy(s, b.position);
+    const name = s.label ? `FS${s.switch} (${s.label})` : `FS${s.switch}`;
+    const title = others.length ? `${name}, also switches ${others.join(', ')}` : name;
+    return btn(s.switch, `FS${s.switch}${others.length ? '<span class="fs-taken" aria-hidden="true"></span>' : ''}`, title);
+  })).join('');
+  let note;
+  if (on == null) {
+    note = 'No footswitch: on the pedal it shows in Signal Flow only.';
+  } else {
+    const others = carriedBy(switches.find((s) => s.switch === on) ?? { blocks: [] }, b.position);
+    note = `Shows in Stomp view on FS${on}.${others.length ? ` FS${on} also switches ${others.join(', ')}.` : ''}`;
+  }
+  return `<div class="fs-row"><span class="fs-label">Footswitch</span>` +
+    `<div class="seg fs-seg" role="group" aria-label="Footswitch">${buttons}</div>` +
+    `<span class="fs-note">${esc(note)}</span></div>`;
 }
 
 function removeBlock() {
@@ -1007,9 +1105,10 @@ function renderChain() {
     }
     const cat = blockCategory(b);
     const cls = ['slot', b.enabled ? 'on' : '', n === state.selectedSlot ? 'selected' : ''].join(' ');
+    const fs = b.footswitch ? ` · <span class="slot-fs">FS${b.footswitch}</span>` : '';
     html += `<button class="${cls}" type="button" data-slot="${n}" style="--c:${cat.colour}"` +
-      ` aria-pressed="${n === state.selectedSlot}" aria-label="Slot ${n}: ${esc(b.model)}, ${esc(cat.name)}${b.based_on ? `, based on ${esc(b.based_on)}` : ''}${b.enabled ? '' : ', bypassed'}"${b.based_on ? ` title="${esc(b.model)}: ${esc(b.based_on)}"` : ''}>` +
-      `<div class="slot-num">${n}</div><div class="node"><div class="node-code">${esc(cat.short)}</div><div class="node-band"></div></div>` +
+      ` aria-pressed="${n === state.selectedSlot}" aria-label="Slot ${n}: ${esc(b.model)}, ${esc(cat.name)}${b.based_on ? `, based on ${esc(b.based_on)}` : ''}${b.enabled ? '' : ', bypassed'}${b.footswitch ? `, on footswitch ${b.footswitch}` : ''}"${b.based_on ? ` title="${esc(b.model)}: ${esc(b.based_on)}"` : ''}>` +
+      `<div class="slot-num">${n}${fs}</div><div class="node"><div class="node-code">${esc(cat.short)}</div><div class="node-band"></div></div>` +
       `<div class="slot-name">${esc(b.model)}</div></button>`;
   }
   html += '</div><div class="io">Out</div>';
@@ -1041,7 +1140,7 @@ function renderParams() {
       `<div class="params-head"><div class="ph-code">+</div>` +
       `<div class="ph-title"><div class="ph-model">Empty slot</div></div>` +
       `<div class="ph-meta">slot ${slot}</div><div class="spacer"></div>${add}</div>` +
-      `<div class="params-empty">${state.writes ? `Add an effect here: tap Add block, pick a model.<br>${esc(NO_FOOTSWITCH)}` : 'Nothing in this slot.'}</div>`;
+      `<div class="params-empty">${state.writes ? `Add an effect here: tap Add block, pick a model.<br>${esc(footswitches() ? PICK_FOOTSWITCH : NO_FOOTSWITCH)}` : 'Nothing in this slot.'}</div>`;
     return;
   }
   const cat = blockCategory(b);
@@ -1073,6 +1172,7 @@ function renderParams() {
     `<div class="ph-title"><div class="ph-model">${esc(b.model)}</div>${based}</div>` +
     `<div class="ph-meta">${esc(meta)}</div><div class="spacer"></div>` +
     `${remove}${toggle}</div>` +
+    footswitchRow(b, live) +
     `<div class="params-grid">${params}</div>`;
 }
 
@@ -1298,7 +1398,8 @@ function renderPicker() {
   $('pf-name').textContent = sel?.name ?? 'Pick a model';
   $('pf-note').textContent = sel
     ? [sel.category.name, sel.type, sel.shelf, sel.based_on && `based on ${sel.based_on}`].filter(Boolean).join(' · ')
-    : NO_FOOTSWITCH;
+    : footswitches() ? PICK_FOOTSWITCH : NO_FOOTSWITCH;
+  renderAddFootswitch();
   add.textContent = sel ? `Add to slot ${slot}` : 'Add';
   setControl(add, canWrite() && !!sel && !slotMap().has(slot));
 }
@@ -1386,6 +1487,8 @@ document.addEventListener('click', (e) => {
     loadPreset(index);
   } else if (t.matches('[data-toggle]')) {
     toggleBlock();
+  } else if (t.matches('[data-fs]')) {
+    setFootswitch(Number(t.dataset.fs) || null);
   } else if (t.matches('[data-param]')) {
     editParam(Number(t.dataset.param));
   } else if (t.matches('[data-switch]')) {
@@ -1429,6 +1532,10 @@ $('filter').addEventListener('input', (e) => {
 $('model-filter').addEventListener('input', (e) => {
   state.picker.filter = e.target.value;
   renderPicker();
+});
+$('pf-fs').addEventListener('change', (e) => {
+  state.picker.fs = e.target.value;
+  storeAddFs(e.target.value);
 });
 
 $('banks').addEventListener('scroll', updateActiveJump, { passive: true });

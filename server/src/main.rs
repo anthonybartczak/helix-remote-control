@@ -81,7 +81,8 @@ async fn main() {
     }
     // Diagnostics for adding a block on the HX Effects (usb::probe_slot,
     // usb::probe_add): `helix-bridge probe-slot POSITION`,
-    // `helix-bridge probe-add POSITION MODEL`. Stop the service first.
+    // `helix-bridge probe-add POSITION MODEL`; and for footswitches,
+    // `helix-bridge probe-switches`. Stop the service first.
     let number = |i: usize| args.get(i).and_then(|s| s.parse::<u32>().ok());
     let probe = match args.get(1).map(String::as_str) {
         Some("probe-slot") => Some(
@@ -93,6 +94,8 @@ async fn main() {
             (Some(p), Some(m)) => helix_bridge::usb::probe_add(p as usize, m),
             _ => Err("usage: helix-bridge probe-add POSITION MODEL".to_owned()),
         }),
+        // Read-only: what each footswitch carries (usb::probe_switches).
+        Some("probe-switches") => Some(helix_bridge::usb::probe_switches()),
         _ => None,
     };
     if let Some(result) = probe {

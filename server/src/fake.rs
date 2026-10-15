@@ -66,11 +66,17 @@ struct Edits {
     removed: HashSet<u32>,
     /// Blocks put in, by position: model number.
     added: BTreeMap<u32, u32>,
+    /// Footswitch carrying each block's bypass, by position. The recording
+    /// has none: `tonepush chain` does not print them.
+    footswitches: BTreeMap<u32, u8>,
 }
 
 impl Edits {
-    /// Drop the bypass and values kept for a position whose block changed.
+    /// Drop the bypass, values and footswitch kept for a position whose
+    /// block changed. A block added over USB gets no footswitch (verified on
+    /// the HX Effects, 2026-10-15).
     fn forget(&mut self, position: u32) {
+        self.footswitches.remove(&position);
         self.enabled.remove(&position);
         self.values.retain(|(b, _), _| *b != position);
         self.natives.retain(|(b, _), _| *b != position);
@@ -80,6 +86,9 @@ impl Edits {
 /// Path A's block slots on the HX Effects, as `chain` numbers them
 /// (`topology.txt`: input at slot 0, output at slot 10).
 const ROW: RangeInclusive<u32> = 2..=10;
+
+/// Footswitches an HX Effects can put a bypass on (TonePush's profile).
+const SWITCHES: u8 = 6;
 
 /// HX Edit's catalog, when this machine has one (`HX_EDIT_RESOURCES`).
 fn catalog() -> Option<&'static hx_catalog::Catalog> {
@@ -127,6 +136,7 @@ fn added_block(position: u32, model: u32) -> Option<parse::Block> {
         category: None,
         based_on: None,
         enabled: true,
+        footswitch: None,
         params: info
             .params
             .iter()
@@ -256,7 +266,8 @@ impl FakeDevice {
             | Command::SetNative { .. }
             | Command::Tempo { .. }
             | Command::AddBlock { .. }
-            | Command::RemoveBlock { .. } => Cause::Edit,
+            | Command::RemoveBlock { .. }
+            | Command::Footswitch { .. } => Cause::Edit,
             Command::Rename { .. } | Command::Snapshot { .. } => Cause::Other,
             _ => return,
         };
@@ -268,9 +279,24 @@ impl FakeDevice {
 
     async fn extra(&self) -> ChainExtra {
         let natives = self.natives().await;
+        let state = self.state();
+        let footswitches = (1..=SWITCHES)
+            .map(|switch| parse::Footswitch {
+                switch,
+                label: None,
+                blocks: state
+                    .buffer
+                    .footswitches
+                    .iter()
+                    .filter(|(_, &s)| s == switch)
+                    .map(|(&position, _)| position)
+                    .collect(),
+            })
+            .collect();
         ChainExtra {
             natives,
-            snapshot: Some(self.state().buffer.snapshot.unwrap_or(0)),
+            snapshot: Some(state.buffer.snapshot.unwrap_or(0)),
+            footswitches: Some(footswitches),
         }
     }
 
@@ -521,6 +547,46 @@ impl FakeDevice {
                 state.buffer.added.remove(&block);
                 state.buffer.removed.insert(block);
                 Ok(format!("removed {name} from block {block}\n"))
+            }
+            Command::Footswitch {
+                block,
+                switch,
+                model,
+            } => {
+                if switch.is_some_and(|s| !(1..=SWITCHES).contains(&s)) {
+                    return Err(DeviceError::Invalid(format!(
+                        "HX Effects has footswitches 1 to {SWITCHES}"
+                    )));
+                }
+                if !self
+                    .current()
+                    .await?
+                    .blocks
+                    .iter()
+                    .any(|b| b.position == block)
+                {
+                    return Err(DeviceError::Stale(format!(
+                        "no block at position {block}; reload the chain"
+                    )));
+                }
+                if let (Some(want), Some(held)) = (model, self.model_at(block).await) {
+                    if want != held {
+                        return Err(DeviceError::Stale(format!(
+                            "block {block} now holds model {held}, not {want}; reload the chain"
+                        )));
+                    }
+                }
+                let mut state = self.state();
+                Ok(match switch {
+                    Some(s) => {
+                        state.buffer.footswitches.insert(block, s);
+                        format!("block {block} on footswitch {s}\n")
+                    }
+                    None => {
+                        state.buffer.footswitches.remove(&block);
+                        format!("block {block} on no footswitch\n")
+                    }
+                })
             }
             other @ (Command::Presets { .. } | Command::Select { .. } | Command::Rename { .. }) => {
                 Err(DeviceError::NoFixture(other))
@@ -1141,6 +1207,108 @@ mod tests {
         }
         // Nothing changed.
         assert_eq!(chain(&dev).await.blocks.len(), 4);
+    }
+
+    /// The chain with footswitches joined in, as `/api/chain` builds it.
+    async fn full(dev: &FakeDevice) -> parse::Chain {
+        let (text, extra) = Device::chain(dev).await.unwrap();
+        let mut c = parse::chain(&text).unwrap();
+        parse::add_extra(&mut c, &extra);
+        c
+    }
+
+    fn switch_of(c: &parse::Chain, position: u32) -> Option<u8> {
+        c.blocks
+            .iter()
+            .find(|b| b.position == position)
+            .unwrap()
+            .footswitch
+    }
+
+    #[tokio::test]
+    async fn assign_and_unassign_footswitches() {
+        let dev = FakeDevice::bundled();
+        let fs = |block, switch, model| Command::Footswitch {
+            block,
+            switch,
+            model,
+        };
+        let c = full(&dev).await;
+        let switches = c.footswitches.as_ref().unwrap();
+        assert_eq!(switches.len(), 6, "an HX Effects has six");
+        assert!(switches.iter().all(|s| s.blocks.is_empty()));
+        assert!(c.blocks.iter().all(|b| b.footswitch.is_none()));
+
+        let out = dev.run(fs(5, Some(3), Some(141))).await.unwrap();
+        assert_eq!(out, "block 5 on footswitch 3\n");
+        dev.run(fs(10, Some(3), None)).await.unwrap();
+        let c = full(&dev).await;
+        assert_eq!(switch_of(&c, 5), Some(3));
+        assert_eq!(switch_of(&c, 10), Some(3), "a switch can carry several");
+        assert_eq!(c.footswitches.as_ref().unwrap()[2].blocks, [5, 10]);
+
+        // Moving it takes it off the old switch.
+        dev.run(fs(5, Some(6), None)).await.unwrap();
+        let c = full(&dev).await;
+        assert_eq!(switch_of(&c, 5), Some(6));
+        assert_eq!(c.footswitches.as_ref().unwrap()[2].blocks, [10]);
+
+        let out = dev.run(fs(5, None, Some(141))).await.unwrap();
+        assert_eq!(out, "block 5 on no footswitch\n");
+        assert_eq!(switch_of(&full(&dev).await, 5), None);
+
+        // Kept in the edit buffer: saved with the preset, gone with a load.
+        dev.run(Command::Save).await.unwrap();
+        dev.run(Command::Select {
+            setlist: 0,
+            index: 0,
+        })
+        .await
+        .unwrap();
+        assert_eq!(switch_of(&full(&dev).await, 10), None);
+        dev.run(Command::Select {
+            setlist: 0,
+            index: 2,
+        })
+        .await
+        .unwrap();
+        assert_eq!(switch_of(&full(&dev).await, 10), Some(3));
+
+        // A removed block takes its footswitch with it.
+        dev.run(Command::RemoveBlock {
+            block: 10,
+            model: None,
+        })
+        .await
+        .unwrap();
+        let c = full(&dev).await;
+        assert!(c.footswitches.unwrap().iter().all(|s| s.blocks.is_empty()));
+    }
+
+    #[tokio::test]
+    async fn footswitch_refusals() {
+        let dev = FakeDevice::bundled();
+        let fs = |block, switch, model| Command::Footswitch {
+            block,
+            switch,
+            model,
+        };
+        for (cmd, stale) in [
+            // No such switch on an HX Effects.
+            (fs(5, Some(0), None), false),
+            (fs(5, Some(7), None), false),
+            // Nothing there, or another model than the client saw.
+            (fs(4, Some(1), None), true),
+            (fs(5, Some(1), Some(123)), true),
+        ] {
+            match dev.run(cmd.clone()).await {
+                Err(DeviceError::Stale(_)) if stale => {}
+                Err(DeviceError::Invalid(_)) if !stale => {}
+                other => panic!("{cmd:?}: {other:?}"),
+            }
+        }
+        let c = full(&dev).await;
+        assert!(c.blocks.iter().all(|b| b.footswitch.is_none()));
     }
 
     #[tokio::test]

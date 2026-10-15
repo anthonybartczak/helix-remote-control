@@ -28,6 +28,7 @@ use crate::controls::{self, CategoryInfo, ModelGroup, ModelInfo};
 use crate::device::{
     BlockNatives, Cause, ChainExtra, Command, Device, DeviceError, Live, Natives, Result,
 };
+use crate::parse;
 
 /// How often an idle session reads notifications and sends keep-alives.
 /// TonePush uses 700 ms; faster polling wedged a device during its development.
@@ -228,6 +229,10 @@ struct Doc {
     preset: hx_proto::Preset,
     /// `preset_info`: setlist, index, name. `None` if the pedal refused.
     info: Option<(i64, i64, String)>,
+    /// What each footswitch carries (opcode 33). Not in the document: a
+    /// bypass on a footswitch lives in the switch's own configuration
+    /// (PROTOCOL.md). `None` if the pedal refused.
+    switches: Option<Vec<parse::Footswitch>>,
 }
 
 /// What one notification does to the cached document.
@@ -600,6 +605,7 @@ impl Worker {
         ChainExtra {
             natives: self.natives(),
             snapshot: self.doc.as_ref().and_then(|d| active_snapshot(&d.preset)),
+            footswitches: self.doc.as_ref().and_then(|d| d.switches.clone()),
         }
     }
 
@@ -676,6 +682,11 @@ impl Worker {
             Command::Tempo { bpm } => self.tempo(*bpm),
             Command::AddBlock { block, model } => self.add_block(*block, *model),
             Command::RemoveBlock { block, model } => self.remove_block(*block, *model),
+            Command::Footswitch {
+                block,
+                switch,
+                model,
+            } => self.footswitch(*block, *switch, *model),
         };
         if *cmd == Command::Chain {
             if let Ok(text) = &out {
@@ -693,7 +704,8 @@ impl Worker {
                 | Command::Set { .. }
                 | Command::SetNative { .. }
                 | Command::AddBlock { .. }
-                | Command::RemoveBlock { .. } => self.publish_doc(Cause::Edit),
+                | Command::RemoveBlock { .. }
+                | Command::Footswitch { .. } => self.publish_doc(Cause::Edit),
                 // A snapshot changes which blocks are on and their values:
                 // read the document again rather than guess.
                 Command::Rename { .. } | Command::Save | Command::Snapshot { .. } => {
@@ -773,8 +785,16 @@ impl Worker {
         ))
     }
 
-    /// Read the loaded preset into `doc` and render it.
+    /// Read the loaded preset and its footswitches into `doc` and render it.
     fn chain(&mut self) -> Result<String> {
+        self.read_doc()?;
+        self.read_switches()?;
+        Ok(self.render(self.doc.as_ref().expect("just read")))
+    }
+
+    /// Read the loaded preset into `doc`, keeping the footswitches last read
+    /// (for re-reads within one preset; [`Worker::chain`] reads them anew).
+    fn read_doc(&mut self) -> Result<()> {
         let preset = self.with(|s| s.read_preset())?;
         // A refusal here (a pedal mid-load) only loses the header.
         let info = match self.with(|s| s.preset_info()) {
@@ -782,10 +802,31 @@ impl Worker {
             Err(_) if self.session.is_some() => None,
             Err(e) => return Err(e),
         };
-        let doc = Doc { preset, info };
-        let text = self.render(&doc);
-        self.doc = Some(doc);
-        Ok(text)
+        let switches = self.doc.take().and_then(|d| d.switches);
+        self.doc = Some(Doc {
+            preset,
+            info,
+            switches,
+        });
+        Ok(())
+    }
+
+    /// Read every footswitch (opcode 33, six round trips on an HX Effects)
+    /// into `doc`. A refusal leaves them unknown rather than failing the
+    /// chain; a lost session fails.
+    fn read_switches(&mut self) -> Result<()> {
+        let switches = match self.with(|s| s.switches()) {
+            Ok(switches) => Some(switches),
+            Err(e) if self.session.is_some() => {
+                tracing::debug!("footswitches unreadable: {e}");
+                None
+            }
+            Err(e) => return Err(e),
+        };
+        if let Some(doc) = self.doc.as_mut() {
+            doc.switches = switches.map(|s| footswitches(&s, &doc.preset.tone));
+        }
+        Ok(())
     }
 
     /// `show_chain`.
@@ -975,7 +1016,7 @@ impl Worker {
                 "model {model} is not an effect this device offers"
             )));
         }
-        self.chain()?;
+        self.read_doc()?;
         let slot = (block as usize).wrapping_sub(1);
         let preset = &self.doc.as_ref().expect("just read").preset;
         let on_row = preset
@@ -1013,27 +1054,9 @@ impl Worker {
     /// what the slot holds. Confirmed on an HX Stomp by TonePush; on the HX
     /// Effects not yet.
     fn remove_block(&mut self, block: u32, model: Option<u32>) -> Result<String> {
-        self.chain()?;
-        let slot = (block as usize).wrapping_sub(1);
-        let held = self
-            .doc
-            .as_ref()
-            .and_then(|d| d.preset.slots.get(slot))
-            .filter(|s| s.kind == Kind::Block)
-            .and_then(|s| s.model);
-        let held = match (held, model) {
-            (None, _) => {
-                return Err(DeviceError::Stale(format!(
-                    "no block at position {block}; reload the chain"
-                )))
-            }
-            (Some(h), Some(m)) if h != m => {
-                return Err(DeviceError::Stale(format!(
-                    "block {block} now holds model {h}, not {m}; reload the chain"
-                )))
-            }
-            (Some(h), _) => h,
-        };
+        self.read_doc()?;
+        let held = self.block_at(block, model)?;
+        let slot = block as usize - 1;
         self.with(|s| s.clear_block(slot as i64))?;
         self.settle_slot(slot, None);
         Ok(format!(
@@ -1042,27 +1065,92 @@ impl Worker {
         ))
     }
 
+    /// The model of the block at chain position `block` in `doc`, which must
+    /// be `model` if the client gave one: else [`DeviceError::Stale`].
+    fn block_at(&self, block: u32, model: Option<u32>) -> Result<u32> {
+        let held = self
+            .doc
+            .as_ref()
+            .and_then(|d| d.preset.slots.get((block as usize).wrapping_sub(1)))
+            .filter(|s| s.kind == Kind::Block)
+            .and_then(|s| s.model);
+        match (held, model) {
+            (None, _) => Err(DeviceError::Stale(format!(
+                "no block at position {block}; reload the chain"
+            ))),
+            (Some(h), Some(m)) if h != m => Err(DeviceError::Stale(format!(
+                "block {block} now holds model {h}, not {m}; reload the chain"
+            ))),
+            (Some(h), _) => Ok(h),
+        }
+    }
+
+    /// Put the block at chain position `block` on footswitch `switch`
+    /// (one-based), or take it off with `None`: opcode 57 off any other
+    /// switch it is on, then opcode 56, the calls TonePush's GUI makes
+    /// (hx-usb converts to the wire's zero-based index). Then the switches
+    /// are read back, so the chain shows what the pedal did, not what was
+    /// asked. Confirmed on an HX Stomp by TonePush; on the HX Effects not yet.
+    fn footswitch(&mut self, block: u32, switch: Option<u8>, model: Option<u32>) -> Result<String> {
+        let count = self.session.as_ref().expect("connected").profile.switches;
+        if let Some(n) = switch.filter(|n| !(1..=count).contains(n)) {
+            return Err(DeviceError::Invalid(format!(
+                "this device has footswitches 1 to {count}; {n} is not one"
+            )));
+        }
+        self.read_doc()?;
+        let held = self.block_at(block, model)?;
+        self.read_switches()?;
+        let on: Vec<u8> = self
+            .doc
+            .as_ref()
+            .and_then(|d| d.switches.as_ref())
+            .ok_or_else(|| {
+                DeviceError::Failed("the pedal did not say what its footswitches carry".into())
+            })?
+            .iter()
+            .filter(|s| s.blocks.contains(&block))
+            .map(|s| s.switch)
+            .collect();
+        let slot = i64::from(block) - 1;
+        for &n in on.iter().filter(|&&n| Some(n) != switch) {
+            self.with(|s| s.unassign_bypass_footswitch(slot, n))?;
+        }
+        if let Some(n) = switch.filter(|n| !on.contains(n)) {
+            self.with(|s| s.assign_bypass_footswitch(slot, n))?;
+        }
+        self.read_switches()?;
+        let name = model_name(self.catalog.as_deref(), held);
+        Ok(match switch {
+            Some(n) => format!("block {block} ({name}) on footswitch {n}\n"),
+            None => format!("block {block} ({name}) on no footswitch\n"),
+        })
+    }
+
     /// Read the document until slot `slot` holds `want`, for at most about a
     /// second: a read right after a change can still return the old one.
     /// The write stands either way; the device's notification re-reads later.
+    /// Then read the footswitches: a removed block leaves its switch.
     fn settle_slot(&mut self, slot: usize, want: Option<u32>) {
         for attempt in 0..SLOT_READS {
             if attempt > 0 {
                 thread::sleep(SLOT_READ_GAP);
             }
-            let read = self.chain().map(|_| {
+            let read = self.read_doc().map(|_| {
                 self.doc
                     .as_ref()
                     .and_then(|d| d.preset.slots.get(slot))
                     .map(|s| s.model)
             });
             if read.as_ref().is_ok_and(|m| *m == Some(want)) {
+                let _ = self.read_switches();
                 return;
             }
             if self.session.is_none() {
                 return;
             }
         }
+        let _ = self.read_switches();
         tracing::debug!(slot, ?want, "the document does not show the change yet");
     }
 
@@ -1283,6 +1371,111 @@ fn active_snapshot(preset: &hx_proto::Preset) -> Option<u32> {
         .as_i64()
         .and_then(|n| u32::try_from(n).ok())?;
     ((index as usize) < preset.snapshots().len()).then_some(index)
+}
+
+/// What each footswitch carries, by chain position (`block + 1`).
+///
+/// Opcode 33 lists everything a switch drives on a block, parameters
+/// included, and does not say which. The document's controller table holds
+/// every parameter assignment and no footswitch bypass (PROTOCOL.md), so an
+/// entry the table accounts for is a parameter and is left out, as TonePush's
+/// GUI does (`all_assignments`).
+fn footswitches(switches: &[hx_usb::Switch], tone: &Value) -> Vec<parse::Footswitch> {
+    switches
+        .iter()
+        .map(|s| {
+            let mut blocks: Vec<u32> = s
+                .carries
+                .iter()
+                .filter(|c| !drives_parameter(tone, c.block, s.switch))
+                .filter_map(|c| u32::try_from(c.block + 1).ok())
+                .collect();
+            blocks.sort_unstable();
+            blocks.dedup();
+            parse::Footswitch {
+                switch: s.switch,
+                label: s.label.clone(),
+                blocks,
+            }
+        })
+        .collect()
+}
+
+/// Whether the document's controller table (tone key 4, indexed by source
+/// ordinal) has footswitch `switch` driving a parameter of `block`.
+/// Footswitch n is ordinal n + 2 (PROTOCOL.md: 3-7 on an HX Stomp; 3-8 on
+/// an HX Effects is inferred from its presets, not confirmed, upstream #9).
+fn drives_parameter(tone: &Value, block: i64, switch: u8) -> bool {
+    const ASSIGNMENTS: i64 = 4;
+    const WHAT: i64 = 1;
+    const ON: i64 = 5;
+    const PARAM: i64 = 6;
+    const BYPASS: i64 = 9;
+    let Some(Value::Array(by_source)) = tone.get(ASSIGNMENTS) else {
+        return false;
+    };
+    let Some(Value::Array(entries)) = by_source.get(usize::from(switch) + 2) else {
+        return false;
+    };
+    entries.iter().filter_map(|e| e.get(WHAT)).any(|what| {
+        what.get(ON).and_then(Value::as_i64) == Some(block)
+            && what.get(PARAM).is_some()
+            && what.get(BYPASS).is_none()
+    })
+}
+
+/// `helix-bridge probe-switches`: read-only. Print each footswitch's raw
+/// opcode 33 reply and how hx-usb decodes it, the loaded preset's blocks
+/// and its controller table (tone key 4) by ordinal, and what the bridge
+/// would show. For confirming on the HX Effects which switch is which before
+/// the bridge writes one (AGENTS.md 6). Stop the service first.
+pub fn probe_switches() -> std::result::Result<(), String> {
+    use hx_proto::rpc::{key, op};
+    use hx_proto::ChannelId;
+
+    let mut session = probe_open()?;
+    let count = session.profile.switches;
+    let preset = session.read_preset().map_err(|e| e.to_string())?;
+    println!("== blocks (position = block + 1, as /api/chain)");
+    for (slot, block) in preset.blocks() {
+        println!(
+            "position {:>2} (block {slot:>2}): model {:?} {}",
+            slot + 1,
+            block.model,
+            if block.enabled { "on" } else { "bypassed" }
+        );
+    }
+    println!("== controller table (tone key 4), by source ordinal");
+    match preset.tone.get(4) {
+        Some(Value::Array(by_source)) => {
+            for (ordinal, entries) in by_source.iter().enumerate() {
+                if !matches!(entries, Value::Nil) {
+                    println!("ordinal {ordinal}: {entries:?}");
+                }
+            }
+        }
+        other => println!("none: {other:?}"),
+    }
+    println!("== footswitches 1 to {count} (opcode 33, one-based in)");
+    let mut decoded = Vec::new();
+    for n in 1..=count {
+        let ask = hx_proto::msgmap! { key::SWITCH => Value::Int(i64::from(n)) };
+        let reply = session.request_full(ChannelId::DATA, op::FOOTSWITCH_CONFIG, ask);
+        println!("FS{n} raw (status, body): {reply:?}");
+        match session.read_switch(n) {
+            Ok(s) => {
+                println!("FS{n} decoded: {s:?}");
+                decoded.push(s);
+            }
+            Err(e) => println!("FS{n} decode failed: {e}"),
+        }
+    }
+    print_events(&mut session, "during the reads", Duration::from_millis(300))?;
+    println!("== as the bridge shows it (position per switch)");
+    for s in footswitches(&decoded, &preset.tone) {
+        println!("FS{}: {:?} label {:?}", s.switch, s.blocks, s.label);
+    }
+    Ok(())
 }
 
 /// How long to wait before the next slider write so writes stay `gap` apart.
@@ -1554,5 +1747,55 @@ mod tests {
         assert_eq!(notice(42, &picked), Some(Cause::Other));
         assert_eq!(notice(46, &Value::Nil), Some(Cause::Other));
         assert_eq!(notice(77, &Value::Nil), Some(Cause::Other));
+    }
+
+    fn carried(block: i64) -> hx_usb::Carried {
+        hx_usb::Carried {
+            block,
+            name: "Jazz Rivet 120".into(),
+            colour: Some(16_711_683),
+            enabled: true,
+        }
+    }
+
+    fn switch(n: u8, blocks: &[i64]) -> hx_usb::Switch {
+        hx_usb::Switch {
+            switch: n,
+            momentary: false,
+            label: None,
+            colour: None,
+            carries: blocks.iter().map(|&b| carried(b)).collect(),
+        }
+    }
+
+    /// Opcode 33's lists, less what the document says is a parameter.
+    #[test]
+    fn footswitches_by_position() {
+        // Footswitch 3 (ordinal 5) drives block 4's parameter 1, as in
+        // PROTOCOL.md's `CT-Master Lead` sample; nothing else is in the table.
+        let param = msgmap! {
+            0 => Value::Int(0),
+            1 => msgmap! {
+                0 => Value::Int(5), 1 => Value::Int(4), 5 => Value::Int(4),
+                6 => msgmap! { 28 => Value::Int(0), 29 => Value::Int(1) },
+            },
+        };
+        let mut by_source = vec![Value::Nil; 11];
+        by_source[5] = Value::Array(vec![param]);
+        let tone = msgmap! { 4 => Value::Array(by_source) };
+        let switches = [
+            switch(1, &[2, 2]),
+            switch(2, &[]),
+            // Block 4 is the parameter; block 6 the bypass.
+            switch(3, &[6, 4]),
+        ];
+        let got = footswitches(&switches, &tone);
+        let blocks: Vec<(u8, Vec<u32>)> =
+            got.iter().map(|s| (s.switch, s.blocks.clone())).collect();
+        assert_eq!(blocks, [(1, vec![3]), (2, vec![]), (3, vec![7])]);
+        // The same entry on another switch is a bypass.
+        assert!(drives_parameter(&tone, 4, 3));
+        assert!(!drives_parameter(&tone, 4, 1));
+        assert!(!drives_parameter(&Value::Nil, 4, 3));
     }
 }

@@ -38,6 +38,7 @@ the chain; the UI does this for parameter and bypass edits.
 | POST | `/api/tempo` | `{bpm}` | `tonepush tempo -- BPM` | Set the preset's tempo, 40–240, rounded to 0.1. Edit buffer only |
 | POST | `/api/blocks/{position}` | `{model}` | `tonepush model -- P M` | Add a block into an empty slot. Edit buffer only |
 | DELETE | `/api/blocks/{position}?model=M` | none | `tonepush clear -- P` | Remove a block. `model` optional. Edit buffer only |
+| POST | `/api/blocks/{position}/footswitch` | `{switch, model?}` | `tonepush switch-assign -- P S`; `null`: `usb`/`fake` only | Put the block's bypass on footswitch `switch` (1–6), or take it off (`null`). Edit buffer only |
 
 - `position` and `index` are the numbers `/api/chain` returns. `setlist` defaults to 0.
 - `value` is typed in display units, as `/api/chain` shows them (`40`, `40 %`,
@@ -72,7 +73,17 @@ the chain; the UI does this for parameter and bypass edits.
   `{98: slot}` (slot rebuilt); the slot it writes is byte-for-byte the one the pedal
   writes for a front-panel add (`helix-bridge probe-add`, `probe-slot`). The block gets
   **no footswitch**, while a front-panel add takes a free one; the HX Effects home screen
-  shows only footswitch blocks, so look in Signal Flow view.
+  shows only footswitch blocks, so look in Signal Flow view, or put it on one with
+  `/api/blocks/{position}/footswitch`.
+- Footswitch: `switch` is one-based as printed on the pedal (FS1–FS6 on the HX Effects),
+  `null` takes the block off. `usb` sends opcode 57 (unassign) for any other switch the
+  block is on, then opcode 56 (assign), the calls TonePush's GUI makes; both take a
+  zero-based switch index on the wire. It then reads every switch back (opcode 33), so
+  `/api/chain` shows what the pedal did. A switch can carry several blocks; a block is on
+  one switch at most. 0 is 400 `bad_request`, a number past the device's last switch 400
+  too; an empty slot, or `model` other than the slot's, 409 `stale`. `cli` can assign but
+  not take off (400) and does not take a block off a previous switch. Confirmed on an HX
+  Stomp by TonePush; **not verified on the HX Effects yet** (steps in README).
 - Not exposed: reorder (`tonepush move`, marked untested on hardware by TonePush),
   changing an existing block's model, snapshot rename, routing, IRs, settings, restore.
 
@@ -106,6 +117,16 @@ the chain; the UI does this for parameter and bypass edits.
 - `based_on` (block) is the real gear the model is based on (`"MXR Dyna Comp"`), from the
   Pilot's Guide via `vendor/based-on.json` (docs/deploy.md step 6). Absent without that
   file, and for models the guide lists no gear for (FX Loop, Send, Return, Volume).
+- `footswitches` (top level) lists every footswitch as `{"switch": 3, "label": "Boost",
+  "blocks": [4]}`: one-based switch, the name typed for it (absent when none), and the
+  `position`s of the blocks whose bypass it switches. `footswitch` (block) is the switch
+  the block is on, absent when none. Read with opcode 33, one round trip per switch, on
+  every chain read; a footswitch bypass is not in the preset document (PROTOCOL.md).
+  Opcode 33 also lists parameters a switch drives; an entry the document's controller
+  table (key 4, footswitch n = ordinal n + 2) holds as a parameter is left out, as
+  TonePush's GUI does. `usb` and `fake` only (`footswitches` absent with `cli`, or when
+  the pedal refuses the read). The fake starts with no block on a footswitch and has
+  six switches. Only a block on a footswitch shows in the HX Effects' Stomp view.
 - Preset names are not unique (factory slots are all `New Preset`). Key on `index`.
 
 ## Status codes
@@ -121,7 +142,7 @@ Device errors carry a stable `code` so clients need not parse messages:
 | 403 | `writes_disabled` | Write, but the server has no `HELIX_TOKEN` |
 | 404 | `no_fixture` | Fake backend has no fixture for the request (only setlist 0 is recorded) |
 | 404 | `no_catalog` | `/api/models/{id}`: no HX Edit data on the server, or an unknown model. `/api/catalog`: no HX Edit data |
-| 409 | `stale` | Native write or remove for a model that is no longer in that slot; add to a taken slot; remove from an empty one |
+| 409 | `stale` | Native write, remove or footswitch for a model that is no longer in that slot; add to a taken slot; remove from or footswitch an empty one |
 | 502 | `failed` | `tonepush` exited with an error (message is its stderr) |
 | 502 | `parse` | `tonepush` printed unexpected output |
 | 503 | `no_device` | `tonepush` found no HX device on USB (`no HX device found`) |

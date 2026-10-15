@@ -74,6 +74,7 @@ pub fn router<D: Device>(state: AppState<D>) -> Router {
             post(add_block::<D>).delete(remove_block::<D>),
         )
         .route("/api/blocks/{position}/enabled", post(enable::<D>))
+        .route("/api/blocks/{position}/footswitch", post(footswitch::<D>))
         .route(
             "/api/blocks/{position}/params/{index}",
             post(set_param::<D>),
@@ -443,7 +444,8 @@ async fn write<D: Device>(
         | Command::SetNative { .. }
         | Command::Tempo { .. }
         | Command::AddBlock { .. }
-        | Command::RemoveBlock { .. } => Some(true),
+        | Command::RemoveBlock { .. }
+        | Command::Footswitch { .. } => Some(true),
         Command::Select { .. } | Command::Save => Some(false),
         _ => None,
     };
@@ -531,6 +533,35 @@ async fn enable<D: Device>(
     let cmd = Command::Enable {
         block: checked_position(position)?,
         on: body.enabled,
+    };
+    write(&app, access, cmd).await
+}
+
+#[derive(Deserialize)]
+struct FootswitchBody {
+    /// One-based, as on the pedal; `null` takes the block off its switch.
+    switch: Option<u8>,
+    /// The block's `model_id` as the client saw it; another model there is 409.
+    model: Option<u32>,
+}
+
+/// Put a block's bypass on a footswitch, or take it off: a block on a
+/// footswitch shows in the HX Effects' Stomp view.
+async fn footswitch<D: Device>(
+    State(app): Shared<D>,
+    access: WriteAccess,
+    Path(position): Path<u32>,
+    Json(body): Json<FootswitchBody>,
+) -> ApiResult<WriteResult> {
+    if body.switch == Some(0) {
+        return Err(ApiError::BadRequest(
+            "footswitches are numbered from 1, as on the pedal".into(),
+        ));
+    }
+    let cmd = Command::Footswitch {
+        block: checked_position(position)?,
+        switch: body.switch,
+        model: body.model,
     };
     write(&app, access, cmd).await
 }
@@ -1123,6 +1154,48 @@ mod tests {
         assert_eq!(status, StatusCode::BAD_REQUEST);
         let (status, _) = post(&app, "/api/blocks/0", t, json!({ "model": 123 })).await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn footswitches() {
+        let app = app();
+        let t = Some(TOKEN);
+        let (_, chain) = get_json("/api/chain").await;
+        assert_eq!(chain["footswitches"].as_array().unwrap().len(), 6);
+        assert!(chain["blocks"][2].get("footswitch").is_none());
+
+        let uri = "/api/blocks/5/footswitch";
+        let (status, res) = post(&app, uri, None, json!({ "switch": 2 })).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{res}");
+        let (status, res) = post(&app, uri, t, json!({ "switch": 2, "model": 141 })).await;
+        assert_eq!(status, StatusCode::OK, "{res}");
+        assert_eq!(res["message"], "block 5 on footswitch 2");
+        assert_eq!(res["unsaved"], true);
+        let (_, chain) = send(
+            &app,
+            Request::get("/api/chain").body(Body::empty()).unwrap(),
+        )
+        .await;
+        assert_eq!(chain["blocks"][2]["position"], 5);
+        assert_eq!(chain["blocks"][2]["footswitch"], 2);
+        assert_eq!(
+            chain["footswitches"][1],
+            json!({ "switch": 2, "blocks": [5] })
+        );
+
+        let (status, res) = post(&app, uri, t, json!({ "switch": null })).await;
+        assert_eq!(status, StatusCode::OK, "{res}");
+        assert_eq!(res["message"], "block 5 on no footswitch");
+
+        // No switch 0 or 7; no block at 4; another model than the client saw.
+        let (status, _) = post(&app, uri, t, json!({ "switch": 0 })).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let (status, _) = post(&app, uri, t, json!({ "switch": 7 })).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let (status, _) = post(&app, "/api/blocks/4/footswitch", t, json!({ "switch": 1 })).await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        let (status, _) = post(&app, uri, t, json!({ "switch": 1, "model": 123 })).await;
+        assert_eq!(status, StatusCode::CONFLICT);
     }
 
     #[tokio::test]

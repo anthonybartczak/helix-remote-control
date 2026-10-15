@@ -151,6 +151,22 @@ pub struct Chain {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub snapshot: Option<u32>,
     pub blocks: Vec<Block>,
+    /// Every footswitch and what it carries. Only from backends that read
+    /// them (`usb`, `fake`); absent means unknown, not "none".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub footswitches: Option<Vec<Footswitch>>,
+}
+
+/// One footswitch, as opcode 33 reports it.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Footswitch {
+    /// One-based, as printed on the pedal.
+    pub switch: u8,
+    /// A name typed for the switch, if any.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// Positions (as in `blocks`) of the blocks whose bypass it switches.
+    pub blocks: Vec<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -172,6 +188,12 @@ pub struct Block {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub based_on: Option<String>,
     pub enabled: bool,
+    /// The footswitch that turns this block on and off, one-based. Absent
+    /// when it has none, or when the chain has no `footswitches`. A block on
+    /// a footswitch shows in the HX Effects' Stomp view; one without, only in
+    /// Signal Flow.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub footswitch: Option<u8>,
     pub params: Vec<Param>,
     /// Second model of an Amp+Cab block. Never present on HX Effects.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -254,6 +276,7 @@ pub fn chain(out: &str) -> Result<Chain> {
         snapshots: Vec::new(),
         snapshot: None,
         blocks: Vec::new(),
+        footswitches: None,
     };
 
     // Header: label + name and/or tempo; either half may be missing.
@@ -320,6 +343,7 @@ pub fn chain(out: &str) -> Result<Chain> {
                 category: None,
                 based_on: None,
                 enabled,
+                footswitch: None,
                 params: Vec::new(),
                 cab: None,
             });
@@ -336,6 +360,21 @@ pub fn add_extra(chain: &mut Chain, extra: &crate::device::ChainExtra) {
     if let Some(natives) = &extra.natives {
         add_natives(chain, natives);
     }
+    if let Some(switches) = &extra.footswitches {
+        add_footswitches(chain, switches);
+    }
+}
+
+/// Say which footswitch each block is on. A block listed on several (the
+/// pedal keeps one per block) shows the first.
+pub fn add_footswitches(chain: &mut Chain, switches: &[Footswitch]) {
+    for block in &mut chain.blocks {
+        block.footswitch = switches
+            .iter()
+            .find(|s| s.blocks.contains(&block.position))
+            .map(|s| s.switch);
+    }
+    chain.footswitches = Some(switches.to_vec());
 }
 
 /// Add model numbers and native values to a parsed chain, matching blocks by

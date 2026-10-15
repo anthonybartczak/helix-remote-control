@@ -130,15 +130,20 @@ in the browser):
   slot, switched on, with HX Edit's default values. Needs HX Edit data on the server
   (`usb` with `/vendor`; `fake` uses it when the machine has HX Edit, else offers the 4
   recorded models). Path A slots 1–9 only; a taken slot is refused, never replaced.
-  **A new block gets no footswitch**, so the HX Effects home screen (Stomp mode, which
-  draws only the 6 footswitch blocks) does not show it: on the pedal it is in Signal
-  Flow view (MENU, then the Signal Flow switch). A block added on the pedal itself does
-  get a free footswitch. The bridge does not assign one: the HX Effects' footswitch
-  numbering is unconfirmed (AGENTS.md 2).
+  **A new block gets no footswitch** unless you pick one: the HX Effects home screen
+  (Stomp mode) draws only footswitch blocks, so without one it is only in Signal Flow
+  view (MENU, then the Signal Flow switch). The Footswitch menu next to Add offers
+  No footswitch, First free (as the pedal does for a front-panel add) or FS1–FS6;
+  the choice is remembered in the browser and defaults to No footswitch.
 - **Remove a block:** select it, tap Remove, confirm. The slot stays selected, ready for
   another block. Add and remove change the edit buffer only (Save keeps them). Both
   verified 2026-10-15 on the HX Effects 3.80 (Pi 4, iPad Safari, build `d211589`), checked
   in the pedal's Signal Flow view.
+- **Footswitch:** select a block; the Footswitch row under its name shows the switch it
+  is on (also `· FS3` above it in the chain) and puts it on None or FS1–FS6. A dot on a
+  switch means another block is on it too; the line beside says which. A block moves
+  off its old switch. Edit buffer only (Save keeps it). Needs `usb` or `fake`; hidden
+  with `cli`. **Not verified on the HX Effects yet:** run the hardware check below first.
 - **Rename / Save:** buttons in the preset bar. Save asks first and overwrites the
   loaded preset. "Unsaved" in the bar means edits are only in the edit buffer.
 
@@ -166,7 +171,15 @@ Diagnostics, run on the Pi with the service stopped (`sudo systemctl stop helix-
 then wait 40 s): `helix-bridge watch [SECONDS]` prints the pedal's notifications;
 `helix-bridge probe-slot POSITION` prints the preset's slot row and one raw slot
 (read-only); `helix-bridge probe-add POSITION MODEL` adds a block the way the bridge does
-(op78, op40) and prints every reply, notification and the slot before and after.
+(op78, op40) and prints every reply, notification and the slot before and after;
+`helix-bridge probe-switches` (read-only) prints each footswitch's raw opcode 33 reply,
+the preset's blocks and controller table, and which positions the bridge would show on
+each switch.
+
+Footswitch hardware check (HX Effects, before the first assign from the bridge,
+AGENTS.md 6): on the pedal, put a block on a footswitch by hand and note which; stop the
+service, wait 40 s, run `helix-bridge probe-switches`, and check that block's position
+is listed under that FS number. Only then try an assign from the iPad.
 
 Web tests (Node 22; Chromium from Playwright, never `playwright install` in the cloud):
 

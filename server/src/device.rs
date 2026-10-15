@@ -91,6 +91,16 @@ pub enum Command {
         block: u32,
         model: Option<u32>,
     },
+    /// Put a block's bypass on footswitch `switch` (one-based, as printed on
+    /// the pedal), or take it off every footswitch with `None`. Opcode 56
+    /// (assign) and 57 (unassign), zero-based on the wire. A block on another
+    /// switch is taken off it first. `model` as in [`Command::RemoveBlock`].
+    /// Edit buffer only. `cli` can only assign (`tonepush switch-assign`).
+    Footswitch {
+        block: u32,
+        switch: Option<u8>,
+        model: Option<u32>,
+    },
 }
 
 impl Command {
@@ -156,7 +166,19 @@ impl Command {
             Command::RemoveBlock { block, .. } => {
                 vec!["clear".into(), "--".into(), block.to_string()]
             }
-            Command::SetNative { .. } => return None,
+            Command::Footswitch {
+                block,
+                switch: Some(switch),
+                ..
+            } => vec![
+                "switch-assign".into(),
+                "--".into(),
+                block.to_string(),
+                switch.to_string(),
+            ],
+            // Taking it off needs the switch it is on, which `tonepush` does
+            // not print.
+            Command::SetNative { .. } | Command::Footswitch { switch: None, .. } => return None,
         })
     }
 
@@ -174,6 +196,7 @@ impl Command {
                 | Command::Tempo { .. }
                 | Command::AddBlock { .. }
                 | Command::RemoveBlock { .. }
+                | Command::Footswitch { .. }
         )
     }
 }
@@ -264,6 +287,9 @@ pub struct ChainExtra {
     pub natives: Option<Natives>,
     /// Active snapshot, zero-based.
     pub snapshot: Option<u32>,
+    /// Every footswitch and the blocks whose bypass it carries (opcode 33).
+    /// `None` when the backend cannot read them or the read failed.
+    pub footswitches: Option<Vec<crate::parse::Footswitch>>,
 }
 
 /// Native parameter values of the loaded preset, per block.
@@ -374,9 +400,12 @@ impl CliDevice {
 
     async fn run_once(&self, cmd: &Command) -> Result<String> {
         let args = cmd.args().ok_or_else(|| {
-            DeviceError::Invalid(
-                "setting a parameter by native value needs HELIX_BACKEND=usb".into(),
-            )
+            DeviceError::Invalid(match cmd {
+                Command::Footswitch { .. } => {
+                    "taking a block off its footswitch needs HELIX_BACKEND=usb".into()
+                }
+                _ => "setting a parameter by native value needs HELIX_BACKEND=usb".into(),
+            })
         })?;
         let child = Process::new(&self.program)
             .args(args)
@@ -498,6 +527,18 @@ mod tests {
         };
         assert_eq!(remove.args().unwrap(), ["clear", "--", "4"]);
         assert!(add.is_write() && remove.is_write());
+        let on = Command::Footswitch {
+            block: 4,
+            switch: Some(3),
+            model: None,
+        };
+        assert_eq!(on.args().unwrap(), ["switch-assign", "--", "4", "3"]);
+        let off = Command::Footswitch {
+            block: 4,
+            switch: None,
+            model: None,
+        };
+        assert!(on.is_write() && off.is_write() && off.args().is_none());
         assert!(!Command::Chain.is_write());
     }
 
