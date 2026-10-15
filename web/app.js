@@ -100,6 +100,8 @@ const state = {
   models: new Map(), // model_id -> /api/models/{id} | MODEL_PENDING | null (no data: type values)
   drag: null, // slider under a finger: { key, el, pointer, x0, i0, i, started, ctx }
   tempoPending: null, // BPM tapped or typed, not yet confirmed by the server
+  junction: null, // split | join: shown in the panel instead of a block
+  moving: null, // slot of a block being moved (Move, then an empty cell)
 };
 
 // ---------- API ----------
@@ -507,6 +509,8 @@ function catalogModels() {
 
 function selectSlot(n) {
   state.selectedSlot = n;
+  state.junction = null;
+  state.moving = null;
   renderChain();
   renderParams();
   if (!slotMap().has(n) && canWrite()) openPicker(n);
@@ -650,6 +654,69 @@ function removeBlock() {
   // The model we show: if the pedal now has another one there, the server refuses (409).
   const seen = b.model_id != null ? `?model=${b.model_id}` : '';
   write(`Removing ${b.model}…`, `/api/blocks/${b.position}${seen}`, undefined, 'chain', 'DELETE');
+}
+
+// ---------- Paths ----------
+// Path B runs under Path A between the split and the merge (lanes()). A block
+// is added to an empty Path B cell through the picker, like on Path A; the
+// first one claims the whole line. Moving a block and moving the split or
+// merge rewrite the whole preset on the pedal (TonePush's way): unverified on
+// the HX Effects. The rules mirror server/src/routing.rs, which checks them.
+
+/** Whether the split or merge may sit before cell `before` of Path A. */
+function junctionOk(which, before) {
+  const { main, branch, split, join } = lanes();
+  if (!branch.length) return false;
+  const [s, j] = which === 'split' ? [before, join] : [split, before];
+  if (s < 0 || j > main.length || s >= j) return false;
+  const map = slotMap();
+  const used = branch.map((n, i) => (map.has(n) ? i : -1)).filter((i) => i >= 0);
+  return !used.length || (used[0] >= s && used[used.length - 1] < j);
+}
+
+function selectJunction(which) {
+  state.junction = which;
+  state.moving = null;
+  renderChain();
+  renderParams();
+}
+
+function moveJunction(delta) {
+  const which = state.junction;
+  const { split, join } = lanes();
+  const before = (which === 'split' ? split : join) + delta;
+  if (!which || !junctionOk(which, before)) return;
+  write(which === 'split' ? 'Moving the split…' : 'Moving the merge…', '/api/routing', { junction: which, before });
+}
+
+/** Tap Move, then an empty cell: the selected block goes there. */
+function toggleMove() {
+  state.moving = state.moving == null && slotMap().has(state.selectedSlot) ? state.selectedSlot : null;
+  renderChain();
+  renderParams();
+}
+
+function moveTo(n) {
+  const b = slotMap().get(state.moving);
+  state.moving = null;
+  if (!b) {
+    renderChain();
+    renderParams();
+    return;
+  }
+  state.selectedSlot = n; // the selection follows the block
+  const body = { to: n + 1 };
+  if (b.model_id != null) body.model = b.model_id;
+  write(`Moving ${b.model} to ${slotLabel(n)}…`, `/api/blocks/${b.position}/move`, body);
+}
+
+/** Start Path B: pick a model for its first cell; it parallels the whole line. */
+function addPathB() {
+  const first = lanes().cells[0];
+  if (first == null) return;
+  state.selectedSlot = first;
+  state.junction = null;
+  openPicker(first);
 }
 
 // ---------- Parameter controls ----------
@@ -1251,70 +1318,102 @@ function renderBanner() {
 
 /**
  * Path A and Path B from /api/chain .routing, as slot numbers (position - 1).
- * Path B is listed only while it is in use: a block on it, the split and the
- * merge attached. `split` and `join` are cells of Path A the fork and the
- * merge sit just before. Without routing (`cli`), one row of SLOTS.
+ * `branch` lists Path B only while it is in use (a block on it, the split and
+ * merge attached); `cells` lists Path B's cells always. `split` and `join`
+ * are cells of Path A the fork and the merge sit just before. Without routing
+ * (`cli`), one row of SLOTS and no Path B.
  */
 function lanes() {
   const r = state.chain?.routing;
   const main = r?.main?.length ? r.main.map((p) => p - 1) : Array.from({ length: SLOTS }, (_, i) => i + 1);
+  const cells = (r?.branch ?? []).map((p) => p - 1);
   const split = r?.split?.before;
   const join = r?.join?.before;
-  const divides = !!r?.branch?.length && split != null && join != null && split < join;
-  return { main, branch: divides ? r.branch.map((p) => p - 1) : [], split, join };
+  const divides = cells.length > 0 && split != null && join != null && split < join;
+  return { main, cells, branch: divides ? cells : [], split, join };
 }
 
 /** A slot as the UI names it: 1-9 on Path A, B1-B9 on Path B. */
 function slotLabel(n) {
-  const i = lanes().branch.indexOf(n);
+  const i = lanes().cells.indexOf(n);
   return i >= 0 ? `B${i + 1}` : String(n);
+}
+
+/**
+ * Empty cells a block may move into (server/src/routing.rs): Path A's, and
+ * Path B's under the split and merge, or all of Path B's while it is empty
+ * (the first block there claims the whole line).
+ */
+function moveTargets() {
+  const { main, cells, branch, split, join } = lanes();
+  const map = slotMap();
+  const onB = branch.length ? cells.filter((_, i) => i >= split && i < join) : cells;
+  return new Set([...main, ...onB].filter((n) => !map.has(n)));
 }
 
 function renderChain() {
   const skeleton = !state.chain;
   const map = slotMap();
-  const { main, branch, split, join } = lanes();
+  const { main, cells, branch, split, join } = lanes();
+  const moving = state.moving != null && map.has(state.moving) ? state.moving : null;
+  const targets = moving == null ? null : moveTargets();
   const cell = (n, label) => {
     if (skeleton) {
       return '<div class="slot"><div class="slot-num"></div><div class="node-skel"></div><div class="slot-name"></div></div>';
     }
     const b = map.get(n);
-    const sel = n === state.selectedSlot;
+    const sel = n === state.selectedSlot && !state.junction;
     if (!b) {
-      // Adding to Path B comes with the path edits; for now its empty cells only show where it runs.
-      if (branch.includes(n)) {
-        return `<div class="slot empty"><div class="slot-num">${label}</div><div class="node-empty"></div><div class="slot-name"></div></div>`;
+      if (targets?.has(n)) {
+        return `<button class="slot empty target" type="button" data-move-to="${n}" aria-label="Move ${esc(map.get(moving).model)} to slot ${label}">` +
+          `<div class="slot-num">${label}</div><div class="node-empty"></div><div class="slot-name"></div></button>`;
       }
       return `<button class="slot empty${sel ? ' selected' : ''}" type="button" data-slot="${n}" aria-pressed="${sel}"` +
         ` aria-label="Slot ${label}: empty${state.writes ? '. Tap to add a block' : ''}">` +
         `<div class="slot-num">${label}</div><div class="node-empty"></div><div class="slot-name"></div></button>`;
     }
     const cat = blockCategory(b);
-    const cls = ['slot', b.enabled ? 'on' : '', sel ? 'selected' : ''].join(' ');
+    const cls = ['slot', b.enabled ? 'on' : '', sel ? 'selected' : '', n === moving ? 'moving' : ''].join(' ');
     const fs = b.footswitch ? ` · <span class="slot-fs">FS${b.footswitch}</span>` : '';
     return `<button class="${cls}" type="button" data-slot="${n}" style="--c:${cat.colour}"` +
       ` aria-pressed="${sel}" aria-label="Slot ${label}: ${esc(b.model)}, ${esc(cat.name)}${b.based_on ? `, based on ${esc(b.based_on)}` : ''}${b.enabled ? '' : ', bypassed'}${b.footswitch ? `, on footswitch ${b.footswitch}` : ''}"${b.based_on ? ` title="${esc(b.model)}: ${esc(b.based_on)}"` : ''}>` +
       `<div class="slot-num">${label}${fs}</div><div class="node"><div class="node-code">${esc(cat.short)}</div><div class="node-band"></div></div>` +
       `<div class="slot-name">${esc(b.model)}</div></button>`;
   };
+  // While a block moves and Path B is empty, Path B shows as a drop row.
+  const ghost = !branch.length && moving != null && cells.length > 0;
+  const rowB = branch.length ? branch : ghost ? cells : [];
   let html = '<div class="io"><div class="io-bar"></div>In</div>';
-  if (branch.length) {
+  if (rowB.length) {
     // Two rows on one grid: Path B's cell k under Path A's cell k, as HX Edit
     // draws it. The bracket runs from the split down to Path B and back up to
     // the merge; Path B's cells outside it carry no signal and stay blank.
-    html += `<div class="slots two-rows" style="--cols:${main.length};--from:${split};--to:${join}">` +
-      '<div class="lane-b" aria-hidden="true"><span class="lane-tag">B</span></div>' +
+    const [from, to] = ghost ? [0, main.length] : [split, join];
+    const junction = (which, at) => {
+      const name = which === 'split' ? 'Split' : 'Merge';
+      const sel = state.junction === which;
+      return `<button class="junction${sel ? ' selected' : ''}" type="button" data-junction="${which}" style="--at:${at}"` +
+        ` aria-pressed="${sel}" aria-label="${name}, before cell ${at + 1}"></button>`;
+    };
+    html += `<div class="slots two-rows" style="--cols:${main.length};--from:${from};--to:${to}">` +
+      `<div class="lane-b${ghost ? ' ghost' : ''}" aria-hidden="true"><span class="lane-tag">B</span></div>` +
       main.map((n) => cell(n, String(n))).join('') +
-      branch.map((n, i) => (i < split || i >= join) && !map.has(n)
+      rowB.map((n, i) => (i < from || i >= to) && !map.has(n)
         ? '<div class="slot off" aria-hidden="true"></div>'
         : cell(n, `B${i + 1}`)).join('') +
+      (ghost ? '' : junction('split', split) + junction('join', join)) +
       '</div>';
   } else {
     html += `<div class="slots">${main.map((n) => cell(n, String(n))).join('')}</div>`;
   }
   html += '<div class="io">Out</div>';
+  // Path B empty and writes on: a way to start it.
+  if (!skeleton && cells.length && !rowB.length && state.writes) {
+    html += `<button class="add-b" type="button" data-add-b${canWrite() ? '' : ' disabled'}>+ Path B</button>`;
+  }
   const chain = $('chain');
-  chain.classList.toggle('split', branch.length > 0);
+  chain.classList.toggle('split', rowB.length > 0);
+  chain.classList.toggle('has-add-b', html.includes('data-add-b'));
   chain.innerHTML = html;
   chainFx(map);
 }
@@ -1323,11 +1422,40 @@ function renderParams() {
   if (state.drag) return; // never rebuild a slider under the finger; sliderUp renders
   paintParams();
   const b = state.chain && slotMap().get(state.selectedSlot);
-  paramsFx($('params'), state.chain ? `${state.chain.label}/${state.selectedSlot}/${b?.model ?? ''}` : null);
+  const shown = state.junction ?? `${state.selectedSlot}/${b?.model ?? ''}`;
+  paramsFx($('params'), state.chain ? `${state.chain.label}/${shown}` : null);
+}
+
+/** The split or merge in the panel: where it sits, and buttons to move it. */
+function paintJunction(el) {
+  const which = state.junction;
+  const { main, split, join } = lanes();
+  const at = which === 'split' ? split : join;
+  const name = which === 'split' ? 'Split' : 'Merge';
+  const live = canWrite();
+  const step = (d, label) => state.writes
+    ? `<button class="act ph-toggle" type="button" data-junction-step="${d}"${live && junctionOk(which, at + d) ? '' : ' disabled'}>${label}</button>`
+    : `<button class="later ph-toggle" type="button" disabled title="${esc(WRITES_OFF)}">${label}</button>`;
+  el.style.setProperty('--c', 'var(--line-strong)');
+  el.innerHTML =
+    `<div class="params-head"><div class="ph-code">${which === 'split' ? 'Split' : 'Merge'}</div>` +
+    `<div class="ph-title"><div class="ph-model">${name}</div>` +
+    `<div class="ph-based">before ${at >= main.length ? 'the output' : `cell ${at + 1}`}</div></div>` +
+    `<div class="ph-meta">Path B runs under cells ${split + 1} to ${join}</div><div class="spacer"></div>` +
+    `${step(-1, '‹ Earlier')}${step(1, 'Later ›')}</div>` +
+    '<div class="params-empty">Blocks on Path A before the split and after the merge carry the whole signal; ' +
+    'between them Path A and Path B run side by side. Path B’s blocks stay between the two.<br>' +
+    'Moving the split or merge rewrites the whole preset on the pedal (edit buffer, unsaved until you save). ' +
+    'Split type and merge levels are not editable here yet.</div>';
 }
 
 function paintParams() {
   const el = $('params');
+  if (state.chain && state.junction && lanes().branch.length) {
+    paintJunction(el);
+    return;
+  }
+  state.junction = null;
   if (!state.chain) {
     const cells = Array.from({ length: 6 }, () => '<div class="param"><div class="skel-line"></div><div class="track"></div></div>').join('');
     el.style.removeProperty('--c');
@@ -1377,11 +1505,17 @@ function paintParams() {
   const remove = state.writes
     ? `<button class="act ph-toggle ph-remove" type="button" data-remove${live ? '' : ' disabled'} aria-label="Remove ${esc(b.model)}">Remove</button>`
     : '';
+  // Moving needs the preset document (routing): usb and fake.
+  const moving = state.moving === state.selectedSlot;
+  const move = state.writes && state.chain.routing
+    ? `<button class="act ph-toggle${moving ? ' hot' : ''}" type="button" data-move${live ? '' : ' disabled'}` +
+      ` aria-pressed="${moving}">${moving ? 'Cancel move' : 'Move'}</button>`
+    : '';
   el.innerHTML =
     `<div class="params-head"><div class="ph-code">${esc(cat.short)}</div>` +
     `<div class="ph-title"><div class="ph-model">${esc(b.model)}</div>${based}</div>` +
-    `<div class="ph-meta">${esc(meta)}</div><div class="spacer"></div>` +
-    `${remove}${toggle}</div>` +
+    `<div class="ph-meta">${esc(moving ? 'Tap an empty cell to move it there' : meta)}</div><div class="spacer"></div>` +
+    `${move}${remove}${toggle}</div>` +
     footswitchRow(b, live) +
     `<div class="params-grid">${params}</div>`;
 }
@@ -1672,8 +1806,18 @@ document.addEventListener('click', (e) => {
   } else if (t.id === 'banner-close') {
     state.banner = null;
     renderBanner();
+  } else if (t.matches('[data-move-to]')) {
+    moveTo(Number(t.dataset.moveTo));
   } else if (t.matches('[data-slot]')) {
     selectSlot(Number(t.dataset.slot));
+  } else if (t.matches('[data-move]')) {
+    toggleMove();
+  } else if (t.matches('[data-junction]')) {
+    selectJunction(t.dataset.junction);
+  } else if (t.matches('[data-junction-step]')) {
+    moveJunction(Number(t.dataset.junctionStep));
+  } else if (t.matches('[data-add-b]')) {
+    addPathB();
   } else if (t.matches('[data-add]')) {
     if (state.selectedSlot != null) openPicker(state.selectedSlot);
   } else if (t.matches('[data-remove]')) {
@@ -1773,6 +1917,7 @@ $('banks').addEventListener('scroll', updateActiveJump, { passive: true });
 document.addEventListener('keydown', (e) => {
   if (e.key !== 'Escape') return;
   if (state.connOpen) { state.connOpen = false; renderConnection(); } else if (state.picker.open) closePicker();
+  else if (state.moving != null) toggleMove();
   else if (state.browser.open) closeBrowser();
 });
 

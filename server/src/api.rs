@@ -75,6 +75,8 @@ pub fn router<D: Device>(state: AppState<D>) -> Router {
         )
         .route("/api/blocks/{position}/enabled", post(enable::<D>))
         .route("/api/blocks/{position}/footswitch", post(footswitch::<D>))
+        .route("/api/blocks/{position}/move", post(move_block::<D>))
+        .route("/api/routing", post(junction::<D>))
         .route(
             "/api/blocks/{position}/params/{index}",
             post(set_param::<D>),
@@ -575,6 +577,50 @@ async fn footswitch<D: Device>(
         block: checked_position(position)?,
         switch: body.switch,
         model: body.model,
+    };
+    write(&app, access, cmd).await
+}
+
+#[derive(Deserialize)]
+struct MoveBody {
+    /// The empty cell to move to, as a `position` in `/api/chain`.
+    to: u32,
+    /// The block's `model_id` as the client saw it; another model there is 409.
+    model: Option<u32>,
+}
+
+/// Move a block into an empty cell of Path A or Path B.
+async fn move_block<D: Device>(
+    State(app): Shared<D>,
+    access: WriteAccess,
+    Path(position): Path<u32>,
+    Json(body): Json<MoveBody>,
+) -> ApiResult<WriteResult> {
+    let cmd = Command::MoveBlock {
+        block: checked_position(position)?,
+        to: checked_position(body.to)?,
+        model: body.model,
+    };
+    write(&app, access, cmd).await
+}
+
+#[derive(Deserialize)]
+struct JunctionBody {
+    /// `split` or `join` (the merge).
+    junction: crate::routing::Junction,
+    /// The cell of `routing.main` (zero-based) it is to sit before.
+    before: u32,
+}
+
+/// Move the split or the merge along Path A.
+async fn junction<D: Device>(
+    State(app): Shared<D>,
+    access: WriteAccess,
+    Json(body): Json<JunctionBody>,
+) -> ApiResult<WriteResult> {
+    let cmd = Command::Junction {
+        which: body.junction,
+        before: body.before,
     };
     write(&app, access, cmd).await
 }
@@ -1168,6 +1214,80 @@ mod tests {
         assert_eq!(status, StatusCode::BAD_REQUEST);
         let (status, _) = post(&app, "/api/blocks/0", t, json!({ "model": 123 })).await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn paths() {
+        let app = app();
+        let t = Some(TOKEN);
+        let chain = |app: Router| async move {
+            send(
+                &app,
+                Request::get("/api/chain").body(Body::empty()).unwrap(),
+            )
+            .await
+            .1
+        };
+        let routing = chain(app.clone()).await["routing"].clone();
+        assert!(
+            routing["split"].get("before").is_none(),
+            "Path B starts empty"
+        );
+
+        // A junction cannot move while Path B is empty.
+        let body = json!({ "junction": "join", "before": 4 });
+        let (status, res) = post(&app, "/api/routing", t, body.clone()).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{res}");
+
+        // The first block on Path B (B1 = 13) claims the whole line.
+        let (status, res) = post(&app, "/api/blocks/13", t, json!({ "model": 123 })).await;
+        assert_eq!(status, StatusCode::OK, "{res}");
+        let routing = chain(app.clone()).await["routing"].clone();
+        assert_eq!(routing["split"]["before"], 0);
+        assert_eq!(routing["join"]["before"], 9);
+
+        // The merge moves in; the split cannot pass it, nor Path B's block.
+        let (status, res) = post(&app, "/api/routing", t, body).await;
+        assert_eq!(status, StatusCode::OK, "{res}");
+        assert_eq!(res["message"], "merge now before cell 5");
+        let split = json!({ "junction": "split", "before": 1 });
+        let (status, _) = post(&app, "/api/routing", t, split).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "B1 would fall outside");
+
+        // Noise Gate (10) onto B2; then outside the bracket (B6 = 18) is refused.
+        let uri = "/api/blocks/10/move";
+        let (status, res) = post(&app, uri, t, json!({ "to": 14, "model": 123 })).await;
+        assert_eq!(status, StatusCode::OK, "{res}");
+        let (status, _) = post(&app, "/api/blocks/14/move", t, json!({ "to": 18 })).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        // Into a taken cell: stale.
+        let (status, _) = post(&app, "/api/blocks/14/move", t, json!({ "to": 13 })).await;
+        assert_eq!(status, StatusCode::CONFLICT);
+
+        let c = chain(app.clone()).await;
+        let gate = c["blocks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|b| b["position"] == 14)
+            .unwrap();
+        assert_eq!(gate["model"], "Noise Gate");
+        assert_eq!(
+            gate["params"][0]["value"], "-22.1 dB",
+            "values move with it"
+        );
+
+        // Both off Path B: it empties and its attach points go.
+        let (status, _) = post(&app, "/api/blocks/14/move", t, json!({ "to": 10 })).await;
+        assert_eq!(status, StatusCode::OK);
+        let req = Request::delete("/api/blocks/13")
+            .header("authorization", format!("Bearer {TOKEN}"))
+            .body(Body::empty())
+            .unwrap();
+        let (status, res) = send(&app, req).await;
+        assert_eq!(status, StatusCode::OK, "{res}");
+        let routing = chain(app.clone()).await["routing"].clone();
+        assert!(routing["split"].get("before").is_none(), "{routing}");
     }
 
     #[tokio::test]

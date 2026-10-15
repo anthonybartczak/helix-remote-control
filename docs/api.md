@@ -39,6 +39,8 @@ the chain; the UI does this for parameter and bypass edits.
 | POST | `/api/blocks/{position}` | `{model}` | `tonepush model -- P M` | Add a block into an empty slot. Edit buffer only |
 | DELETE | `/api/blocks/{position}?model=M` | none | `tonepush clear -- P` | Remove a block. `model` optional. Edit buffer only |
 | POST | `/api/blocks/{position}/footswitch` | `{switch, model?}` | `tonepush switch-assign -- P S`; `null`: `usb`/`fake` only | Put the block's bypass on footswitch `switch` (1–6), or take it off (`null`). Edit buffer only |
+| POST | `/api/blocks/{position}/move` | `{to, model?}` | none: `usb`/`fake` only | Move a block into the empty cell `to` on Path A or Path B. Edit buffer only |
+| POST | `/api/routing` | `{junction, before}` | none: `usb`/`fake` only | Put the split (`"split"`) or merge (`"join"`) before cell `before` of `routing.main`. Edit buffer only |
 
 - `position` and `index` are the numbers `/api/chain` returns. `setlist` defaults to 0.
 - `value` is typed in display units, as `/api/chain` shows them (`40`, `40 %`,
@@ -60,10 +62,12 @@ the chain; the UI does this for parameter and bypass edits.
 - Adding a block is op78 (select the slot) then op40 (set its model), as HX Edit does;
   removing is op78 then op28 (clear). Without the select the device answers success and
   does nothing (PROTOCOL.md). `model` is a number from `/api/catalog`; anything else is
-  400 `bad_request`. Adding never replaces: a taken slot is 409 `stale`. Only Path A's
-  slots (positions 2–10 on the HX Effects, between input and output): the first block on
-  an empty parallel branch also needs its split and join rewired, a document write. The
-  device may refuse a model (not enough DSP for a polyphonic pitch model, an FX Loop the
+  400 `bad_request`. Adding never replaces: a taken slot is 409 `stale`. Any cell of
+  `routing.main` or, under the split and merge, of `routing.branch` (`server/src/routing.rs`);
+  elsewhere 400. The first block on an empty Path B (any of its cells) is followed by a
+  preset document write (op21) attaching the split after the input and the merge before
+  the output, as TonePush's GUI does: the device zeroes them when the model lands. Path A
+  verified on the HX Effects; Path B unverified. The device may refuse a model (not enough DSP for a polyphonic pitch model, an FX Loop the
   device lacks): 502 `failed` with its error. `usb` reads the preset back until the
   change shows (up to 1 s). Removing with `?model=M` (the block's `model_id`) refuses
   with 409 `stale` if the slot now holds another model; an empty slot is 409 too. `cli`
@@ -75,6 +79,18 @@ the chain; the UI does this for parameter and bypass edits.
   **no footswitch**, while a front-panel add takes a free one; the HX Effects home screen
   shows only footswitch blocks, so look in Signal Flow view, or put it on one with
   `/api/blocks/{position}/footswitch`.
+- Moving a block and moving the split or merge rewrite the whole preset document (op21),
+  as TonePush's GUI does: read it, change it, write it back, read it again. hx-usb's write
+  waits for the commit and zeroes an emptied Path B's attach points first (a document
+  saying otherwise is one the pedal settles by wiping the edit buffer, PROTOCOL.md).
+  **Unverified on the HX Effects**; confirmed on an HX Stomp by TonePush only.
+  A move swaps the block with the empty cell `to`; nothing else shifts. `to` must be
+  empty (else 409 `stale`) and a cell a block may go into: Path A, or Path B under the
+  bracket (any Path B cell while Path B is empty: the move claims the whole line). The
+  split and merge stay in order, inside Path A (`before` up to `main.length`, the output),
+  and around every Path B block; anything else is 400. `model` as for removing. A
+  footswitch is not in the document: after a move the switches are read back, so a pedal
+  that keeps the switch on the cell shows it there. `cli` refuses both (400).
 - Footswitch: `switch` is one-based as printed on the pedal (FS1–FS6 on the HX Effects),
   `null` takes the block off. `usb` sends opcode 57 (unassign) for any other switch the
   block is on, then opcode 56 (assign), the calls TonePush's GUI makes; both take a

@@ -114,10 +114,14 @@ with Reduce Motion on, the UI works the same, only without animation.
 Writes (server needs `HELIX_TOKEN`; the UI asks for it on the first write and keeps it
 in the browser):
 
-- **Paths (read only):** a preset with blocks on Path B shows two rows: Path B under
-  Path A, with the split and the merge where they attach (`usb`; `cli` shows one row).
-  Path B's slots are B1–B9. Not yet seen on the HX Effects (no recording with a split);
-  editing paths comes next.
+- **Paths:** a preset with blocks on Path B shows two rows: Path B under Path A, with the
+  split and the merge where they attach (`usb`; `cli` shows one row). Path B's slots are
+  B1–B9. **+ Path B** (while it is empty) adds its first block, which parallels the whole
+  line. Tap an empty Path B cell to add there. **Move**, then an empty cell, moves the
+  selected block (either path). Tap the split or merge dot, then ‹ Earlier / Later ›, to
+  move it. Path B's blocks always stay between the split and merge. Moves and junctions
+  rewrite the whole preset (op21): **unverified on the HX Effects**, so the first one on
+  the pedal needs a backup and a go-ahead (AGENTS.md 6). No recording with a split yet.
 - **Load a preset:** ‹ › or Presets → pick → Load. Asks first if there are
   unsaved edits.
 - **Block on/off:** select a block, tap Turn on / Turn off.

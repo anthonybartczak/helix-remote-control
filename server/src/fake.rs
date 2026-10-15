@@ -32,6 +32,7 @@ use crate::device::{
     BlockNatives, Cause, ChainExtra, Command, Device, DeviceError, Live, Natives, Result,
 };
 use crate::parse;
+use crate::routing;
 
 pub struct FakeDevice {
     dir: PathBuf,
@@ -307,7 +308,9 @@ impl FakeDevice {
             | Command::Tempo { .. }
             | Command::AddBlock { .. }
             | Command::RemoveBlock { .. }
-            | Command::Footswitch { .. } => Cause::Edit,
+            | Command::Footswitch { .. }
+            | Command::MoveBlock { .. }
+            | Command::Junction { .. } => Cause::Edit,
             Command::Rename { .. } | Command::Snapshot { .. } => Cause::Other,
             _ => return,
         };
@@ -542,11 +545,7 @@ impl FakeDevice {
                             "model {model} is not an effect this device offers"
                         ))
                     })?;
-                if !ROW.contains(&block) {
-                    return Err(DeviceError::Invalid(format!(
-                        "position {block} is not a block slot on the main path"
-                    )));
-                }
+                let place = routing::check_cell(&routing(&self.state().buffer), block)?;
                 if let Some(b) = self
                     .current()
                     .await?
@@ -562,6 +561,9 @@ impl FakeDevice {
                 let mut state = self.state();
                 state.buffer.forget(block);
                 state.buffer.added.insert(block, model);
+                if place == (routing::Place::Branch { claim: true }) {
+                    state.buffer.split = Some((0, ROW.count() as u32));
+                }
                 Ok(format!("block {block} is now {name}\n"))
             }
             Command::RemoveBlock { block, model } => {
@@ -587,6 +589,10 @@ impl FakeDevice {
                 state.buffer.forget(block);
                 state.buffer.added.remove(&block);
                 state.buffer.removed.insert(block);
+                // Path B's last block gone: the device zeroes the attach points.
+                if !state.buffer.added.keys().any(|p| BRANCH.contains(p)) {
+                    state.buffer.split = None;
+                }
                 Ok(format!("removed {name} from block {block}\n"))
             }
             Command::Footswitch {
@@ -628,6 +634,86 @@ impl FakeDevice {
                         format!("block {block} on no footswitch\n")
                     }
                 })
+            }
+            Command::MoveBlock { block, to, model } => {
+                let chain = self.current().await?;
+                let moving = chain
+                    .blocks
+                    .iter()
+                    .find(|b| b.position == block)
+                    .ok_or_else(|| {
+                        DeviceError::Stale(format!(
+                            "no block at position {block}; reload the chain"
+                        ))
+                    })?;
+                let natives = self.natives().await;
+                let held = natives
+                    .as_ref()
+                    .and_then(|n| n.0.iter().find(|b| b.position == block));
+                if let (Some(want), Some(h)) = (model, held) {
+                    if want != h.model {
+                        return Err(DeviceError::Stale(format!(
+                            "block {block} now holds model {}, not {want}; reload the chain",
+                            h.model
+                        )));
+                    }
+                }
+                let held = held.ok_or_else(|| {
+                    DeviceError::Failed(format!("no model number recorded for block {block}"))
+                })?;
+                let place = routing::check_cell(&routing(&self.state().buffer), to)?;
+                if let Some(b) = chain.blocks.iter().find(|b| b.position == to) {
+                    return Err(DeviceError::Stale(format!(
+                        "position {to} already holds {}; reload the chain",
+                        b.model
+                    )));
+                }
+                let mut state = self.state();
+                let edits = &mut state.buffer;
+                // The block keeps its values, bypass and footswitch.
+                let switch = edits.footswitches.get(&block).copied();
+                edits.forget(block);
+                edits.added.remove(&block);
+                edits.removed.insert(block);
+                edits.added.insert(to, held.model);
+                edits.enabled.insert(to, moving.enabled);
+                if let Some(s) = switch {
+                    edits.footswitches.insert(to, s);
+                }
+                for (p, &v) in moving.params.iter().zip(&held.values) {
+                    edits.natives.insert((to, p.index), v);
+                    edits.values.insert((to, p.index), p.value.clone());
+                }
+                if place == (routing::Place::Branch { claim: true }) {
+                    edits.split = Some((0, ROW.count() as u32));
+                }
+                let on_b = chain
+                    .blocks
+                    .iter()
+                    .map(|b| b.position)
+                    .filter(|&p| p != block)
+                    .chain([to])
+                    .any(|p| BRANCH.contains(&p));
+                if !on_b {
+                    edits.split = None;
+                }
+                Ok(format!(
+                    "moved {} from block {block} to block {to}\n",
+                    moving.model
+                ))
+            }
+            Command::Junction { which, before } => {
+                let chain = self.current().await?;
+                let occupied = |p| chain.blocks.iter().any(|b| b.position == p);
+                let mut state = self.state();
+                routing::check_junction(&routing(&state.buffer), occupied, which, before)?;
+                let (split, join) = state.buffer.split.unwrap_or((0, ROW.count() as u32));
+                let (split, join, name) = match which {
+                    routing::Junction::Split => (before, join, "split"),
+                    routing::Junction::Join => (split, before, "merge"),
+                };
+                state.buffer.split = Some((split, join));
+                Ok(format!("{name} now before cell {}\n", before + 1))
             }
             other @ (Command::Presets { .. } | Command::Select { .. } | Command::Rename { .. }) => {
                 Err(DeviceError::NoFixture(other))

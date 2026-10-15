@@ -267,12 +267,38 @@ button:not(:disabled):active { transform: scale(.95); }
   top: calc(24px + var(--node) / 2 - 1px); height: calc(var(--row) + var(--s3) + 1px);
   border: 2px solid var(--line-strong); border-top: 0; border-radius: 0 0 var(--r3) var(--r3); opacity: .7;
 }
-.lane-b::before, .lane-b::after {
-  content: ""; position: absolute; top: -5px; width: 10px; height: 10px; border-radius: 50%;
-  background: var(--line-strong); box-shadow: 0 0 0 3px oklch(0.14 0.006 260);
+/* While a block moves and Path B is empty: where Path B would run. */
+.lane-b.ghost { border-style: dashed; opacity: .45; }
+/* The split and merge: dots on Path A's line, 44 px to tap; tap one to move it. */
+.junction {
+  position: absolute; z-index: 1; width: 44px; height: 44px; margin: -22px 0 0 -22px;
+  left: calc(var(--at) / var(--cols) * 100%); top: calc(24px + var(--node) / 2);
+  display: grid; place-items: center; border-radius: 50%;
 }
-.lane-b::before { left: -6px; }
-.lane-b::after { right: -6px; }
+.junction::after {
+  content: ""; width: 12px; height: 12px; border-radius: 50%;
+  background: var(--line-strong); box-shadow: 0 0 0 3px oklch(0.14 0.006 260);
+  transition: transform .2s var(--ease-out), background-color .2s;
+}
+.junction.selected::after { background: var(--ink); transform: scale(1.5); box-shadow: 0 0 0 3px oklch(0.14 0.006 260), 0 0 0 5px var(--ink); }
+@media (hover: hover) { .junction:hover::after { transform: scale(1.3); } }
+/* Moving a block: it pulses, and the cells it may go to light up. */
+.slot.moving .node { animation: moving 1.1s ease-in-out infinite; }
+@keyframes moving { 50% { transform: translateY(-4px) scale(1.06); } }
+.slot.target .node-empty {
+  border: 2px dashed var(--ok); border-radius: var(--r3); background: color-mix(in oklab, var(--ok) 10%, transparent);
+}
+.slot.target .node-empty::after { content: "↓"; width: auto; height: auto; border: 0; background: none; font: 700 var(--fs-l) var(--font-ui); color: var(--ok); }
+@media (prefers-reduced-motion: reduce) { .slot.moving .node { animation: none; outline: 2px dashed var(--ink); } }
+.add-b {
+  position: absolute; left: 50%; bottom: 8px; transform: translateX(-50%);
+  height: 32px; padding: 0 var(--s4); border-radius: var(--r-pill);
+  border: 1.5px dashed var(--line-strong); color: var(--muted); font-size: var(--fs-s); font-weight: 600;
+  background: oklch(0.14 0.006 260);
+}
+.add-b:not(:disabled):active { transform: translateX(-50%) scale(.95); }
+.add-b:disabled { opacity: .5; }
+.chain { position: relative; }
 .lane-tag {
   position: absolute; left: -9px; bottom: -9px; width: 16px; height: 16px; display: grid; place-items: center;
   border-radius: 4px; background: var(--line-strong); color: var(--bg); font: 800 11px var(--font-ui);
@@ -579,6 +605,7 @@ div.slot.empty { cursor: default; }
   .chain { height: 120px; gap: var(--s1); }
   .io { width: 32px; height: 80px; font-size: var(--fs-xs); }
   .chain.split .io { margin-top: calc(24px + var(--node) / 2 - 40px); }
+  .chain.has-add-b { height: 150px; padding-bottom: 40px; }
   .io-bar { width: 14px; }
   .slot-name { display: none; }
   .slot.on .node-band { height: 6px; }

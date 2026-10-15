@@ -29,6 +29,7 @@ use crate::device::{
     BlockNatives, Cause, ChainExtra, Command, Device, DeviceError, Live, Natives, Result,
 };
 use crate::parse;
+use crate::routing;
 
 /// How often an idle session reads notifications and sends keep-alives.
 /// TonePush uses 700 ms; faster polling wedged a device during its development.
@@ -606,7 +607,7 @@ impl Worker {
             natives: self.natives(),
             snapshot: self.doc.as_ref().and_then(|d| active_snapshot(&d.preset)),
             footswitches: self.doc.as_ref().and_then(|d| d.switches.clone()),
-            routing: self.doc.as_ref().and_then(|d| routing(&d.preset)),
+            routing: self.doc.as_ref().and_then(|d| routing_of(&d.preset)),
         }
     }
 
@@ -688,6 +689,8 @@ impl Worker {
                 switch,
                 model,
             } => self.footswitch(*block, *switch, *model),
+            Command::MoveBlock { block, to, model } => self.move_block(*block, *to, *model),
+            Command::Junction { which, before } => self.junction(*which, *before),
         };
         if *cmd == Command::Chain {
             if let Ok(text) = &out {
@@ -706,7 +709,9 @@ impl Worker {
                 | Command::SetNative { .. }
                 | Command::AddBlock { .. }
                 | Command::RemoveBlock { .. }
-                | Command::Footswitch { .. } => self.publish_doc(Cause::Edit),
+                | Command::Footswitch { .. }
+                | Command::MoveBlock { .. }
+                | Command::Junction { .. } => self.publish_doc(Cause::Edit),
                 // A snapshot changes which blocks are on and their values:
                 // read the document again rather than guess.
                 Command::Rename { .. } | Command::Save | Command::Snapshot { .. } => {
@@ -1035,11 +1040,12 @@ impl Worker {
         Ok(format!("tempo {bpm:.1} BPM\n"))
     }
 
-    /// Put `model` into the empty slot at chain position `block`. Only on a
-    /// path's main row, between its input and output: the first block on an
-    /// empty parallel branch also needs its split and join rewired (a
-    /// document write, TonePush GUI), and the UI does not draw branches yet.
-    /// Confirmed on an HX Stomp by TonePush; on the HX Effects not yet.
+    /// Put `model` into the empty slot at chain position `block`, on Path A
+    /// or Path B ([`routing::check_cell`]). The first block on an empty
+    /// Path B then gets the split and merge attached around the whole line,
+    /// after the model lands (the device zeroes them when it does), as
+    /// TonePush's GUI does. Op78 + op40 confirmed on an HX Stomp by TonePush
+    /// and on the HX Effects for Path A (2026-10-15); Path B unverified.
     fn add_block(&mut self, block: u32, model: u32) -> Result<String> {
         let catalog = self.catalog.clone().ok_or_else(|| {
             DeviceError::Invalid("adding a block needs HX Edit data on the server (/vendor)".into())
@@ -1052,19 +1058,17 @@ impl Worker {
         self.read_doc()?;
         let slot = (block as usize).wrapping_sub(1);
         let preset = &self.doc.as_ref().expect("just read").preset;
-        let on_row = preset
-            .layout()
-            .paths
-            .iter()
-            .any(|p| matches!((p.input, p.output), (Some(i), Some(o)) if i < slot && slot < o));
+        let place = routing_of(preset)
+            .ok_or_else(|| DeviceError::Failed("the preset has no signal path".into()))
+            .and_then(|r| routing::check_cell(&r, block))?;
         let target = preset
             .slots
             .get(slot)
-            .filter(|s| on_row && matches!(s.kind, Kind::Block | Kind::Empty));
+            .filter(|s| matches!(s.kind, Kind::Block | Kind::Empty));
         match target {
             None => {
                 return Err(DeviceError::Invalid(format!(
-                    "position {block} is not a block slot on the main path"
+                    "position {block} is not a block slot"
                 )))
             }
             Some(s) if s.model.is_some() => {
@@ -1077,10 +1081,106 @@ impl Worker {
         }
         self.with(|s| s.set_model(slot as i64, model))?;
         self.settle_slot(slot, Some(model));
+        if place == (routing::Place::Branch { claim: true }) {
+            self.read_doc()?;
+            self.rewrite(claim_line)?;
+        }
         Ok(format!(
             "block {block} is now {}\n",
             model_name(Some(&*catalog), model)
         ))
+    }
+
+    /// Move the block at `block` into the empty cell `to` (Path A or Path B):
+    /// the two slots trade places in the preset document, which is written
+    /// back whole (op21), as TonePush's GUI moves blocks. The first block
+    /// onto an empty Path B claims the whole line; a move that empties
+    /// Path B leaves its attach points at zero (hx-usb settles them on
+    /// every write). Unverified on the HX Effects.
+    ///
+    /// A footswitch is not in the document: the pedal may keep it on the
+    /// cell rather than the block. The switches are read back afterwards,
+    /// so the chain shows what the pedal did.
+    fn move_block(&mut self, block: u32, to: u32, model: Option<u32>) -> Result<String> {
+        self.read_doc()?;
+        let held = self.block_at(block, model)?;
+        let preset = &self.doc.as_ref().expect("just read").preset;
+        let (from_slot, to_slot) = (block as usize - 1, (to as usize).wrapping_sub(1));
+        let place = routing_of(preset)
+            .ok_or_else(|| DeviceError::Failed("the preset has no signal path".into()))
+            .and_then(|r| routing::check_cell(&r, to))?;
+        if let Some(m) = preset.slots.get(to_slot).and_then(|s| s.model) {
+            return Err(DeviceError::Stale(format!(
+                "position {to} already holds {}; reload the chain",
+                model_name(self.catalog.as_deref(), m)
+            )));
+        }
+        self.rewrite(|p| {
+            if !p.swap_slots(from_slot, to_slot) {
+                return Err("that block cannot move there");
+            }
+            if place == (routing::Place::Branch { claim: true }) {
+                claim_line(p)?;
+            }
+            Ok(())
+        })?;
+        self.settle_slot(to_slot, Some(held));
+        Ok(format!(
+            "moved {} from block {block} to block {to}\n",
+            model_name(self.catalog.as_deref(), held)
+        ))
+    }
+
+    /// Attach the split or the merge before cell `before` of Path A: a
+    /// preset document write (op21), as TonePush's GUI drags a junction.
+    /// Unverified on the HX Effects.
+    fn junction(&mut self, which: routing::Junction, before: u32) -> Result<String> {
+        self.read_doc()?;
+        let preset = &self.doc.as_ref().expect("just read").preset;
+        let r = routing_of(preset)
+            .ok_or_else(|| DeviceError::Failed("the preset has no signal path".into()))?;
+        let occupied = |p: u32| {
+            preset
+                .slots
+                .get(p as usize - 1)
+                .is_some_and(|s| s.model.is_some())
+        };
+        routing::check_junction(&r, occupied, which, before)?;
+        let junction = match which {
+            routing::Junction::Split => r.split.as_ref(),
+            routing::Junction::Join => r.join.as_ref(),
+        }
+        .map(|j| j.position as usize - 1)
+        .ok_or_else(|| DeviceError::Failed("the preset has no split".into()))?;
+        // Path A's cell `before` is the slot after the input plus `before`.
+        let at = r.main[0] as usize - 1 + before as usize;
+        self.rewrite(|p| {
+            p.set_attach(junction, at)
+                .then_some(())
+                .ok_or("only a split or merge can be moved")
+        })?;
+        let name = match which {
+            routing::Junction::Split => "split",
+            routing::Junction::Join => "merge",
+        };
+        Ok(format!("{name} now before cell {}\n", before + 1))
+    }
+
+    /// Change a copy of the cached document and write it back whole (op21).
+    /// hx-usb's write settles empty branches and waits for the commit.
+    fn rewrite(
+        &mut self,
+        change: impl FnOnce(&mut hx_proto::Preset) -> std::result::Result<(), &'static str>,
+    ) -> Result<()> {
+        let doc = self.doc.as_ref().ok_or_else(|| {
+            DeviceError::Failed("the preset was not read before changing it".into())
+        })?;
+        let mut preset = hx_proto::Preset::parse(&doc.preset.encode())
+            .ok_or_else(|| DeviceError::Failed("the preset does not re-parse".into()))?;
+        change(&mut preset).map_err(|e| DeviceError::Invalid(e.into()))?;
+        self.with(|s| s.write_preset(&preset))?;
+        // hx-usb waited for the commit: this read shows the change.
+        self.read_doc()
     }
 
     /// Empty the slot at chain position `block`. `model`, if given, must be
@@ -1355,7 +1455,7 @@ fn probe_open() -> std::result::Result<Session, String> {
 /// Unconfirmed on the HX Effects: no preset with a split has been recorded
 /// yet. TonePush's HX Stomp capture keeps an empty split and join after the
 /// output, with a branch cell per main-row cell.
-fn routing(preset: &hx_proto::Preset) -> Option<parse::Routing> {
+fn routing_of(preset: &hx_proto::Preset) -> Option<parse::Routing> {
     let layout = preset.layout();
     let path = layout.paths.first()?;
     let (input, output) = (path.input?, path.output?);
@@ -1382,6 +1482,25 @@ fn routing(preset: &hx_proto::Preset) -> Option<parse::Routing> {
         split: junction(path.split),
         join: junction(path.join),
     })
+}
+
+/// Attach the first path's split after its input and its merge before its
+/// output: the first block on an empty Path B parallels the whole line, as
+/// TonePush's GUI does.
+fn claim_line(p: &mut hx_proto::Preset) -> std::result::Result<(), &'static str> {
+    let layout = p.layout();
+    let path = layout
+        .paths
+        .first()
+        .ok_or("the preset has no signal path")?;
+    match (path.split, path.join, path.input, path.output) {
+        (Some(split), Some(join), Some(input), Some(output))
+            if p.set_attach(split, input + 1) && p.set_attach(join, output) =>
+        {
+            Ok(())
+        }
+        _ => Err("the preset has no split to attach"),
+    }
 }
 
 /// The slot row (kind and model per index), the layout, and one raw slot.

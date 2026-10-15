@@ -101,6 +101,25 @@ pub enum Command {
         switch: Option<u8>,
         model: Option<u32>,
     },
+    /// Move a block into an empty cell of Path A or Path B
+    /// ([`crate::routing::check_cell`]); the first block onto an empty Path B
+    /// also attaches the split and merge around the whole line. `model` as in
+    /// [`Command::RemoveBlock`]. A preset document write (op21), as TonePush's
+    /// GUI moves blocks; unverified on the HX Effects. Edit buffer only.
+    /// `usb` and `fake` only.
+    MoveBlock {
+        block: u32,
+        to: u32,
+        model: Option<u32>,
+    },
+    /// Attach the split or the merge before cell `before` (zero-based) of
+    /// Path A ([`crate::routing::check_junction`]). A preset document write
+    /// (op21); unverified on the HX Effects. Edit buffer only. `usb` and
+    /// `fake` only.
+    Junction {
+        which: crate::routing::Junction,
+        before: u32,
+    },
 }
 
 impl Command {
@@ -178,7 +197,10 @@ impl Command {
             ],
             // Taking it off needs the switch it is on, which `tonepush` does
             // not print.
-            Command::SetNative { .. } | Command::Footswitch { switch: None, .. } => return None,
+            Command::SetNative { .. }
+            | Command::Footswitch { switch: None, .. }
+            | Command::MoveBlock { .. }
+            | Command::Junction { .. } => return None,
         })
     }
 
@@ -197,6 +219,8 @@ impl Command {
                 | Command::AddBlock { .. }
                 | Command::RemoveBlock { .. }
                 | Command::Footswitch { .. }
+                | Command::MoveBlock { .. }
+                | Command::Junction { .. }
         )
     }
 }
