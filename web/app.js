@@ -103,6 +103,7 @@ const state = {
   junction: null, // split | join: shown in the panel instead of a block
   moving: null, // slot of a block being moved (Move, then an empty cell)
   expOpen: null, // position/param whose expression pedal row is open
+  travelDrag: null, // heel or toe slider under a finger: { el, index, end, pointer, x0, i0, i, started }
 };
 
 // ---------- API ----------
@@ -765,11 +766,21 @@ function pedalParts(b, p, c, live) {
     return `<button class="seg-btn${active ? ' active' : ''}" type="button" data-exp-set="${n}" aria-pressed="${active}"${off}>${n ? `EXP ${n}` : 'None'}</button>`;
   }).join('');
   const other = on && !/^exp/.test(on) ? `<div class="exp-note">Now on ${sourceLabel(on)} (a footswitch, MIDI or snapshots); picking a pedal replaces it.</div>` : '';
+  // Heel and toe: small sliders on the setting's own grid, sent on release.
+  const travelSlider = (end, native, shown) => {
+    const i = indexOf(c, native);
+    const name = end === 'min' ? 'Heel' : 'Toe';
+    return `<div class="travel"><div class="travel-top"><span class="travel-name">${name}</span>` +
+      `<span class="travel-value">${esc(shown ?? c.labels[i])}</span></div>` +
+      `<div class="slider slider-sm" data-travel="${end}" role="slider" tabindex="${live ? 0 : -1}"` +
+      ` aria-label="${esc(p.name)}, ${name.toLowerCase()} end" aria-valuemin="0" aria-valuemax="${c.steps}"` +
+      ` aria-valuenow="${i}" aria-valuetext="${esc(shown ?? c.labels[i])}" aria-disabled="${!live}"` +
+      ` style="--pos:${(i / c.steps) * 100}%"><div class="track-fill"></div><div class="track-thumb"></div></div></div>`;
+  };
   const ends = a && a.min != null && c.kind === 'continuous'
-    ? `<button class="act exp-end" type="button" data-exp-end="min"${off}>Heel = ${esc(shownValue(b, p).label)}</button>` +
-      `<button class="act exp-end" type="button" data-exp-end="max"${off}>Toe = ${esc(shownValue(b, p).label)}</button>` +
+    ? `<div class="travels">${travelSlider('min', a.min, a.min_value)}${travelSlider('max', a.max, a.max_value)}</div>` +
       `<button class="act exp-end" type="button" data-exp-end="full"${off}>Full range</button>` +
-      '<div class="exp-note">Move the slider to a value, then make it the heel or the toe.</div>'
+      '<div class="exp-note">Heel: the pedal pulled back. Toe: pushed down.</div>'
     : '';
   return { tag, row: `${travel}<div class="exp-row" data-exp-row="${p.index}"><div class="seg">${seg}</div>${other}${ends}</div>` };
 }
@@ -792,15 +803,86 @@ function setPedal(index, pedal) {
     `/api/blocks/${b.position}/params/${index}/controller`, body);
 }
 
-function setTravel(index, end) {
+/** The selected block's setting `index` and its control, if it has one. */
+function travelTarget(index) {
   const b = slotMap().get(state.selectedSlot);
   const p = b?.params.find((x) => x.index === index);
   const c = p && controlOf(b, p);
-  if (!c) return;
-  const body = end === 'full' ? { min: c.min, max: c.max } : { [end]: shownValue(b, p).native };
+  return c ? { b, p, c } : null;
+}
+
+/** Send a heel (`min`), toe (`max`) or `full` range; `native` for heel or toe. */
+function setTravel(index, end, native) {
+  const t = travelTarget(index);
+  if (!t) return;
+  const { b, p, c } = t;
+  const body = end === 'full' ? { min: c.min, max: c.max } : { [end]: native };
   if (b.model_id != null) body.model = b.model_id;
   const what = { min: 'heel', max: 'toe', full: 'travel' }[end];
   write(`Setting ${p.name}'s ${what}…`, `/api/blocks/${b.position}/params/${index}/controller/range`, body);
+}
+
+// Dragging a heel or toe slider: relative to where the finger lands, as the
+// setting sliders; a vertical swipe still scrolls. One write on release.
+
+function travelDown(e) {
+  const el = e.target.closest('[data-travel]');
+  if (!el || state.travelDrag || state.drag || el.getAttribute('aria-disabled') === 'true') return;
+  const index = Number(el.closest('[data-exp-row]').dataset.expRow);
+  if (!travelTarget(index)) return;
+  const i = Number(el.getAttribute('aria-valuenow'));
+  state.travelDrag = { el, index, end: el.dataset.travel, pointer: e.pointerId, x0: e.clientX, i0: i, i, started: false };
+  try { el.setPointerCapture(e.pointerId); } catch { /* pointer already gone */ }
+}
+
+function paintTravel(el, c, i) {
+  el.style.setProperty('--pos', `${(i / c.steps) * 100}%`);
+  el.setAttribute('aria-valuenow', String(i));
+  el.setAttribute('aria-valuetext', c.labels[i]);
+  const value = el.parentElement.querySelector('.travel-value');
+  if (value) value.textContent = c.labels[i];
+}
+
+function travelMove(e) {
+  const d = state.travelDrag;
+  if (!d || e.pointerId !== d.pointer) return;
+  const t = travelTarget(d.index);
+  if (!t) return;
+  const dx = e.clientX - d.x0;
+  if (!d.started) {
+    if (Math.abs(dx) < DRAG_START_PX) return;
+    d.started = true;
+    d.el.classList.add('dragging');
+  }
+  const width = d.el.clientWidth || 1;
+  const i = Math.max(0, Math.min(t.c.steps, Math.round(d.i0 + (dx / width) * t.c.steps)));
+  if (i === d.i) return;
+  d.i = i;
+  paintTravel(d.el, t.c, i);
+}
+
+function travelUp(e) {
+  const d = state.travelDrag;
+  if (!d || e.pointerId !== d.pointer) return;
+  state.travelDrag = null;
+  d.el.classList.remove('dragging');
+  try { d.el.releasePointerCapture(d.pointer); } catch { /* released already */ }
+  const t = travelTarget(d.index);
+  if (t && d.started && d.i !== d.i0) setTravel(d.index, d.end, nativeAt(t.c, d.i));
+  else renderParams();
+}
+
+function travelKey(e) {
+  const el = e.target.closest('[data-travel]');
+  const step = { ArrowLeft: -1, ArrowDown: -1, ArrowRight: 1, ArrowUp: 1 }[e.key];
+  if (!el || !step || el.getAttribute('aria-disabled') === 'true') return;
+  e.preventDefault();
+  const index = Number(el.closest('[data-exp-row]').dataset.expRow);
+  const t = travelTarget(index);
+  if (!t) return;
+  const i = Math.max(0, Math.min(t.c.steps, Number(el.getAttribute('aria-valuenow')) + step));
+  paintTravel(el, t.c, i);
+  setTravel(index, el.dataset.travel, nativeAt(t.c, i));
 }
 
 // ---------- Parameter controls ----------
@@ -1527,7 +1609,8 @@ function renderChain() {
 }
 
 function renderParams() {
-  if (state.drag) return; // never rebuild a slider under the finger; sliderUp renders
+  // Never rebuild a slider under the finger; sliderUp / travelUp render.
+  if (state.drag || state.travelDrag) return;
   paintParams();
   const b = state.chain && slotMap().get(state.selectedSlot);
   const shown = state.junction ?? `${state.selectedSlot}/${b?.model ?? ''}`;
@@ -1926,7 +2009,7 @@ document.addEventListener('click', (e) => {
   } else if (t.matches('[data-exp-set]')) {
     setPedal(Number(t.closest('[data-exp-row]').dataset.expRow), Number(t.dataset.expSet));
   } else if (t.matches('[data-exp-end]')) {
-    setTravel(Number(t.closest('[data-exp-row]').dataset.expRow), t.dataset.expEnd);
+    setTravel(Number(t.closest('[data-exp-row]').dataset.expRow), 'full');
   } else if (t.matches('[data-move]')) {
     toggleMove();
   } else if (t.matches('[data-junction]')) {
@@ -2006,6 +2089,12 @@ paramsEl.addEventListener('pointerup', sliderUp);
 paramsEl.addEventListener('pointercancel', sliderUp);
 paramsEl.addEventListener('lostpointercapture', sliderUp);
 paramsEl.addEventListener('keydown', sliderKey);
+paramsEl.addEventListener('pointerdown', travelDown);
+paramsEl.addEventListener('pointermove', travelMove);
+paramsEl.addEventListener('pointerup', travelUp);
+paramsEl.addEventListener('pointercancel', travelUp);
+paramsEl.addEventListener('lostpointercapture', travelUp);
+paramsEl.addEventListener('keydown', travelKey);
 paramsEl.addEventListener('change', menuChange);
 
 // Taps count on touch-down, not on release: closer to the beat.

@@ -726,6 +726,22 @@ button.exp-tag::after { content: ""; position: absolute; inset: -9px -4px; }
   padding: var(--s2); border-radius: var(--r2); background: oklch(0 0 0 / .28); box-shadow: inset 0 0 0 1px var(--hair);
 }
 .exp-end { min-height: var(--tap); padding: 0 var(--s3); font-size: 13px; }
+/* Heel and toe: two small sliders side by side, still 44 px to touch. */
+.travels { flex: 1 1 100%; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--s2) var(--s4); }
+.travel { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.travel-top { display: flex; justify-content: space-between; align-items: baseline; gap: var(--s2); }
+.travel-name { font-size: var(--fs-xs); font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+.travel-value { font: 600 var(--fs-s) var(--font-mono); white-space: nowrap; }
+.slider-sm { height: var(--tap); background: transparent; box-shadow: none; }
+.slider-sm::before {
+  content: ""; position: absolute; left: 0; right: 0; top: 50%; height: 12px; margin-top: -6px; border-radius: 6px;
+  background: oklch(0.13 0.005 260); box-shadow: inset 0 1px 3px oklch(0 0 0 / .6), inset 0 0 0 1px var(--hair);
+}
+.slider-sm .track-fill { top: 50%; bottom: auto; height: 12px; margin-top: -6px; border-radius: 6px; }
+.slider-sm .track-thumb { top: 50%; bottom: auto; height: 22px; margin-top: -11px; }
+.slider-sm.dragging { box-shadow: none; }
+.slider-sm.dragging::before { box-shadow: inset 0 1px 3px oklch(0 0 0 / .6), 0 0 0 2px var(--c); }
+@media (max-width: 767px) { .travels { grid-template-columns: minmax(0, 1fr); } }
 .exp-note { flex: 1 1 100%; font-size: var(--fs-xs); color: var(--muted); }
 .slot-exp { color: var(--c); }
 
