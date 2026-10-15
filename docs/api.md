@@ -121,7 +121,11 @@ the chain; the UI does this for parameter and bypass edits.
   "blocks": [4]}`: one-based switch, the name typed for it (absent when none), and the
   `position`s of the blocks whose bypass it switches. `footswitch` (block) is the switch
   the block is on, absent when none. Read with opcode 33, one round trip per switch, on
-  every chain read; a footswitch bypass is not in the preset document (PROTOCOL.md).
+  every chain read except a live re-read after a knob or bypass edit that left the slots
+  as they were; a footswitch bypass is not in the preset document (PROTOCOL.md). `usb`
+  decodes the reply itself and skips entries it cannot read: hx-usb's strict decoder
+  counts one as a protocol error, which ends the session (seen on the HX Effects after
+  front-panel edits, 2026-10-15).
   Opcode 33 also lists parameters a switch drives; an entry the document's controller
   table (key 4, footswitch n = ordinal n + 2) holds as a parameter is left out, as
   TonePush's GUI does. `usb` and `fake` only (`footswitches` absent with `cli`, or when

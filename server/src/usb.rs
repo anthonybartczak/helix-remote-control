@@ -627,7 +627,7 @@ impl Worker {
     }
 
     fn publish_chain(&mut self, cause: Cause) {
-        let text = match self.chain() {
+        let text = match self.reread(cause) {
             Ok(text) => {
                 self.reload_retries = 0;
                 text
@@ -792,6 +792,22 @@ impl Worker {
         Ok(self.render(self.doc.as_ref().expect("just read")))
     }
 
+    /// [`Worker::chain`] after a notification. An edit (a knob, a bypass)
+    /// leaves the footswitches as they were, so they are read again only when
+    /// the slots changed (a block added or removed on the pedal), for any
+    /// other cause, or when they are unknown. Keeps opcode 33 out of a
+    /// front-panel knob turn.
+    fn reread(&mut self, cause: Cause) -> Result<String> {
+        let before = self.doc.as_ref().map(|d| slot_models(&d.preset));
+        self.read_doc()?;
+        let doc = self.doc.as_ref().expect("just read");
+        let same_slots = before.as_ref() == Some(&slot_models(&doc.preset));
+        if cause != Cause::Edit || !same_slots || doc.switches.is_none() {
+            self.read_switches()?;
+        }
+        Ok(self.render(self.doc.as_ref().expect("just read")))
+    }
+
     /// Read the loaded preset into `doc`, keeping the footswitches last read
     /// (for re-reads within one preset; [`Worker::chain`] reads them anew).
     fn read_doc(&mut self) -> Result<()> {
@@ -814,8 +830,24 @@ impl Worker {
     /// Read every footswitch (opcode 33, six round trips on an HX Effects)
     /// into `doc`. A refusal leaves them unknown rather than failing the
     /// chain; a lost session fails.
+    ///
+    /// The raw reply, decoded here: hx-usb's `read_switch` turns any entry
+    /// it does not expect into a protocol error, and every error but a
+    /// refusal ends the session ([`Worker::check`]). On the HX Effects that
+    /// dropped the session after front-panel edits (2026-10-15).
     fn read_switches(&mut self) -> Result<()> {
-        let switches = match self.with(|s| s.switches()) {
+        use hx_proto::rpc::{key, op};
+        let count = self.session.as_ref().map_or(0, |s| s.profile.switches);
+        let read = self.with(|s| {
+            (1..=count)
+                .map(|n| {
+                    let ask = hx_proto::msgmap! { key::SWITCH => Value::Int(i64::from(n)) };
+                    s.request(hx_proto::ChannelId::DATA, op::FOOTSWITCH_CONFIG, ask)
+                        .map(|reply| switch_read(n, &reply))
+                })
+                .collect::<hx_usb::Result<Vec<_>>>()
+        });
+        let switches = match read {
             Ok(switches) => Some(switches),
             Err(e) if self.session.is_some() => {
                 tracing::debug!("footswitches unreadable: {e}");
@@ -1373,6 +1405,47 @@ fn active_snapshot(preset: &hx_proto::Preset) -> Option<u32> {
     ((index as usize) < preset.snapshots().len()).then_some(index)
 }
 
+/// One footswitch as opcode 33 answered, what the bridge needs of it.
+#[derive(Debug, PartialEq)]
+struct SwitchRead {
+    /// One-based.
+    switch: u8,
+    label: Option<String>,
+    /// Blocks named in its assignment list, as the device numbers them.
+    blocks: Vec<i64>,
+}
+
+/// Decode an opcode 33 reply (PROTOCOL.md): `{102: index, 109: label,
+/// 67: [{69: {98: block, 109: name, …}, …}]}`. Lenient: an entry without a
+/// block, a label that is not text, a list that is not a list are skipped,
+/// never an error, so an odd reply cannot end the session.
+fn switch_read(switch: u8, reply: &Value) -> SwitchRead {
+    use hx_proto::rpc::key;
+    let label = match reply.get(key::NAME) {
+        Some(Value::Str(text)) if !text.is_empty() => Some(text.clone()),
+        _ => None,
+    };
+    let blocks = match reply.get(key::SWITCH_ASSIGNED) {
+        Some(Value::Array(items)) => items
+            .iter()
+            .filter_map(|item| item.get(key::SWITCH_TARGET)?.get(key::BLOCK)?.as_i64())
+            .filter(|block| *block >= 0)
+            .collect(),
+        _ => Vec::new(),
+    };
+    SwitchRead {
+        switch,
+        label,
+        blocks,
+    }
+}
+
+/// Which slot holds which model: what a front-panel add or remove changes,
+/// and with it possibly the footswitches.
+fn slot_models(preset: &hx_proto::Preset) -> Vec<Option<u32>> {
+    preset.slots.iter().map(|s| s.model).collect()
+}
+
 /// What each footswitch carries, by chain position (`block + 1`).
 ///
 /// Opcode 33 lists everything a switch drives on a block, parameters
@@ -1380,15 +1453,15 @@ fn active_snapshot(preset: &hx_proto::Preset) -> Option<u32> {
 /// every parameter assignment and no footswitch bypass (PROTOCOL.md), so an
 /// entry the table accounts for is a parameter and is left out, as TonePush's
 /// GUI does (`all_assignments`).
-fn footswitches(switches: &[hx_usb::Switch], tone: &Value) -> Vec<parse::Footswitch> {
+fn footswitches(switches: &[SwitchRead], tone: &Value) -> Vec<parse::Footswitch> {
     switches
         .iter()
         .map(|s| {
             let mut blocks: Vec<u32> = s
-                .carries
+                .blocks
                 .iter()
-                .filter(|c| !drives_parameter(tone, c.block, s.switch))
-                .filter_map(|c| u32::try_from(c.block + 1).ok())
+                .filter(|&&block| !drives_parameter(tone, block, s.switch))
+                .filter_map(|&block| u32::try_from(block + 1).ok())
                 .collect();
             blocks.sort_unstable();
             blocks.dedup();
@@ -1460,14 +1533,17 @@ pub fn probe_switches() -> std::result::Result<(), String> {
     let mut decoded = Vec::new();
     for n in 1..=count {
         let ask = hx_proto::msgmap! { key::SWITCH => Value::Int(i64::from(n)) };
-        let reply = session.request_full(ChannelId::DATA, op::FOOTSWITCH_CONFIG, ask);
+        let reply = session.request_full(ChannelId::DATA, op::FOOTSWITCH_CONFIG, ask.clone());
         println!("FS{n} raw (status, body): {reply:?}");
+        // hx-usb's strict decoder: an error here is what used to end the
+        // server's session.
         match session.read_switch(n) {
-            Ok(s) => {
-                println!("FS{n} decoded: {s:?}");
-                decoded.push(s);
-            }
-            Err(e) => println!("FS{n} decode failed: {e}"),
+            Ok(s) => println!("FS{n} hx-usb: {s:?}"),
+            Err(e) => println!("FS{n} hx-usb decode failed: {e}"),
+        }
+        match session.request(ChannelId::DATA, op::FOOTSWITCH_CONFIG, ask) {
+            Ok(body) => decoded.push(switch_read(n, &body)),
+            Err(e) => println!("FS{n} read failed: {e}"),
         }
     }
     print_events(&mut session, "during the reads", Duration::from_millis(300))?;
@@ -1749,23 +1825,44 @@ mod tests {
         assert_eq!(notice(77, &Value::Nil), Some(Cause::Other));
     }
 
-    fn carried(block: i64) -> hx_usb::Carried {
-        hx_usb::Carried {
-            block,
-            name: "Jazz Rivet 120".into(),
-            colour: Some(16_711_683),
-            enabled: true,
+    fn switch(n: u8, blocks: &[i64]) -> SwitchRead {
+        SwitchRead {
+            switch: n,
+            label: None,
+            blocks: blocks.to_vec(),
         }
     }
 
-    fn switch(n: u8, blocks: &[i64]) -> hx_usb::Switch {
-        hx_usb::Switch {
-            switch: n,
-            momentary: false,
-            label: None,
-            colour: None,
-            carries: blocks.iter().map(|&b| carried(b)).collect(),
-        }
+    /// PROTOCOL.md's opcode 33 replies, and ones hx-usb's decoder refuses
+    /// (an empty name, no enabled flag), which must not be errors here.
+    #[test]
+    fn switch_replies_decode_leniently() {
+        let unassigned = msgmap! {
+            102 => Value::Int(0), 65 => Value::Bool(false), 109 => Value::Nil,
+            66 => Value::Nil, 67 => Value::Nil,
+        };
+        assert_eq!(switch_read(1, &unassigned), switch(1, &[]));
+        let entry = |block: i64, name: &str| {
+            msgmap! {
+                59 => Value::Bool(true), 68 => Value::Int(1), 66 => Value::Int(16_711_683),
+                69 => msgmap! {
+                    109 => Value::Str(name.into()), 98 => Value::Int(block),
+                    29 => Value::Bool(false), 26 => Value::Int(0), 28 => Value::Int(0),
+                },
+            }
+        };
+        let odd =
+            msgmap! { 69 => msgmap! { 109 => Value::Str(String::new()), 98 => Value::Int(5) } };
+        let no_block = msgmap! { 69 => msgmap! { 109 => Value::Str("x".into()) } };
+        let carrying = msgmap! {
+            102 => Value::Int(2), 65 => Value::Bool(false), 109 => Value::Str("Lead".into()),
+            66 => Value::Nil,
+            67 => Value::Array(vec![entry(2, "Jazz Rivet 120"), odd, no_block, Value::Nil]),
+        };
+        let got = switch_read(3, &carrying);
+        assert_eq!(got.label.as_deref(), Some("Lead"));
+        assert_eq!(got.blocks, [2, 5]);
+        assert_eq!(switch_read(4, &Value::Nil), switch(4, &[]));
     }
 
     /// Opcode 33's lists, less what the document says is a parameter.
