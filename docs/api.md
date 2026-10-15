@@ -66,8 +66,13 @@ the chain; the UI does this for parameter and bypass edits.
   device lacks): 502 `failed` with its error. `usb` reads the preset back until the
   change shows (up to 1 s). Removing with `?model=M` (the block's `model_id`) refuses
   with 409 `stale` if the slot now holds another model; an empty slot is 409 too. `cli`
-  cannot check either. Confirmed on an HX Stomp by TonePush; **not yet verified on the
-  HX Effects**.
+  cannot check either. Confirmed on an HX Stomp by TonePush and verified on the HX
+  Effects 3.80 (Pi 4, 2026-10-15). On the HX Effects op40 answers exactly as on the
+  Stomp: the reply carries the rebuilt slot, then notifications 49/47 and 49/10
+  `{98: slot}` (slot rebuilt); the slot it writes is byte-for-byte the one the pedal
+  writes for a front-panel add (`helix-bridge probe-add`, `probe-slot`). The block gets
+  **no footswitch**, while a front-panel add takes a free one; the HX Effects home screen
+  shows only footswitch blocks, so look in Signal Flow view.
 - Not exposed: reorder (`tonepush move`, marked untested on hardware by TonePush),
   changing an existing block's model, snapshot rename, routing, IRs, settings, restore.
 

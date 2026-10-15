@@ -130,18 +130,15 @@ in the browser):
   slot, switched on, with HX Edit's default values. Needs HX Edit data on the server
   (`usb` with `/vendor`; `fake` uses it when the machine has HX Edit, else offers the 4
   recorded models). Path A slots 1–9 only; a taken slot is refused, never replaced.
-  **Does not work on the HX Effects yet** (2026-10-15, Pi 4): the pedal accepts the
-  block into its preset document but does not run it, and it is gone after a save and
-  reload. Under investigation with `helix-bridge probe-add` (below).
+  **A new block gets no footswitch**, so the HX Effects home screen (Stomp mode, which
+  draws only the 6 footswitch blocks) does not show it: on the pedal it is in Signal
+  Flow view (MENU, then the Signal Flow switch). A block added on the pedal itself does
+  get a free footswitch. The bridge does not assign one: the HX Effects' footswitch
+  numbering is unconfirmed (AGENTS.md 2).
 - **Remove a block:** select it, tap Remove, confirm. The slot stays selected, ready for
-  another block. Add and remove change the edit buffer only (Save keeps them). Remove
-  verified 2026-10-15 on the HX Effects 3.80 (Pi 4, iPad Safari).
-
-Diagnostics, run on the Pi with the service stopped (`sudo systemctl stop helix-bridge`,
-then wait 40 s): `helix-bridge watch [SECONDS]` prints the pedal's notifications;
-`helix-bridge probe-slot POSITION` prints the preset's slot row and one raw slot
-(read-only); `helix-bridge probe-add POSITION MODEL` adds a block the way the bridge does
-(op78, op40) and prints every reply, notification and the slot before and after.
+  another block. Add and remove change the edit buffer only (Save keeps them). Both
+  verified 2026-10-15 on the HX Effects 3.80 (Pi 4, iPad Safari, build `d211589`), checked
+  in the pedal's Signal Flow view.
 - **Rename / Save:** buttons in the preset bar. Save asks first and overwrites the
   loaded preset. "Unsaved" in the bar means edits are only in the edit buffer.
 
@@ -164,6 +161,12 @@ Without a token, write controls are dashed and inert. Known limits:
   Without HX Edit data (`cli`, or no `/vendor`), parameters are typed and only `%`
   values get a bar.
 - **Unsaved flag:** with `usb`, pedal edits count too; with `cli`, only bridge edits.
+
+Diagnostics, run on the Pi with the service stopped (`sudo systemctl stop helix-bridge`,
+then wait 40 s): `helix-bridge watch [SECONDS]` prints the pedal's notifications;
+`helix-bridge probe-slot POSITION` prints the preset's slot row and one raw slot
+(read-only); `helix-bridge probe-add POSITION MODEL` adds a block the way the bridge does
+(op78, op40) and prints every reply, notification and the slot before and after.
 
 Web tests (Node 22; Chromium from Playwright, never `playwright install` in the cloud):
 

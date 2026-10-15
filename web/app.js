@@ -393,6 +393,10 @@ function editParam(index) {
 // ---------- Adding and removing blocks ----------
 
 const CATALOG_PENDING = 'pending';
+// The pedal puts a block added on its front panel on a free footswitch; a
+// block added over USB (op40) gets none, and the HX Effects home
+// screen draws only footswitch blocks. Verified 2026-10-15 on the HX Effects.
+const NO_FOOTSWITCH = 'New blocks get no footswitch: on the pedal they show in Signal Flow (MENU → Signal Flow).';
 
 /** Fetch the model list once (catalog data only, no device call); again after a failure. */
 function loadCatalog() {
@@ -1037,7 +1041,7 @@ function renderParams() {
       `<div class="params-head"><div class="ph-code">+</div>` +
       `<div class="ph-title"><div class="ph-model">Empty slot</div></div>` +
       `<div class="ph-meta">slot ${slot}</div><div class="spacer"></div>${add}</div>` +
-      `<div class="params-empty">${state.writes ? 'Add an effect here: tap Add block, pick a model.' : 'Nothing in this slot.'}</div>`;
+      `<div class="params-empty">${state.writes ? `Add an effect here: tap Add block, pick a model.<br>${esc(NO_FOOTSWITCH)}` : 'Nothing in this slot.'}</div>`;
     return;
   }
   const cat = blockCategory(b);
@@ -1294,7 +1298,7 @@ function renderPicker() {
   $('pf-name').textContent = sel?.name ?? 'Pick a model';
   $('pf-note').textContent = sel
     ? [sel.category.name, sel.type, sel.shelf, sel.based_on && `based on ${sel.based_on}`].filter(Boolean).join(' · ')
-    : '';
+    : NO_FOOTSWITCH;
   add.textContent = sel ? `Add to slot ${slot}` : 'Add';
   setControl(add, canWrite() && !!sel && !slotMap().has(slot));
 }
