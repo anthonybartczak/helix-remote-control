@@ -79,6 +79,29 @@ async fn main() {
         }
         return;
     }
+    // Diagnostics for adding a block on the HX Effects (usb::probe_slot,
+    // usb::probe_add): `helix-bridge probe-slot POSITION`,
+    // `helix-bridge probe-add POSITION MODEL`. Stop the service first.
+    let number = |i: usize| args.get(i).and_then(|s| s.parse::<u32>().ok());
+    let probe = match args.get(1).map(String::as_str) {
+        Some("probe-slot") => Some(
+            number(2)
+                .ok_or_else(|| "usage: helix-bridge probe-slot POSITION".to_owned())
+                .and_then(|p| helix_bridge::usb::probe_slot(p as usize)),
+        ),
+        Some("probe-add") => Some(match (number(2), number(3)) {
+            (Some(p), Some(m)) => helix_bridge::usb::probe_add(p as usize, m),
+            _ => Err("usage: helix-bridge probe-add POSITION MODEL".to_owned()),
+        }),
+        _ => None,
+    };
+    if let Some(result) = probe {
+        if let Err(e) = result {
+            eprintln!("probe failed: {e}");
+            std::process::exit(1);
+        }
+        return;
+    }
 
     let config = match Config::from_env() {
         Ok(c) => c,

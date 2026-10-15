@@ -1145,6 +1145,131 @@ pub fn watch(seconds: u64) -> std::result::Result<(), String> {
     Ok(())
 }
 
+/// `helix-bridge probe-slot POSITION`: read-only. Print the loaded preset's
+/// slot row and layout, and the raw body of the slot at chain position
+/// `position`. For comparing a block HX Edit added with one the bridge added.
+/// Stop the service first.
+pub fn probe_slot(position: usize) -> std::result::Result<(), String> {
+    let mut session = probe_open()?;
+    let preset = session.read_preset().map_err(|e| e.to_string())?;
+    print_preset(&preset, position);
+    Ok(())
+}
+
+/// `helix-bridge probe-add POSITION MODEL`: put model number `model` into the
+/// empty slot at chain position `position` the way the bridge does (op78
+/// then op40), printing every reply, every notification and the slot before
+/// and after. For finding out why the HX Effects stores the block in its
+/// document but does not run it. Writes to the edit buffer only. Stop the
+/// service first.
+pub fn probe_add(position: usize, model: u32) -> std::result::Result<(), String> {
+    use hx_proto::rpc::{key, op};
+    use hx_proto::ChannelId;
+
+    let mut session = probe_open()?;
+    let slot = position
+        .checked_sub(1)
+        .ok_or("positions count from 1, as /api/chain")?;
+    let before = session.read_preset().map_err(|e| e.to_string())?;
+    println!("== before");
+    print_preset(&before, position);
+    if before.slots.get(slot).is_none_or(|s| s.model.is_some()) {
+        return Err(format!(
+            "position {position} is not an empty slot; nothing sent"
+        ));
+    }
+    print_events(&mut session, "backlog", Duration::from_millis(800))?;
+
+    let block = Value::Int(slot as i64);
+    let select = hx_proto::msgmap! { key::BLOCK => block.clone(), key::PATH => Value::Int(0) };
+    println!("== op78 select {select:?}");
+    let reply = session.request_full(ChannelId::DATA, op::SELECT_BLOCK, select);
+    println!("reply (status, body): {reply:?}");
+    print_events(&mut session, "after op78", Duration::from_millis(800))?;
+
+    let set = hx_proto::msgmap! {
+        key::BLOCK => block,
+        key::MODEL_REF => hx_proto::msgmap! {
+            key::PAIRED => Value::Bool(false),
+            key::MODEL => Value::Int(i64::from(model)),
+            key::PAIRED_MODEL => Value::Int(-1),
+        },
+    };
+    println!("== op40 set model {set:?}");
+    let reply = session.request_full(ChannelId::DATA, op::SET_MODEL, set);
+    println!("reply (status, body): {reply:?}");
+    print_events(&mut session, "after op40", Duration::from_secs(3))?;
+
+    let after = session.read_preset().map_err(|e| e.to_string())?;
+    println!("== after");
+    print_preset(&after, position);
+    println!(
+        "== done. The block stays in the edit buffer: load another preset to drop it, \
+         or keep it to compare with `probe-slot {position}`."
+    );
+    Ok(())
+}
+
+fn probe_open() -> std::result::Result<Session, String> {
+    let found = hx_usb::list().map_err(|e| e.to_string())?;
+    let device = found.first().ok_or(NO_DEVICE)?;
+    let session = device.open().map_err(|e| e.to_string())?;
+    println!(
+        "{} (device id {:#010x})",
+        session.profile.name, session.profile.device_id
+    );
+    if !session.events_answered() {
+        println!(
+            "warning: the events channel did not answer, so no notification will show; \
+             wait 40 s after stopping the service, then run this again"
+        );
+    }
+    Ok(session)
+}
+
+/// The slot row (kind and model per index), the layout, and one raw slot.
+fn print_preset(preset: &hx_proto::Preset, position: usize) {
+    for (i, s) in preset.slots.iter().enumerate() {
+        println!(
+            "slot {i:>2} (position {:>2}): {:?} model {:?} paired {:?} enabled {} values {}",
+            i + 1,
+            s.kind,
+            s.model,
+            s.paired,
+            s.enabled,
+            s.values.len()
+        );
+    }
+    println!("layout: {:?}", preset.layout());
+    match position.checked_sub(1).and_then(|i| preset.raw_slot(i)) {
+        Some(raw) => println!("raw slot at position {position}: {raw:?}"),
+        None => println!("no raw slot at position {position}"),
+    }
+}
+
+/// Print every notification for `wait`, keeping the session alive.
+fn print_events(
+    session: &mut Session,
+    label: &str,
+    wait: Duration,
+) -> std::result::Result<(), String> {
+    let start = Instant::now();
+    let mut n = 0;
+    while start.elapsed() < wait {
+        for (event, args) in session.poll_notifications().map_err(|e| e.to_string())? {
+            n += 1;
+            println!(
+                "  {label} {:>4} ms event {event}: {args:?}",
+                start.elapsed().as_millis()
+            );
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+    session.keepalive().map_err(|e| e.to_string())?;
+    println!("  {label}: {n} notifications");
+    Ok(())
+}
+
 /// The active snapshot, zero-based: tone key 10 (snapshots), key 6, as
 /// TonePush's GUI reads it (`session.rs`, `active_snapshot`). Not verified
 /// on the HX Effects yet.
