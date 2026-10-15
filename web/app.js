@@ -1342,11 +1342,14 @@ function pedal(cat) {
   if (/^(wah|volume)/i.test(cat.name)) {
     return `<div class="node treadle"><span class="led"></span><span class="tread"></span>${plate}</div>`;
   }
-  // An FX loop: a jack box, the cable going out of Send and back into Return.
+  // An FX loop: a jack box with two plugs in its top edge, Send and Return,
+  // their cables running straight up out of it.
   if (/^send/i.test(cat.name)) {
-    return '<div class="node loop"><span class="led"></span>' +
-      '<svg class="loop-icon" viewBox="0 0 40 26" aria-hidden="true"><path d="M9 19V11a11 9 0 0 1 22 0v8"/>' +
-      '<circle cx="9" cy="20" r="4"/><circle cx="31" cy="20" r="4"/></svg>' +
+    return '<div class="node loop"><svg class="cables" viewBox="0 0 74 30" aria-hidden="true">' +
+      '<path class="cable" d="M22 15V-2"/><path class="cable" d="M52 15V-2"/>' +
+      '<rect class="plug" x="18.5" y="14" width="7" height="11" rx="1.5"/>' +
+      '<rect class="plug" x="48.5" y="14" width="7" height="11" rx="1.5"/></svg>' +
+      '<span class="led"></span><span class="jacks"><span>SEND</span><span>RTN</span></span>' +
       `${plate}</div>`;
   }
   return `<div class="node"><span class="led"></span>${plate}</div>`;

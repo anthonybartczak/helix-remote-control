@@ -231,13 +231,19 @@ button:not(:disabled):active { transform: scale(.95); }
   background: repeating-linear-gradient(180deg, color-mix(in oklab, var(--c) 22%, transparent) 0 3px, transparent 3px 6px);
 }
 .node.treadle .led { position: absolute; top: 4px; right: 5px; }
-/* An FX loop: a squarer jack box, a cable from Send round to Return. */
-.node.loop { border-radius: 5px; }
-.loop-icon { flex: none; width: 80%; margin-top: auto; overflow: visible; color: color-mix(in oklab, var(--c) 75%, var(--muted)); }
-.loop-icon path { fill: none; stroke: currentColor; stroke-width: 2.5; stroke-linecap: round; stroke-dasharray: 3 3; }
-.loop-icon circle { fill: oklch(0.1 0.005 260); stroke: currentColor; stroke-width: 2; }
-.slot.on .loop-icon { color: var(--c); }
-.slot.on .loop-icon path { stroke-dasharray: none; }
+/* An FX loop: a squarer jack box. Two plugs sit in its top edge, Send and
+   Return, their cables running straight up out of it, over the slot number
+   row. */
+.node.loop { border-radius: 5px; overflow: visible; }
+.cables {
+  position: absolute; left: -10px; top: -21px; width: calc(100% + 20px); height: 30px;
+  overflow: visible; pointer-events: none; color: color-mix(in oklab, var(--c) 60%, var(--muted));
+}
+.cables .cable { fill: none; stroke: currentColor; stroke-width: 2.5; stroke-linecap: round; stroke-linejoin: round; vector-effect: non-scaling-stroke; }
+.cables .plug { fill: oklch(0.72 0.005 260); stroke: oklch(0.1 0.005 260); stroke-width: 1; }
+.slot.on .cables { color: var(--c); }
+.jacks { display: flex; justify-content: space-between; width: 100%; padding: 0 1px; font: 700 7px var(--font-mono); letter-spacing: .02em; color: color-mix(in oklab, var(--c) 60%, var(--muted)); }
+.node.loop .led { margin-top: 6px; }
 .node.treadle .plate { margin-top: 0; }
 .slot.on .led { background: oklch(0.68 0.23 27); box-shadow: 0 0 6px oklch(0.68 0.23 27 / .8); }
 .slot.on .node {
@@ -643,6 +649,8 @@ div.slot.empty { cursor: default; }
   .led { width: 5px; height: 5px; }
   .plate { padding: 2px 1px; font-size: 7px; letter-spacing: -.06em; }
   .node.treadle .led { top: 3px; right: 3px; }
+  .jacks { display: none; }
+  .cables { left: -4px; top: -16px; width: calc(100% + 8px); }
   .params-grid { grid-template-columns: minmax(0, 1fr); padding: var(--s2) var(--s4); }
   .ph-meta { display: none; }
   .banner { height: auto; min-height: 64px; flex-wrap: wrap; padding: var(--s2) var(--s2) var(--s2) var(--s4); }
