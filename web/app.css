@@ -142,6 +142,7 @@ button:not(:disabled):active { transform: scale(.95); }
 }
 .nb-name { font-size: var(--fs-xl); font-weight: 650; letter-spacing: -.01em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .nb-status { font-size: var(--fs-s); color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 0 100 auto; }
+.rename-icon { display: none; }
 .namebar.unsaved .nb-status { color: var(--warn); }
 .namebar.unsaved .nb-status::before {
   content: ""; display: inline-block; width: 7px; height: 7px; margin-right: 6px; vertical-align: 1px;
@@ -330,7 +331,9 @@ button:not(:disabled):active { transform: scale(.95); }
 }
 .add-b:not(:disabled):active { transform: translateX(-50%) scale(.95); }
 .add-b:disabled { opacity: .5; }
+/* Room under the slots for "+ Path B", clear of the block names. */
 .chain { position: relative; }
+.chain.has-add-b { padding-bottom: 40px; }
 .lane-tag {
   position: absolute; left: -9px; bottom: -9px; width: 16px; height: 16px; display: grid; place-items: center;
   border-radius: 4px; background: var(--line-strong); color: var(--bg); font: 800 11px var(--font-ui);
@@ -589,6 +592,23 @@ div.slot.empty { cursor: default; }
   .chain { height: 220px; }
   .params-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .is-blocked .presets-btn { display: none; }
+}
+
+/* ---------- Tablet and phone (< 1280px): room for the preset's name ---------- */
+
+/* Rename turns into a pencil, the device's name stays in the connection
+   popover, and the bar's spacing tightens: at 768 and 1024 px the name
+   had two letters left and the dots spilled over Save. */
+@media (max-width: 1279px) {
+  .presets-btn { width: 88px; }
+  .namebar { gap: var(--s2); }
+  .nb-name { font-size: var(--fs-l); }
+  .conn-name { display: none; }
+  .conn-dots { flex: none; }
+  .rename-btn { width: var(--tap); padding: 0; display: grid; place-items: center; }
+  .rename-text { display: none; }
+  .rename-icon { display: block; }
+  .snaps-inline .snap { width: 52px; }
 }
 
 /* ---------- Tablet / phone portrait ---------- */
