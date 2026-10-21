@@ -1215,17 +1215,24 @@ impl Worker {
 
     /// Move the block at `block` into the empty cell `to` (Path A or Path B):
     /// the two slots trade places in the preset document, which is written
-    /// back whole (op21), as TonePush's GUI moves blocks. The first block
-    /// onto an empty Path B claims the whole line; a move that empties
-    /// Path B leaves its attach points at zero (hx-usb settles them on
-    /// every write). Unverified on the HX Effects.
+    /// back whole (op21), as TonePush's GUI moves blocks. A move that
+    /// empties Path B leaves its attach points at zero (hx-usb settles them
+    /// on every write). Verified on the HX Effects 3.80 (2026-10-22).
     ///
-    /// A footswitch is not in the document: the pedal may keep it on the
-    /// cell rather than the block. The switches are read back afterwards,
-    /// so the chain shows what the pedal did.
+    /// The first block onto an empty Path B claims the whole line, in a
+    /// second write: in the same write as the swap, the HX Effects puts the
+    /// split where it likes (before cell 3 on 01A), as it zeroes the attach
+    /// points when a model lands in [`Worker::add_block`]; a split moved on
+    /// its own stays where it was put.
+    ///
+    /// A footswitch is not in the document, and the HX Effects drops it
+    /// from a moved block (on neither cell afterwards): the block is put
+    /// back on the switches it was on, as the fake and HX Edit keep them.
     fn move_block(&mut self, block: u32, to: u32, model: Option<u32>) -> Result<String> {
         self.read_doc()?;
         let held = self.block_at(block, model)?;
+        self.read_switches()?;
+        let before = self.doc.as_ref().and_then(|d| d.switches.clone());
         let preset = &self.doc.as_ref().expect("just read").preset;
         let (from_slot, to_slot) = (block as usize - 1, (to as usize).wrapping_sub(1));
         let place = routing_of(preset)
@@ -1238,16 +1245,30 @@ impl Worker {
             )));
         }
         self.rewrite(|p| {
-            if !p.swap_slots(from_slot, to_slot) {
-                return Err("that block cannot move there");
-            }
-            if place == (routing::Place::Branch { claim: true }) {
-                claim_line(p)?;
-            }
-            Ok(())
+            p.swap_slots(from_slot, to_slot)
+                .then_some(())
+                .ok_or("that block cannot move there")
         })?;
+        if place == (routing::Place::Branch { claim: true }) {
+            // The pedal placed the split itself: read what it holds first.
+            self.read_doc()?;
+            self.rewrite(claim_line)?;
+        }
         // The document is the one written; only the switches need reading.
-        let _ = self.read_switches();
+        self.read_switches()?;
+        let after = self.doc.as_ref().and_then(|d| d.switches.clone());
+        if let (Some(before), Some(after)) = (before, after) {
+            let (off, on) = switch_follow(&before, &after, block, to);
+            for &n in &off {
+                self.with(|s| s.unassign_bypass_footswitch(from_slot as i64, n))?;
+            }
+            for &n in &on {
+                self.with(|s| s.assign_bypass_footswitch(to_slot as i64, n))?;
+            }
+            if !(off.is_empty() && on.is_empty()) {
+                self.read_switches()?;
+            }
+        }
         Ok(format!(
             "moved {} from block {block} to block {to}\n",
             model_name(self.catalog.as_deref(), held)
@@ -1788,6 +1809,30 @@ fn claim_line(p: &mut hx_proto::Preset) -> std::result::Result<(), &'static str>
     }
 }
 
+/// What a move of the block at `from` to `to` leaves to do on the
+/// footswitches, from the switches read `before` and `after` it: the
+/// switches still listing the emptied `from` (take it off them), and the
+/// ones the block was on that do not list `to` (put it on them).
+fn switch_follow(
+    before: &[parse::Footswitch],
+    after: &[parse::Footswitch],
+    from: u32,
+    to: u32,
+) -> (Vec<u8>, Vec<u8>) {
+    let on = |list: &[parse::Footswitch], position: u32| -> Vec<u8> {
+        list.iter()
+            .filter(|s| s.blocks.contains(&position))
+            .map(|s| s.switch)
+            .collect()
+    };
+    let now = on(after, to);
+    let lost = on(before, from)
+        .into_iter()
+        .filter(|n| !now.contains(n))
+        .collect();
+    (on(after, from), lost)
+}
+
 /// The slot row (kind and model per index), the layout, and one raw slot.
 fn print_preset(preset: &hx_proto::Preset, position: usize) {
     for (i, s) in preset.slots.iter().enumerate() {
@@ -2315,6 +2360,35 @@ mod tests {
         assert_eq!(notice(42, &picked), Some(Cause::Other));
         assert_eq!(notice(46, &Value::Nil), Some(Cause::Other));
         assert_eq!(notice(77, &Value::Nil), Some(Cause::Other));
+    }
+
+    /// A moved block goes back on its switches; one the pedal left on the
+    /// emptied cell comes off it.
+    #[test]
+    fn moved_blocks_keep_their_switches() {
+        let fs = |switch, blocks: &[u32]| parse::Footswitch {
+            switch,
+            label: None,
+            blocks: blocks.to_vec(),
+        };
+        let before = [fs(1, &[2]), fs(5, &[9]), fs(6, &[8, 9])];
+        // The HX Effects drops it (2026-10-22): FS5 and FS6 lost block 9.
+        let dropped = [fs(1, &[2]), fs(5, &[]), fs(6, &[8])];
+        assert_eq!(
+            switch_follow(&before, &dropped, 9, 10),
+            (vec![], vec![5, 6])
+        );
+        // A pedal that keeps the switch on the cell.
+        let kept = [fs(1, &[2]), fs(5, &[9]), fs(6, &[8, 9])];
+        assert_eq!(
+            switch_follow(&before, &kept, 9, 10),
+            (vec![5, 6], vec![5, 6])
+        );
+        // One that moves it along: nothing to do.
+        let moved = [fs(1, &[2]), fs(5, &[10]), fs(6, &[8, 10])];
+        assert_eq!(switch_follow(&before, &moved, 9, 10), (vec![], vec![]));
+        // A block on no switch.
+        assert_eq!(switch_follow(&before, &before, 4, 3), (vec![], vec![]));
     }
 
     fn switch(n: u8, blocks: &[i64]) -> SwitchRead {
