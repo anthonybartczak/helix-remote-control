@@ -21,9 +21,13 @@ knob or bypass notification), until the next load or save. When the `usb` backen
 session (start, restart, reconnect) it compares the edit buffer with the stored copy of
 the loaded preset (opcode 4, which loads nothing) and sets `unsaved` if they differ, so
 edits survive a restart; `helix-bridge probe-unsaved` (read-only, service stopped)
-prints the differences. Verified on the HX Effects 3.80 (2026-10-22): a Path B block
-added on the pedal before a restart was found and Load asked first. Other backends start
-saved.
+prints the differences. A snapshot switch alone is no edit, as for `/api/snapshot`: when
+the snapshots differ, the stored copy is first recalled to the buffer's snapshot (index
+and block on/off from its snapshot table), and values under the snapshot controller,
+the tempo and footswitch lights are left out. Verified on the HX Effects 3.80
+(2026-10-22): a freshly loaded preset stays saved; so does one switched to another
+snapshot; a block turned off on top of that, and a Path B block added on the pedal, are
+found after a restart, and Load asks first. Other backends start saved.
 
 ## Writes (phase 6)
 
