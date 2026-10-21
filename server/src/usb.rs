@@ -71,6 +71,13 @@ const RECONNECT_MAX: Duration = Duration::from_secs(60);
 /// hammered (PROTOCOL.md), so stay well below that.
 const PARAM_GAP: Duration = Duration::from_millis(40);
 
+/// How often an idle session reads the chain again to check the cached copy
+/// against the pedal: a notification lost on the way leaves the cache wrong
+/// until then. Six footswitch reads and two document reads, once a minute.
+const AUDIT_EVERY: Duration = Duration::from_secs(60);
+/// Idle means no command for this long, so a check never delays a drag.
+const AUDIT_IDLE: Duration = Duration::from_secs(10);
+
 /// Reads of the document after adding or removing a block, until it shows.
 const SLOT_READS: u32 = 5;
 const SLOT_READ_GAP: Duration = Duration::from_millis(200);
@@ -202,8 +209,8 @@ struct Worker {
     open_failures: u32,
     /// A chain re-read is due: (first notification, latest one, strongest cause).
     reload: Option<(Instant, Instant, Cause)>,
-    /// Last chain published, to send only real changes.
-    shown: Option<String>,
+    /// Last chain published or read by a client, to send only real changes.
+    shown: Option<(String, ChainExtra)>,
     /// The loaded preset as last read, patched by bypass and parameter
     /// notifications. Those carry the new value; a re-read right after a
     /// change can still return the old document (TonePush GUI, `present`).
@@ -224,6 +231,10 @@ struct Worker {
     not_before: Instant,
     /// The last look for the pedal found none.
     absent: bool,
+    /// When the last command ran, for [`AUDIT_IDLE`].
+    last_job: Instant,
+    /// When the cached document was last checked against the pedal.
+    last_audit: Instant,
 }
 
 struct Doc {
@@ -270,6 +281,8 @@ impl Worker {
             // A restart: the previous process's session may have just ended.
             not_before: Instant::now() + SETTLE_BEFORE_OPEN,
             absent: false,
+            last_job: Instant::now(),
+            last_audit: Instant::now(),
         }
     }
 
@@ -287,14 +300,22 @@ impl Worker {
                     let (cmd, replies, after) = coalesce(cmd, reply, &jobs);
                     queued = after;
                     let result = self.command(&cmd);
+                    self.last_job = Instant::now();
                     for reply in replies {
                         let _ = reply.send(result.clone());
                     }
                 }
                 Ok(Job::Chain(reply)) => {
-                    let result = self
-                        .command(&Command::Chain)
-                        .map(|text| (text, self.extra()));
+                    let read = match self.cached_chain() {
+                        Some(text) => Ok(text),
+                        None => self.command(&Command::Chain),
+                    };
+                    let result = read.map(|text| {
+                        let extra = self.extra();
+                        // The client shows this now: publish only a change from it.
+                        self.shown = Some((text.clone(), extra.clone()));
+                        (text, extra)
+                    });
                     let _ = reply.send(result);
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
@@ -357,6 +378,40 @@ impl Worker {
                 self.publish_chain(cause);
             }
         }
+        if self.reload.is_none() && audit_due(now, self.last_audit, self.last_job) {
+            self.audit();
+        }
+    }
+
+    /// Read the chain again and push it if it differs from what clients were
+    /// last sent or read: catches a change whose notification got lost.
+    fn audit(&mut self) {
+        self.last_audit = Instant::now();
+        if self.session.is_none() || self.doc.is_none() {
+            return;
+        }
+        match self.reread(Cause::Other) {
+            Ok(text) => {
+                if self.publish(text, Cause::Other) {
+                    tracing::info!(
+                        "periodic check: the pedal changed without a notification; sent"
+                    );
+                }
+            }
+            Err(e) => tracing::debug!("periodic check failed: {e}"),
+        }
+    }
+
+    /// The cached chain, when it needs no read: the pedal's notifications
+    /// reach this session (they keep the cache current), no re-read is due,
+    /// and the header and footswitches are known. `None`: read the pedal.
+    fn cached_chain(&self) -> Option<String> {
+        let notified = self.session.as_ref().is_some_and(Session::events_answered);
+        let doc = self
+            .doc
+            .as_ref()
+            .filter(|d| d.info.is_some() && d.switches.is_some())?;
+        (notified && self.reload.is_none()).then(|| self.render(doc))
     }
 
     fn reconnect_delay(&self) -> Duration {
@@ -406,6 +461,7 @@ impl Worker {
             self.skipped = session.events_skipped();
             self.session = Some(session);
             self.last_poll = Instant::now();
+            self.last_audit = Instant::now();
             self.shown = None;
             let _ = self.live.send(Live::Connected(true));
         }
@@ -615,21 +671,26 @@ impl Worker {
         }
     }
 
-    fn publish(&mut self, text: String, cause: Cause) {
+    /// Push the chain to live clients unless they have it already. True if sent.
+    fn publish(&mut self, text: String, cause: Cause) -> bool {
         let extra = self.extra();
-        // Natives in the key too: a slider step can leave the text unchanged.
-        let key = format!("{text}{extra:?}");
+        // Natives compared too: a slider step can leave the text unchanged.
         // A loaded preset is news even if it looks the same (two `New Preset`s).
-        if cause != Cause::Preset && self.shown.as_deref() == Some(key.as_str()) {
-            return;
+        let same = self
+            .shown
+            .as_ref()
+            .is_some_and(|(t, e)| *t == text && *e == extra);
+        if cause != Cause::Preset && same {
+            return false;
         }
         tracing::debug!(
             ?cause,
             listeners = self.live.receiver_count(),
             "live update"
         );
-        self.shown = Some(key);
+        self.shown = Some((text.clone(), extra.clone()));
         let _ = self.live.send(Live::Chain { text, cause, extra });
+        true
     }
 
     fn publish_chain(&mut self, cause: Cause) {
@@ -709,11 +770,6 @@ impl Worker {
                 model,
             } => self.controller_range(*block, *param, *min, *max, *model),
         };
-        if *cmd == Command::Chain {
-            if let Ok(text) = &out {
-                self.shown = Some(format!("{text}{:?}", self.extra()));
-            }
-        }
         // Some writes swallow their own notifications (a select reads them
         // while it waits), so every write publishes its result itself.
         // Bypass and parameter writes patched `doc` already; adding and
@@ -1871,6 +1927,12 @@ pub fn probe_switches() -> std::result::Result<(), String> {
     Ok(())
 }
 
+/// Whether the cached chain is due a check against the pedal: a minute since
+/// the last one, and the session idle.
+fn audit_due(now: Instant, last_audit: Instant, last_job: Instant) -> bool {
+    now >= last_audit + AUDIT_EVERY && now >= last_job + AUDIT_IDLE
+}
+
 /// How long to wait before the next slider write so writes stay `gap` apart.
 fn pace(last: Instant, now: Instant, gap: Duration) -> Duration {
     (last + gap).saturating_duration_since(now)
@@ -2121,6 +2183,17 @@ mod tests {
             Duration::from_millis(25)
         );
         assert_eq!(pace(t, t + Duration::from_millis(90), gap), Duration::ZERO);
+    }
+
+    #[test]
+    fn checks_wait_for_a_quiet_minute() {
+        let t = Instant::now();
+        let s = Duration::from_secs;
+        assert!(!audit_due(t + s(59), t, t));
+        assert!(audit_due(t + s(60), t, t));
+        // A command 5 s ago (a drag): wait until 10 s after it.
+        assert!(!audit_due(t + s(60), t, t + s(55)));
+        assert!(audit_due(t + s(65), t, t + s(55)));
     }
 
     #[test]

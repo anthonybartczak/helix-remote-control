@@ -271,6 +271,27 @@ function connectLive() {
   };
 }
 
+// Every 30 s, compare the screen with the server's chain and take the
+// server's if they differ: a push lost on the way (a socket that died without
+// closing, a client too slow to keep up) shows up within half a minute. Live
+// backends only: there the server answers from its copy, which it checks
+// against the pedal itself (server/src/usb.rs, `audit`), so no USB read.
+const CHECK_MS = 30000;
+
+async function checkChain() {
+  const quiet = !inflight && !state.busy && !state.drag && !state.travelDrag &&
+    !sender.busy() && !tempoSender.busy() && !state.blocked;
+  if (!state.live || !state.chain || !quiet || document.visibilityState !== 'visible') return;
+  let chain;
+  try { chain = await api('/api/chain'); } catch { return; } // a refresh or live message will tell
+  if (JSON.stringify(chain) !== JSON.stringify(state.chain) && !state.drag && !state.travelDrag) {
+    console.info('Helix Bridge: the screen differed from the server; updated it');
+    applyLiveChain(chain);
+  }
+}
+
+setInterval(checkChain, CHECK_MS);
+
 function applyLiveChain(chain) {
   state.chain = chain;
   state.unsaved = !!chain.unsaved;
@@ -306,14 +327,20 @@ function canWrite() {
   return state.writes && !state.busy && !state.loading && state.device === 'ok' && !state.blocked;
 }
 
+/** The server's live socket is up: it pushes every chain change, writes included. */
+function liveOpen() {
+  return liveSocket?.readyState === WebSocket.OPEN;
+}
+
 /**
  * Send one write. Asks for the token when none is known or it is refused.
- * `then` picks what follows: 'chain' (re-read the chain), 'full' (also preset
- * names), or a function that applies the result locally with no device read.
- * A read costs 3–5 s on hardware, so cheap edits use the function.
+ * `then` picks what follows: 'live' (the server pushes the new chain; re-read
+ * it only without live updates), 'chain' (re-read the chain), 'full' (also
+ * preset names), or a function that applies the result locally with no device
+ * read. A read costs 3–5 s with `cli`, so cheap edits use the function.
  * Returns true on success.
  */
-async function write(label, path, body, then = 'chain', method = 'POST') {
+async function write(label, path, body, then = 'live', method = 'POST') {
   if (!canWrite()) return false;
   state.busy = label;
   render();
@@ -356,7 +383,7 @@ async function write(label, path, body, then = 'chain', method = 'POST') {
   if (ok && typeof then === 'function') {
     then(res);
     render();
-  } else if (ok || stale) {
+  } else if (stale || (ok && (then !== 'live' || !liveOpen()))) {
     await refresh({ full: then === 'full' });
   }
   return ok;
@@ -369,7 +396,9 @@ function confirmDiscard() {
 async function loadPreset(index) {
   const p = state.presets.find((x) => x.index === index);
   if (!p || p.loaded || !confirmDiscard()) return false;
-  return write(`Loading ${p.label}…`, '/api/select', { index });
+  // Read it, as before: the push comes only once the pedal settles, and until
+  // then the old preset would show with nothing saying it is loading.
+  return write(`Loading ${p.label}…`, '/api/select', { index }, 'chain');
 }
 
 function stepPreset(delta) {
@@ -655,7 +684,7 @@ function removeBlock() {
   if (!window.confirm(`Remove ${b.model} from slot ${slotLabel(slot)}?\nThe preset stays unsaved until you save it.`)) return;
   // The model we show: if the pedal now has another one there, the server refuses (409).
   const seen = b.model_id != null ? `?model=${b.model_id}` : '';
-  write(`Removing ${b.model}…`, `/api/blocks/${b.position}${seen}`, undefined, 'chain', 'DELETE');
+  write(`Removing ${b.model}…`, `/api/blocks/${b.position}${seen}`, undefined, 'live', 'DELETE');
 }
 
 // ---------- Paths ----------
@@ -1155,7 +1184,7 @@ function selectSnapshot(index) {
   // The server pushes the new chain (blocks on/off, values) over /api/live;
   // without live updates, read it.
   write(`Snapshot ${index + 1}…`, '/api/snapshot', { index },
-    state.live ? () => { state.chain.snapshot = index; } : 'chain');
+    liveOpen() ? () => { state.chain.snapshot = index; } : 'chain');
 }
 
 /** BPM from the taps so far, once there are two; null before. */
@@ -2118,7 +2147,11 @@ $('pf-fs').addEventListener('change', (e) => {
   storeAddFs(e.target.value);
 });
 
-$('banks').addEventListener('scroll', updateActiveJump, { passive: true });
+// At most once a frame: each update measures every bank row.
+let jumpFrame = 0;
+$('banks').addEventListener('scroll', () => {
+  if (!jumpFrame) jumpFrame = requestAnimationFrame(() => { jumpFrame = 0; updateActiveJump(); });
+}, { passive: true });
 
 document.addEventListener('keydown', (e) => {
   if (e.key !== 'Escape') return;
@@ -2128,7 +2161,8 @@ document.addEventListener('keydown', (e) => {
 });
 
 // Re-read when the iPad comes back to the page (screen lock, app switch).
-// No polling: each read is a USB session on the pedal.
+// No polling with `cli`: each read is a USB session on the pedal (checkChain
+// runs only with live updates).
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState !== 'visible') return;
   if (Date.now() - lastRefresh > RETRY_MS) refresh({ full: false });

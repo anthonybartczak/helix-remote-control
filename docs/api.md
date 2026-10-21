@@ -307,6 +307,16 @@ not known to be noise triggers a re-read. Only real changes are sent; a preset l
 always is. `unsaved` turns true on a pedal edit (events 30, 49) and false on a preset
 load (4, 8, 22/object 28).
 
+Because those notifications keep the server's copy current, the `usb` backend answers
+`GET /api/chain` from that copy when the session's events channel answered, no re-read is
+due and the footswitches are known; otherwise it reads the pedal. Once a minute, after
+10 s without a command, it reads the chain again anyway and pushes it if it differs from
+what clients were last sent (a lost notification), logging
+`periodic check: the pedal changed without a notification`. The UI, for its part,
+compares its screen with `GET /api/chain` every 30 s and takes the server's if they
+differ; after a write it waits for the push instead of re-reading (a preset load still
+re-reads).
+
 ## Web UI
 
 `GET /`, `/app.css`, `/app.js`, `/latest.js` serve the UI from `/web`. The files are compiled into

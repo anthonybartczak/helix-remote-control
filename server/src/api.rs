@@ -3,7 +3,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
+use axum::extract::ws::{Message, Utf8Bytes, WebSocket, WebSocketUpgrade};
 use axum::extract::{FromRequestParts, Path, Query, State};
 use axum::http::request::Parts;
 use axum::http::{header, HeaderMap, StatusCode};
@@ -27,8 +27,9 @@ pub struct AppState<D> {
     /// True after a bypass or parameter change through the bridge, until the
     /// next load or save. Edits made on the pedal itself are not seen.
     unsaved: AtomicBool,
-    /// JSON messages for `/api/live` clients.
-    live: broadcast::Sender<String>,
+    /// JSON messages for `/api/live` clients, serialised once and shared by
+    /// every client (a clone is a reference count, not a copy).
+    live: broadcast::Sender<Utf8Bytes>,
     /// The real gear behind each model, for `based_on` in `/api/chain`.
     based_on: BasedOn,
 }
@@ -799,6 +800,16 @@ async fn tempo<D: Device>(
 
 // ---------- Live updates ----------
 
+/// One `/api/live` message: `{type: "chain", chain}` or `{type: "device", connected}`.
+// Serialised as soon as it is built, so its size does not matter.
+#[allow(clippy::large_enum_variant)]
+#[derive(Serialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
+enum LiveMessage {
+    Chain { chain: ChainView },
+    Device { connected: bool },
+}
+
 /// Turn device changes into client messages, keeping `unsaved` current:
 /// a footswitch or knob on the pedal edits the buffer as much as we do.
 async fn relay<D: Device>(app: Arc<AppState<D>>, mut changes: broadcast::Receiver<Live>) {
@@ -811,25 +822,31 @@ async fn relay<D: Device>(app: Arc<AppState<D>>, mut changes: broadcast::Receive
                     Cause::Other => {}
                 }
                 match full_chain(&app, &text, &extra) {
-                    Ok(chain) => json!({
-                        "type": "chain",
-                        "chain": ChainView {
+                    Ok(chain) => LiveMessage::Chain {
+                        chain: ChainView {
                             chain,
                             unsaved: app.unsaved.load(Ordering::Relaxed),
                         },
-                    }),
+                    },
                     Err(e) => {
                         tracing::warn!("live chain unreadable: {e}");
                         continue;
                     }
                 }
             }
-            Ok(Live::Connected(connected)) => json!({ "type": "device", "connected": connected }),
+            Ok(Live::Connected(connected)) => LiveMessage::Device { connected },
             Err(broadcast::error::RecvError::Lagged(_)) => continue,
             Err(broadcast::error::RecvError::Closed) => return,
         };
+        let text = match serde_json::to_string(&msg) {
+            Ok(text) => text,
+            Err(e) => {
+                tracing::warn!("live message unserialisable: {e}");
+                continue;
+            }
+        };
         // No listeners is fine.
-        let _ = app.live.send(msg.to_string());
+        let _ = app.live.send(text.into());
     }
 }
 
@@ -840,12 +857,12 @@ async fn live<D: Device>(State(app): Shared<D>, ws: WebSocketUpgrade) -> Respons
     ws.on_upgrade(move |socket| live_client(socket, messages))
 }
 
-async fn live_client(mut socket: WebSocket, mut messages: broadcast::Receiver<String>) {
+async fn live_client(mut socket: WebSocket, mut messages: broadcast::Receiver<Utf8Bytes>) {
     loop {
         tokio::select! {
             msg = messages.recv() => match msg {
                 Ok(text) => {
-                    if socket.send(Message::Text(text.into())).await.is_err() {
+                    if socket.send(Message::Text(text)).await.is_err() {
                         return;
                     }
                 }
@@ -1515,6 +1532,12 @@ mod tests {
         assert_eq!(msg["chain"]["blocks"][0]["enabled"], true);
         assert_eq!(msg["chain"]["unsaved"], true);
         assert_eq!(msg["chain"]["label"], "01C");
+    }
+
+    #[test]
+    fn live_device_message() {
+        let msg = serde_json::to_value(LiveMessage::Device { connected: false }).unwrap();
+        assert_eq!(msg, json!({ "type": "device", "connected": false }));
     }
 
     #[test]
