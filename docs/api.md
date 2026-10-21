@@ -16,8 +16,14 @@ one. `/api/device` is cached after the first success (cleared when the device is
 | GET | `/api/models/{id}` | none (HX Edit catalog) | Parameter metadata for sliders, see below. 404 `no_catalog` without it |
 | GET | `/api/catalog` | none (HX Edit catalog) | Models a block can be added with, see below. 404 `no_catalog` without it |
 
-`unsaved` is true after a bypass or parameter change made through the bridge, until the
-next load or save. Edits made on the pedal itself are not seen; it resets on restart.
+`unsaved` is true after any edit of the buffer, through the bridge or on the pedal (a
+knob or bypass notification), until the next load or save. When the `usb` backend opens a
+session (start, restart, reconnect) it compares the edit buffer with the stored copy of
+the loaded preset (opcode 4, which loads nothing) and sets `unsaved` if they differ, so
+edits survive a restart; `helix-bridge probe-unsaved` (read-only, service stopped)
+prints the differences. Verified on the HX Effects 3.80 (2026-10-22): a Path B block
+added on the pedal before a restart was found and Load asked first. Other backends start
+saved.
 
 ## Writes (phase 6)
 

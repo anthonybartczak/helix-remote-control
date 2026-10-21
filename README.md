@@ -191,12 +191,15 @@ Without a token, write controls are dashed and inert. Known limits:
 - **Sliders snap to a grid** (0.01 on 0..1 knobs, 1 dB on levels). Type for finer values.
   Without HX Edit data (`cli`, or no `/vendor`), parameters are typed and only `%`
   values get a bar.
-- **Unsaved flag:** with `usb`, pedal edits count too; with `cli`, only bridge edits.
+- **Unsaved flag:** with `usb`, pedal edits count too, and edits survive a restart (the
+  edit buffer is compared with the stored preset when the session opens); with `cli`,
+  only bridge edits.
 
 Diagnostics, run on the Pi with the service stopped (`sudo systemctl stop helix-bridge`,
 then wait 40 s): `helix-bridge watch [SECONDS]` prints the pedal's notifications;
 `helix-bridge probe-slot POSITION` prints the preset's slot row and one raw slot
-(read-only); `helix-bridge probe-add POSITION MODEL` adds a block the way the bridge does
+(read-only); `helix-bridge probe-unsaved` (read-only) prints where the edit buffer
+differs from the stored preset; `helix-bridge probe-add POSITION MODEL` adds a block the way the bridge does
 (op78, op40) and prints every reply, notification and the slot before and after;
 `helix-bridge probe-switches` (read-only) prints each footswitch's raw opcode 33 reply,
 the preset's blocks and controller table, and which positions the bridge would show on

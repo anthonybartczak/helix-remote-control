@@ -24,8 +24,10 @@ pub struct AppState<D> {
     device: D,
     /// Shared token for write requests. `None` turns writes off.
     token: Option<String>,
-    /// True after a bypass or parameter change through the bridge, until the
-    /// next load or save. Edits made on the pedal itself are not seen.
+    /// True after an edit of the buffer, until the next load or save: a write
+    /// here, a [`Cause::Edit`] from the device (a knob on the pedal, or the
+    /// `usb` worker finding the edit buffer differs from storage when its
+    /// session opens).
     unsaved: AtomicBool,
     /// JSON messages for `/api/live` clients, serialised once and shared by
     /// every client (a clone is a reference count, not a copy).
