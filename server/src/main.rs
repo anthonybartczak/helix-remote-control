@@ -96,6 +96,8 @@ async fn main() {
         }),
         // Read-only: what each footswitch carries (usb::probe_switches).
         Some("probe-switches") => Some(helix_bridge::usb::probe_switches()),
+        // Read-only: edit buffer against the stored preset (usb::probe_unsaved).
+        Some("probe-unsaved") => Some(helix_bridge::usb::probe_unsaved()),
         _ => None,
     };
     if let Some(result) = probe {

@@ -40,6 +40,8 @@ const POLL: Duration = Duration::from_millis(700);
 /// backlog delays every change and, once the pedal's buffer is full, stops it
 /// (PROTOCOL.md: keep reading so notifications never back up).
 const DRAIN_BUDGET: Duration = Duration::from_millis(200);
+/// Differing paths [`tone_diff`] lists before it stops looking.
+const DIFF_MAX: usize = 20;
 /// How often the debug log reports notification counts.
 const STATS_EVERY: Duration = Duration::from_secs(10);
 /// Wait this long after a notification for more before re-reading the chain:
@@ -240,6 +242,9 @@ struct Worker {
     last_job: Instant,
     /// When the cached document was last checked against the pedal.
     last_audit: Instant,
+    /// A session just opened: compare the edit buffer with the stored
+    /// preset ([`Worker::check_stored`]).
+    check_stored: bool,
 }
 
 struct Doc {
@@ -288,6 +293,7 @@ impl Worker {
             absent: false,
             last_job: Instant::now(),
             last_audit: Instant::now(),
+            check_stored: false,
         }
     }
 
@@ -374,6 +380,10 @@ impl Worker {
             let _ = self.live.send(Live::Connected(false));
             return;
         }
+        if self.check_stored {
+            self.check_stored = false;
+            self.check_stored();
+        }
         if now >= self.last_poll + POLL {
             self.poll();
         }
@@ -404,6 +414,48 @@ impl Worker {
                 }
             }
             Err(e) => tracing::debug!("periodic check failed: {e}"),
+        }
+    }
+
+    /// After a session opens (a service restart, a reconnect): if the edit
+    /// buffer differs from the stored copy of the loaded preset, it holds
+    /// edits nothing here saw, so publish it as an [`Cause::Edit`] and the
+    /// server marks it unsaved. Without this a restart forgot them, and a
+    /// load dropped them unasked (HX Effects, 2026-10-22). The stored copy
+    /// comes by opcode 4 (hx-usb `read_preset_at`), which loads nothing.
+    fn check_stored(&mut self) {
+        let check = (|| -> Result<Option<Vec<String>>> {
+            self.read_doc()?;
+            let Some((setlist, index, _)) = self.doc.as_ref().and_then(|d| d.info.clone()) else {
+                return Ok(None);
+            };
+            let stored = self.with(|s| s.read_preset_at(setlist, index))?;
+            let edit = &self.doc.as_ref().expect("just read").preset;
+            Ok(Some(match stored {
+                Some(stored) => tone_diff(&stored.tone, &edit.tone),
+                None => vec!["(the slot is empty)".to_owned()],
+            }))
+        })();
+        match check {
+            Ok(Some(paths)) if !paths.is_empty() => {
+                tracing::info!(
+                    differs = paths.join(", "),
+                    "the loaded preset holds edits not saved on the pedal; marked unsaved"
+                );
+                if self.read_switches().is_ok() {
+                    let doc = self.doc.as_ref().expect("just read");
+                    let text = self.render(doc);
+                    let extra = self.extra();
+                    self.shown = Some((text.clone(), extra.clone()));
+                    let _ = self.live.send(Live::Chain {
+                        text,
+                        cause: Cause::Edit,
+                        extra,
+                    });
+                }
+            }
+            Ok(_) => {}
+            Err(e) => tracing::debug!("could not compare with the stored preset: {e}"),
         }
     }
 
@@ -468,6 +520,7 @@ impl Worker {
             self.last_poll = Instant::now();
             self.last_audit = Instant::now();
             self.shown = None;
+            self.check_stored = true;
             let _ = self.live.send(Live::Connected(true));
         }
         Ok(self.session.as_mut().expect("just opened"))
@@ -1809,6 +1862,66 @@ fn claim_line(p: &mut hx_proto::Preset) -> std::result::Result<(), &'static str>
     }
 }
 
+/// Where two preset tones differ, as `/`-joined key paths (at most
+/// [`DIFF_MAX`]). Numbers compare by value, not by the width they came in:
+/// a stored document and a loaded one encode some integers differently.
+fn tone_diff(stored: &Value, edit: &Value) -> Vec<String> {
+    fn walk(a: &Value, b: &Value, path: &str, out: &mut Vec<String>) {
+        if out.len() >= DIFF_MAX {
+            return;
+        }
+        let at = |k: &dyn std::fmt::Display| {
+            if path.is_empty() {
+                k.to_string()
+            } else {
+                format!("{path}/{k}")
+            }
+        };
+        match (a, b) {
+            (Value::Map(x), Value::Map(y)) => {
+                for (k, va) in x {
+                    let name = k.as_i64().map_or_else(|| "?".to_owned(), |i| i.to_string());
+                    match y.iter().find(|(kb, _)| kb == k) {
+                        Some((_, vb)) => walk(va, vb, &at(&name), out),
+                        None => out.push(at(&name)),
+                    }
+                }
+                for (k, _) in y.iter().filter(|(k, _)| !x.iter().any(|(ka, _)| ka == k)) {
+                    let name = k.as_i64().map_or_else(|| "?".to_owned(), |i| i.to_string());
+                    out.push(at(&name));
+                }
+            }
+            (Value::Array(x), Value::Array(y)) if x.len() == y.len() => {
+                for (i, (va, vb)) in x.iter().zip(y).enumerate() {
+                    walk(va, vb, &at(&i), out);
+                }
+            }
+            _ => {
+                let same = match (a.as_i64(), b.as_i64()) {
+                    (Some(i), Some(j)) => i == j,
+                    _ => match (a.as_f32(), b.as_f32()) {
+                        (Some(f), Some(g)) => f == g,
+                        _ => match (a.as_raw(), b.as_raw()) {
+                            (Some(r), Some(s)) => r == s,
+                            _ => a == b,
+                        },
+                    },
+                };
+                if !same {
+                    out.push(if path.is_empty() {
+                        "(tone)".to_owned()
+                    } else {
+                        path.to_owned()
+                    });
+                }
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(stored, edit, "", &mut out);
+    out
+}
+
 /// What a move of the block at `from` to `to` leaves to do on the
 /// footswitches, from the switches read `before` and `after` it: the
 /// switches still listing the emptied `from` (take it off them), and the
@@ -1988,6 +2101,42 @@ fn drives_parameter(tone: &Value, block: i64, switch: u8) -> bool {
 /// and its controller table (tone key 4) by ordinal, and what the bridge
 /// would show. For confirming on the HX Effects which switch is which before
 /// the bridge writes one (AGENTS.md 6). Stop the service first.
+/// `helix-bridge probe-unsaved`: read-only. Compare the loaded preset's edit
+/// buffer with its stored copy, as the server does when a session opens
+/// ([`Worker::check_stored`]), and print each difference with both values.
+pub fn probe_unsaved() -> std::result::Result<(), String> {
+    let mut session = probe_open()?;
+    let (setlist, index, name) = session.preset_info().map_err(|e| e.to_string())?;
+    println!("loaded: setlist {setlist}, index {index}, {name}");
+    let edit = session.read_preset().map_err(|e| e.to_string())?;
+    let Some(stored) = session
+        .read_preset_at(setlist, index)
+        .map_err(|e| e.to_string())?
+    else {
+        println!("the stored slot is empty: the server would mark the preset unsaved");
+        return Ok(());
+    };
+    let paths = tone_diff(&stored.tone, &edit.tone);
+    if paths.is_empty() {
+        println!("edit buffer = stored preset: the server would leave it saved");
+    }
+    let at = |tone: &Value, path: &str| {
+        path.split('/').try_fold(tone.clone(), |v, k| {
+            let k: i64 = k.parse().ok()?;
+            match v {
+                Value::Array(items) => items.get(usize::try_from(k).ok()?).cloned(),
+                v => v.get(k).cloned(),
+            }
+        })
+    };
+    for path in &paths {
+        println!("differs at {path}:");
+        println!("  stored: {:?}", at(&stored.tone, path));
+        println!("  edit:   {:?}", at(&edit.tone, path));
+    }
+    Ok(())
+}
+
 pub fn probe_switches() -> std::result::Result<(), String> {
     use hx_proto::rpc::{key, op};
     use hx_proto::ChannelId;
@@ -2360,6 +2509,32 @@ mod tests {
         assert_eq!(notice(42, &picked), Some(Cause::Other));
         assert_eq!(notice(46, &Value::Nil), Some(Cause::Other));
         assert_eq!(notice(77, &Value::Nil), Some(Cause::Other));
+    }
+
+    /// Paths to what differs; numbers equal whatever width they came in.
+    #[test]
+    fn tone_diff_names_what_changed() {
+        let tone = |mix: Value, tempo: f32, slots: Vec<Value>| {
+            msgmap! { 1 => Value::Array(slots), 3 => msgmap! { 2 => mix, 5 => Value::F32(tempo) } }
+        };
+        let slots = || vec![Value::Int(1), Value::Str("Fassel".into())];
+        let stored = tone(Value::Int(5), 120.0, slots());
+        assert!(tone_diff(&stored, &tone(Value::Wide(5, 1), 120.0, slots())).is_empty());
+        assert_eq!(
+            tone_diff(&stored, &tone(Value::Int(5), 96.0, slots())),
+            ["3/5"]
+        );
+        let renamed = vec![Value::Int(1), Value::Str("Fassel 2".into())];
+        assert_eq!(
+            tone_diff(&stored, &tone(Value::Int(5), 120.0, renamed)),
+            ["1/1"]
+        );
+        assert_eq!(
+            tone_diff(&stored, &tone(Value::Int(5), 120.0, vec![])),
+            ["1"]
+        );
+        let extra = msgmap! { 1 => Value::Array(slots()), 3 => msgmap! { 2 => Value::Int(5), 5 => Value::F32(120.0) }, 9 => Value::Nil };
+        assert_eq!(tone_diff(&stored, &extra), ["9"]);
     }
 
     /// A moved block goes back on its switches; one the pedal left on the
