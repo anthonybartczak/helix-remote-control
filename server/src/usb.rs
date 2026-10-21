@@ -78,6 +78,11 @@ const AUDIT_EVERY: Duration = Duration::from_secs(60);
 /// Idle means no command for this long, so a check never delays a drag.
 const AUDIT_IDLE: Duration = Duration::from_secs(10);
 
+/// Reads of the document a busy pedal may refuse before one counts as failed,
+/// and the wait between them (TonePush GUI, `read_settled`).
+const SETTLED_READS: u32 = 3;
+const SETTLED_READ_GAP: Duration = Duration::from_millis(300);
+
 /// Reads of the document after adding or removing a block, until it shows.
 const SLOT_READS: u32 = 5;
 const SLOT_READ_GAP: Duration = Duration::from_millis(200);
@@ -787,11 +792,19 @@ impl Worker {
                 | Command::Junction { .. }
                 | Command::Controller { .. }
                 | Command::ControllerRange { .. } => self.publish_doc(Cause::Edit),
+                // A rename changes a name and a save nothing on screen; a
+                // read-back right after either races the flash commit, and a
+                // burst of them once wedged a pedal into a factory reset
+                // (TonePush GUI, `Cmd::Rename`). So no re-read for those.
+                Command::Rename {
+                    setlist,
+                    index,
+                    name,
+                } => self.renamed(*setlist, *index, name),
+                Command::Save => {}
                 // A snapshot changes which blocks are on and their values:
                 // read the document again rather than guess.
-                Command::Rename { .. } | Command::Save | Command::Snapshot { .. } => {
-                    self.want_reload(Cause::Other)
-                }
+                Command::Snapshot { .. } => self.want_reload(Cause::Other),
                 Command::Tempo { .. } => self.want_reload(Cause::Edit),
                 _ => {}
             }
@@ -800,10 +813,25 @@ impl Worker {
     }
 
     /// Run `f` on the open session, dropping the session on transport loss.
+    ///
+    /// hx-usb reports a request it will not send (an index out of range, a
+    /// document that does not encode) as a protocol error, the kind that
+    /// ends a session. One that left nothing on the wire changed nothing, so
+    /// the session stays, as TonePush's GUI keeps it (`loses_session`):
+    /// dropping it costs every client 20 s of reconnecting over one bad value.
+    /// Transport failures and timeouts still end it.
     fn with<T>(&mut self, f: impl FnOnce(&mut Session) -> hx_usb::Result<T>) -> Result<T> {
         let session = self.connect()?;
+        let before = session.channel_stats();
         let result = f(session);
-        self.check(result)
+        let untouched = session.channel_stats() == before;
+        match result {
+            Err(hx_usb::Error::Protocol(why)) if untouched => {
+                tracing::debug!("request refused before it was sent: {why}");
+                Err(DeviceError::Invalid(why))
+            }
+            result => self.check(result),
+        }
     }
 
     fn label(&self, index: i64) -> String {
@@ -892,7 +920,7 @@ impl Worker {
     /// Read the loaded preset into `doc`, keeping the footswitches last read
     /// (for re-reads within one preset; [`Worker::chain`] reads them anew).
     fn read_doc(&mut self) -> Result<()> {
-        let preset = self.with(|s| s.read_preset())?;
+        let preset = self.read_settled()?;
         // A refusal here (a pedal mid-load) only loses the header.
         let info = match self.with(|s| s.preset_info()) {
             Ok(info) => Some(info),
@@ -906,6 +934,25 @@ impl Worker {
             switches,
         });
         Ok(())
+    }
+
+    /// Read the loaded preset, asking again when the pedal refuses: a read
+    /// that lands while the last write is still committing is refused by a
+    /// busy pedal, not a dead one (TonePush GUI, `read_settled`). Before, the
+    /// next write after a quick first one failed on its own read.
+    fn read_settled(&mut self) -> Result<hx_proto::Preset> {
+        let mut attempt = 0;
+        loop {
+            match self.with(|s| s.read_preset()) {
+                Err(DeviceError::Failed(_))
+                    if attempt + 1 < SETTLED_READS && self.session.is_some() =>
+                {
+                    attempt += 1;
+                    thread::sleep(SETTLED_READ_GAP);
+                }
+                read => return read,
+            }
+        }
     }
 
     /// Read every footswitch (opcode 33, six round trips on an HX Effects)
@@ -1001,7 +1048,7 @@ impl Worker {
 
     /// `set_param`, with the parameter given by index.
     fn set(&mut self, block: u32, param: u32, value: &str) -> Result<String> {
-        let preset = self.with(|s| s.read_preset())?;
+        let preset = self.read_settled()?;
         let model = preset
             .slots
             .get((block as usize).wrapping_sub(1))
@@ -1199,7 +1246,8 @@ impl Worker {
             }
             Ok(())
         })?;
-        self.settle_slot(to_slot, Some(held));
+        // The document is the one written; only the switches need reading.
+        let _ = self.read_switches();
         Ok(format!(
             "moved {} from block {block} to block {to}\n",
             model_name(self.catalog.as_deref(), held)
@@ -1357,8 +1405,15 @@ impl Worker {
             .ok_or_else(|| DeviceError::Failed("the preset does not re-parse".into()))?;
         change(&mut preset).map_err(|e| DeviceError::Invalid(e.into()))?;
         self.with(|s| s.write_preset(&preset))?;
-        // hx-usb waited for the commit: this read shows the change.
-        self.read_doc()
+        // hx-usb read the document back until it showed this write, so what
+        // went out is what the pedal holds: keep it rather than read a third
+        // time while the pedal settles (TonePush GUI, `edit_document`). It
+        // went out with empty branches settled; so is the copy kept.
+        preset.settle_branches();
+        if let Some(doc) = self.doc.as_mut() {
+            doc.preset = preset;
+        }
+        Ok(())
     }
 
     /// Empty the slot at chain position `block`. `model`, if given, must be
@@ -1474,6 +1529,19 @@ impl Worker {
         };
         if !self.apply(&patch) {
             self.doc = None;
+        }
+    }
+
+    /// Mirror a rename into the cached header when it named the loaded
+    /// preset, and show it. Another slot's name is not in the chain.
+    fn renamed(&mut self, setlist: u32, index: u32, name: &str) {
+        let loaded = (i64::from(setlist), i64::from(index));
+        let Some(info) = self.doc.as_mut().and_then(|d| d.info.as_mut()) else {
+            return;
+        };
+        if (info.0, info.1) == loaded {
+            info.2 = name.to_owned();
+            self.publish_doc(Cause::Other);
         }
     }
 
@@ -1938,10 +2006,22 @@ fn pace(last: Instant, now: Instant, gap: Duration) -> Duration {
     (last + gap).saturating_duration_since(now)
 }
 
-/// Fold slider writes queued behind `cmd` into one: a later write to the same
-/// parameter replaces it (last value wins), and every caller gets that
-/// write's answer. Stops at the first other job, which is returned to run
-/// next, so nothing is reordered. Other commands pass through untouched.
+/// What a run of queued commands may fold into its last one.
+#[derive(Clone, Copy, PartialEq)]
+enum Fold {
+    /// Slider writes to one parameter: (block, param).
+    Param(u32, u32),
+    /// Preset loads: only the last is where the clients meant to land, and
+    /// a stack of switches is the load that wedges the pedal (TonePush GUI,
+    /// `gather`).
+    Select,
+}
+
+/// Fold commands queued behind `cmd` into one: a later slider write to the
+/// same parameter, or a later preset load, replaces it (last one wins), and
+/// every caller gets that command's answer. Stops at the first other job,
+/// which is returned to run next, so nothing is reordered. Other commands
+/// pass through untouched.
 fn coalesce(
     mut cmd: Command,
     reply: Reply,
@@ -1949,7 +2029,8 @@ fn coalesce(
 ) -> (Command, Vec<Reply>, Option<Job>) {
     let mut replies = vec![reply];
     let target = |c: &Command| match c {
-        Command::SetNative { block, param, .. } => Some((*block, *param)),
+        Command::SetNative { block, param, .. } => Some(Fold::Param(*block, *param)),
+        Command::Select { .. } => Some(Fold::Select),
         _ => None,
     };
     let Some(wanted) = target(&cmd) else {
@@ -2171,6 +2252,27 @@ mod tests {
         assert_eq!((cmd, replies.len()), (Command::Save, 1));
         assert!(next.is_none());
         assert!(matches!(rx.try_recv(), Ok(Job::Run(Command::Save, _))));
+    }
+
+    #[test]
+    fn preset_loads_coalesce() {
+        let (tx, rx) = mpsc::channel();
+        let select = |index| Command::Select { setlist: 0, index };
+        for cmd in [select(5), select(6), native(2, 0.2), select(8)] {
+            tx.send(Job::Run(cmd, oneshot::channel().0)).unwrap();
+        }
+        let Ok(Job::Run(first, reply)) = rx.try_recv() else {
+            panic!("first job");
+        };
+        let (cmd, replies, next) = coalesce(first, reply, &rx);
+        // Only the last load of the run goes out; the slider write after it
+        // stays where it was, and so does the load behind that.
+        assert_eq!((cmd, replies.len()), (select(6), 2));
+        assert!(matches!(next, Some(Job::Run(Command::SetNative { .. }, _))));
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Job::Run(Command::Select { index: 8, .. }, _))
+        ));
     }
 
     #[test]

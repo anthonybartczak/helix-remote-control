@@ -462,6 +462,8 @@ async fn write<D: Device>(
     cmd: Command,
 ) -> ApiResult<WriteResult> {
     let is_set = matches!(cmd, Command::Set { .. } | Command::SetNative { .. });
+    // Every edit of the buffer counts, as TonePush's GUI marks it dirty: a
+    // move or a controller left out here let a load drop it unasked.
     let unsaved = match cmd {
         Command::Enable { .. }
         | Command::Set { .. }
@@ -469,7 +471,11 @@ async fn write<D: Device>(
         | Command::Tempo { .. }
         | Command::AddBlock { .. }
         | Command::RemoveBlock { .. }
-        | Command::Footswitch { .. } => Some(true),
+        | Command::Footswitch { .. }
+        | Command::MoveBlock { .. }
+        | Command::Junction { .. }
+        | Command::Controller { .. }
+        | Command::ControllerRange { .. } => Some(true),
         Command::Select { .. } | Command::Save => Some(false),
         _ => None,
     };
@@ -1322,9 +1328,16 @@ mod tests {
         assert_eq!(routing["join"]["before"], 9);
 
         // The merge moves in; the split cannot pass it, nor Path B's block.
+        // A save first, so the move below has to set the flag itself.
+        let (status, res) = post(&app, "/api/save", t, json!({})).await;
+        assert_eq!(
+            (status, res["unsaved"].clone()),
+            (StatusCode::OK, json!(false))
+        );
         let (status, res) = post(&app, "/api/routing", t, body).await;
         assert_eq!(status, StatusCode::OK, "{res}");
         assert_eq!(res["message"], "merge now before cell 5");
+        assert_eq!(res["unsaved"], true, "a moved merge is an edit");
         let split = json!({ "junction": "split", "before": 1 });
         let (status, _) = post(&app, "/api/routing", t, split).await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "B1 would fall outside");
@@ -1393,6 +1406,7 @@ mod tests {
         let uri = "/api/blocks/3/params/1/controller";
         let (status, res) = post(&app, uri, t, json!({ "pedal": 2, "model": 296 })).await;
         assert_eq!(status, StatusCode::OK, "{res}");
+        assert_eq!(res["unsaved"], true, "an assignment is an edit");
         let b = blocks(app.clone()).await;
         let a = &b[1]["assignments"][0];
         assert_eq!(
