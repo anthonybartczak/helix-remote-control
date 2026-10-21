@@ -85,22 +85,30 @@ the chain; the UI does this for parameter and bypass edits.
   as TonePush's GUI does: read it, change it, write it back, read it again. hx-usb's write
   waits for the commit and zeroes an emptied Path B's attach points first (a document
   saying otherwise is one the pedal settles by wiping the edit buffer, PROTOCOL.md).
-  **Unverified on the HX Effects**; confirmed on an HX Stomp by TonePush only.
+  Confirmed on an HX Stomp by TonePush and verified on the HX Effects 3.80 (Pi 4,
+  2026-10-22): moves on Path A, onto and off Path B, and split and merge moves read back
+  from the pedal as written. Two HX Effects habits the server works around (fixed and
+  retested the same day): written in one go with the swap, the first block onto an empty
+  Path B left the split where the pedal put it (before cell 3 on 01A), so the line is
+  claimed in a second write after reading the pedal back; and a moved block lost its
+  footswitch (on neither cell), so the server puts it back on the switches it was on.
   A move swaps the block with the empty cell `to`; nothing else shifts. `to` must be
   empty (else 409 `stale`) and a cell a block may go into: Path A, or Path B under the
   bracket (any Path B cell while Path B is empty: the move claims the whole line). The
   split and merge stay in order, inside Path A (`before` up to `main.length`, the output),
   and around every Path B block; anything else is 400. `model` as for removing. A
-  footswitch is not in the document: after a move the switches are read back, so a pedal
-  that keeps the switch on the cell shows it there. `cli` refuses both (400).
+  footswitch is not in the document: the switches are read before and after a move, and
+  the block is put back on any it lost (opcode 56) and taken off the emptied cell
+  (opcode 57). `cli` refuses both (400).
 - Expression pedals: opcode 37 (hx-usb `assign_parameter`, source ordinal 1 or 2) puts a
   parameter under a pedal, or off any controller (`null`, ordinal 0); the device starts
   the travel at the parameter's full range. Opcodes 65 and 66 (`set_assign_range`) move
   the heel and toe as a fraction of the parameter's range: the server converts the native
   values with the catalog (`min..max` of the parameter), as TonePush's GUI does; outside
   the range is 400, and so is a range for a parameter nothing controls. Needs HX Edit
-  data on the server. Confirmed on an HX Stomp by TonePush; **unverified on the HX
-  Effects**. A moved block's assignments stay with the cell on `usb` (the table is keyed
+  data on the server. Confirmed on an HX Stomp by TonePush and verified on the HX Effects
+  3.80 (Pi 4, 2026-10-22): EXP 1 and EXP 2 assign, take off, and heel/toe range all read
+  back from the pedal as written. A moved block's assignments stay with the cell on `usb` (the table is keyed
   by slot and a move does not rewrite it); the fake moves them with the block.
 - Footswitch: `switch` is one-based as printed on the pedal (FS1–FS6 on the HX Effects),
   `null` takes the block off. `usb` sends opcode 57 (unassign) for any other switch the
@@ -181,9 +189,9 @@ the chain; the UI does this for parameter and bypass edits.
   the merge carry the whole signal; between them Path A and Path B run side by side.
   `before` is absent while Path B has no block (the device keeps an empty branch's attach
   points at zero), and so is all of `routing` with `cli`. From TonePush's
-  `Preset::layout` (PROTOCOL.md, "The slot array is a topology"). **Unconfirmed on the
-  HX Effects**: no preset with a split has been recorded; the fake's positions (split
-  12, Path B 13–21, join 22) assume the layout of TonePush's HX Stomp capture. The fake
+  `Preset::layout` (PROTOCOL.md, "The slot array is a topology"). Confirmed on the HX
+  Effects 3.80 with `probe-slot` (2026-10-22): split 12, Path B 13–21, join 22, the
+  layout of TonePush's HX Stomp capture, which the fake uses too. The fake
   starts with Path B empty; `HELIX_FAKE_SPLIT=1` gives it a synthetic one.
 - Preset names are not unique (factory slots are all `New Preset`). Key on `index`.
 
