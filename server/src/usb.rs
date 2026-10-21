@@ -40,8 +40,6 @@ const POLL: Duration = Duration::from_millis(700);
 /// backlog delays every change and, once the pedal's buffer is full, stops it
 /// (PROTOCOL.md: keep reading so notifications never back up).
 const DRAIN_BUDGET: Duration = Duration::from_millis(200);
-/// Differing paths [`tone_diff`] lists before it stops looking.
-const DIFF_MAX: usize = 20;
 /// How often the debug log reports notification counts.
 const STATS_EVERY: Duration = Duration::from_secs(10);
 /// Wait this long after a notification for more before re-reading the chain:
@@ -432,14 +430,19 @@ impl Worker {
             let stored = self.with(|s| s.read_preset_at(setlist, index))?;
             let edit = &self.doc.as_ref().expect("just read").preset;
             Ok(Some(match stored {
-                Some(stored) => tone_diff(&stored.tone, &edit.tone),
+                Some(stored) => unsaved_edits(&stored, edit),
                 None => vec!["(the slot is empty)".to_owned()],
             }))
         })();
         match check {
             Ok(Some(paths)) if !paths.is_empty() => {
                 tracing::info!(
-                    differs = paths.join(", "),
+                    differs = paths
+                        .iter()
+                        .take(20)
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .join(", "),
                     "the loaded preset holds edits not saved on the pedal; marked unsaved"
                 );
                 if self.read_switches().is_ok() {
@@ -1862,14 +1865,101 @@ fn claim_line(p: &mut hx_proto::Preset) -> std::result::Result<(), &'static str>
     }
 }
 
-/// Where two preset tones differ, as `/`-joined key paths (at most
-/// [`DIFF_MAX`]). Numbers compare by value, not by the width they came in:
-/// a stored document and a loaded one encode some integers differently.
+/// Where the edit buffer `edit` holds edits its stored copy `stored` lacks,
+/// as [`tone_diff`] paths; empty if none. A snapshot switch is not an edit
+/// (the server's own rule, `/api/snapshot`), but it rewrites the buffer: on
+/// the HX Effects (2026-10-22) snapshot 2 of 01A changed the active index
+/// (10/6), a block's on/off (0/22/1/20/10), and a footswitch's light (two
+/// leaves under 3). So when the snapshots differ, the stored copy is
+/// compared as that snapshot would recall it.
+fn unsaved_edits(stored: &hx_proto::Preset, edit: &hx_proto::Preset) -> Vec<String> {
+    let snapshot_params: Vec<(i64, i64)> = stored
+        .assignments()
+        .iter()
+        .filter(|a| a.source == hx_proto::rpc::Source::Snapshots)
+        .filter_map(|a| match a.target {
+            hx_proto::preset::Target::Param(p) => Some((a.block, p)),
+            hx_proto::preset::Target::Bypass => None,
+        })
+        .collect();
+    recalled_diff(
+        &stored.tone,
+        &edit.tone,
+        &stored.snapshot_details(),
+        &snapshot_params,
+    )
+}
+
+/// [`unsaved_edits`] on the tones: `snapshots` and `snapshot_params`
+/// (block, parameter) are the stored copy's.
+fn recalled_diff(
+    stored: &Value,
+    edit: &Value,
+    snapshots: &[hx_proto::preset::Snapshot],
+    snapshot_params: &[(i64, i64)],
+) -> Vec<String> {
+    const ACTIVE: [i64; 2] = [10, 6];
+    let active = |tone: &Value| tone.get(ACTIVE[0])?.get(ACTIVE[1])?.as_i64();
+    let (Some(was), Some(now)) = (active(stored), active(edit)) else {
+        return tone_diff(stored, edit);
+    };
+    if was == now {
+        return tone_diff(stored, edit);
+    }
+    // The stored copy, recalled to snapshot `now`: its index and on/offs.
+    let mut recalled = stored.clone();
+    set_at(&mut recalled, &ACTIVE, Value::Int(now));
+    let on = usize::try_from(now)
+        .ok()
+        .and_then(|i| snapshots.get(i))
+        .map_or(&[][..], |s| &s.enabled[..]);
+    for (slot, on) in on.iter().enumerate() {
+        if let Some(on) = on {
+            set_at(
+                &mut recalled,
+                &[0, 22, slot as i64, 20, 10],
+                Value::Bool(*on),
+            );
+        }
+    }
+    // What a recall sets that the document does not say how: values under
+    // the snapshot controller, the snapshot's tempo, footswitch lights.
+    let recalled_value = |path: &str| {
+        let keys: Vec<&str> = path.split('/').collect();
+        let param = match keys.as_slice() {
+            ["0", "22", block, "20", "11", "4", param] => {
+                block.parse().ok().zip(param.parse().ok())
+            }
+            _ => None,
+        };
+        param.is_some_and(|p| snapshot_params.contains(&p))
+            || path == "5/16"
+            || matches!(keys.as_slice(), ["3", .., "11", "6" | "7"])
+    };
+    tone_diff(&recalled, edit)
+        .into_iter()
+        .filter(|p| !recalled_value(p))
+        .collect()
+}
+
+/// Put `to` at `path` (map keys, array indices) in `v`. False if absent.
+fn set_at(v: &mut Value, path: &[i64], to: Value) -> bool {
+    let Some((&k, rest)) = path.split_first() else {
+        *v = to;
+        return true;
+    };
+    let next = match v {
+        Value::Array(items) => usize::try_from(k).ok().and_then(|i| items.get_mut(i)),
+        v => v.get_mut(k),
+    };
+    next.is_some_and(|n| set_at(n, rest, to))
+}
+
+/// Where two preset tones differ, as `/`-joined key paths. Numbers compare
+/// by value, not by the width they came in: a stored document and a loaded
+/// one encode some integers differently.
 fn tone_diff(stored: &Value, edit: &Value) -> Vec<String> {
     fn walk(a: &Value, b: &Value, path: &str, out: &mut Vec<String>) {
-        if out.len() >= DIFF_MAX {
-            return;
-        }
         let at = |k: &dyn std::fmt::Display| {
             if path.is_empty() {
                 k.to_string()
@@ -2096,14 +2186,10 @@ fn drives_parameter(tone: &Value, block: i64, switch: u8) -> bool {
     })
 }
 
-/// `helix-bridge probe-switches`: read-only. Print each footswitch's raw
-/// opcode 33 reply and how hx-usb decodes it, the loaded preset's blocks
-/// and its controller table (tone key 4) by ordinal, and what the bridge
-/// would show. For confirming on the HX Effects which switch is which before
-/// the bridge writes one (AGENTS.md 6). Stop the service first.
 /// `helix-bridge probe-unsaved`: read-only. Compare the loaded preset's edit
 /// buffer with its stored copy, as the server does when a session opens
-/// ([`Worker::check_stored`]), and print each difference with both values.
+/// ([`Worker::check_stored`]): what it would decide, then every raw
+/// difference with both values (snapshot recall included).
 pub fn probe_unsaved() -> std::result::Result<(), String> {
     let mut session = probe_open()?;
     let (setlist, index, name) = session.preset_info().map_err(|e| e.to_string())?;
@@ -2116,10 +2202,11 @@ pub fn probe_unsaved() -> std::result::Result<(), String> {
         println!("the stored slot is empty: the server would mark the preset unsaved");
         return Ok(());
     };
-    let paths = tone_diff(&stored.tone, &edit.tone);
-    if paths.is_empty() {
-        println!("edit buffer = stored preset: the server would leave it saved");
+    match unsaved_edits(&stored, &edit).as_slice() {
+        [] => println!("the server would leave it saved"),
+        edits => println!("the server would mark it unsaved: {}", edits.join(", ")),
     }
+    let paths = tone_diff(&stored.tone, &edit.tone);
     let at = |tone: &Value, path: &str| {
         path.split('/').try_fold(tone.clone(), |v, k| {
             let k: i64 = k.parse().ok()?;
@@ -2137,6 +2224,11 @@ pub fn probe_unsaved() -> std::result::Result<(), String> {
     Ok(())
 }
 
+/// `helix-bridge probe-switches`: read-only. Print each footswitch's raw
+/// opcode 33 reply and how hx-usb decodes it, the loaded preset's blocks
+/// and its controller table (tone key 4) by ordinal, and what the bridge
+/// would show. For confirming on the HX Effects which switch is which before
+/// the bridge writes one (AGENTS.md 6). Stop the service first.
 pub fn probe_switches() -> std::result::Result<(), String> {
     use hx_proto::rpc::{key, op};
     use hx_proto::ChannelId;
@@ -2535,6 +2627,53 @@ mod tests {
         );
         let extra = msgmap! { 1 => Value::Array(slots()), 3 => msgmap! { 2 => Value::Int(5), 5 => Value::F32(120.0) }, 9 => Value::Nil };
         assert_eq!(tone_diff(&stored, &extra), ["9"]);
+    }
+
+    /// A snapshot switch alone is no edit; an edit made on top of one is.
+    /// Shaped as 01A on the HX Effects (2026-10-22): snapshot 2 turns the
+    /// gate in slot 1 on and lights its footswitch.
+    #[test]
+    fn a_snapshot_switch_is_not_an_edit() {
+        let slot = |on: bool, values: Vec<Value>| {
+            msgmap! { 20 => msgmap! { 10 => Value::Bool(on), 11 => msgmap! { 4 => Value::Array(values) } } }
+        };
+        let tone = |active: i64, gate: bool, mix: f32, light: i64| {
+            msgmap! {
+                0 => msgmap! { 22 => Value::Array(vec![
+                    Value::Nil,
+                    slot(gate, vec![Value::F32(-87.0)]),
+                    slot(true, vec![Value::F32(0.5), Value::F32(mix)]),
+                ]) },
+                3 => msgmap! { 8 => Value::Array(vec![msgmap! { 11 => msgmap! { 6 => Value::Int(light), 7 => Value::Bool(gate) } }]) },
+                5 => msgmap! { 16 => Value::F32(120.0) },
+                10 => msgmap! { 6 => Value::Int(active) },
+            }
+        };
+        let snapshot = |gate: bool| hx_proto::preset::Snapshot {
+            name: String::new(),
+            tempo: None,
+            valid: true,
+            named: false,
+            enabled: vec![None, Some(gate), Some(true)],
+        };
+        let snapshots = [snapshot(false), snapshot(true)];
+        let stored = tone(0, false, 0.2, 527_360);
+        let diff =
+            |edit: &Value, params: &[(i64, i64)]| recalled_diff(&stored, edit, &snapshots, params);
+
+        // Snapshot 2 recalled: nothing to save.
+        assert!(diff(&tone(1, true, 0.2, 8_716_032), &[]).is_empty());
+        // A snapshot-controlled mix may differ too.
+        assert!(diff(&tone(1, true, 0.7, 8_716_032), &[(2, 1)]).is_empty());
+        // The same mix with no snapshot controller is an edit.
+        assert_eq!(
+            diff(&tone(1, true, 0.7, 8_716_032), &[]),
+            ["0/22/2/20/11/4/1"]
+        );
+        // The gate off on snapshot 2, which recalls it on: an edit.
+        assert_eq!(diff(&tone(1, false, 0.2, 8_716_032), &[]), ["0/22/1/20/10"]);
+        // Same snapshot: everything counts, the light included.
+        assert_eq!(diff(&tone(0, true, 0.2, 8_716_032), &[]).len(), 3);
     }
 
     /// A moved block goes back on its switches; one the pedal left on the
