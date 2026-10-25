@@ -2235,6 +2235,16 @@ pub fn probe_unsaved() -> std::result::Result<(), String> {
         println!("differs at {path}:");
         println!("  stored: {:?}", at(&stored.tone, path));
         println!("  edit:   {:?}", at(&edit.tone, path));
+        if let Some((parent, _)) = path.rsplit_once('/') {
+            println!("  in {parent}, stored: {:?}", at(&stored.tone, parent));
+            println!("  in {parent}, edit:   {:?}", at(&edit.tone, parent));
+        }
+    }
+    // Tone key 3 is undecoded (footswitch lights live under it); print it
+    // whole when it differs, to see which switch an index is.
+    if paths.iter().any(|p| p.starts_with("3/")) {
+        println!("tone key 3, stored: {:?}", stored.tone.get(3));
+        println!("tone key 3, edit:   {:?}", edit.tone.get(3));
     }
     Ok(())
 }
