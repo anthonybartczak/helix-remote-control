@@ -226,9 +226,13 @@ Device errors carry a stable `code` so clients need not parse messages:
 | 400 | `bad_request` | Write input failed checks: block 0, empty or too-long name/value, non-ASCII, native value out of range, neither or both of `value`/`native` |
 | 401 | `unauthorized` | Write without the right `Authorization: Bearer` token |
 | 403 | `writes_disabled` | Write, but the server has no `HELIX_TOKEN` |
+| 403 | `bad_host` | Any request, the UI's pages included, whose `Host` is not an IP address, a single name, a local name (`.local`, `.lan`, `.home`, `.home.arpa`, `.internal`, `.localhost`), the machine's hostname under a `search`/`domain` of `/etc/resolv.conf` (read per refused request, so a new network needs no restart), or in `HELIX_ALLOWED_HOSTS`. Stops DNS rebinding: a site pointing its own name at the Pi. A request that accepts `text/html` gets an HTML page linking to `http://<hostname>.local` instead of JSON |
+| 403 | `cross_origin` | Any request with an `Origin` that is not this server (scheme default port assumed). Browsers send it on writes and WebSockets; CORS alone does not protect `/api/live` |
 | 404 | `no_fixture` | Fake backend has no fixture for the request (only setlist 0 is recorded) |
+| 404 | `no_hotspot` | `/api/hotspot` off the Pi: no state directory to save the own-Wi-Fi setting in |
 | 404 | `no_catalog` | `/api/models/{id}`: no HX Edit data on the server, or an unknown model. `/api/catalog`: no HX Edit data |
 | 409 | `stale` | Native write, remove or footswitch for a model that is no longer in that slot; add to a taken slot; remove from or footswitch an empty one |
+| 500 | `storage` | `/api/hotspot` could not save its file (message says why) |
 | 502 | `failed` | `tonepush` exited with an error (message is its stderr) |
 | 502 | `parse` | `tonepush` printed unexpected output |
 | 503 | `no_device` | `tonepush` found no HX device on USB (`no HX device found`) |
@@ -315,10 +319,32 @@ The models a block can be added with, from HX Edit's catalog. No device call; fe
 - `based_on` needs `vendor/based-on.json`, as in `/api/chain`.
 - `fake`: the catalog when the machine has HX Edit, else the 4 recorded models.
 
+## Own Wi-Fi for gigs: `/api/hotspot`
+
+The Pi's own Wi-Fi, so nobody on a venue's network can reach the bridge. The server runs
+unprivileged, so it only saves the setting, to `hotspot.conf` in systemd's
+`STATE_DIRECTORY` (`/var/lib/helix-bridge`; `HELIX_HOTSPOT_FILE` overrides). The root
+`helix-bridge-hotspot` service applies it at the next start-up (`deploy/hotspot.sh`):
+nothing switches at once, as that would cut off the client that asked. Elsewhere (no
+state directory) both calls return 404 `no_hotspot` and the UI hides the setting.
+
+| Method | Path | Body | Returns |
+|---|---|---|---|
+| GET | `/api/hotspot` | – | `{mode, name, password_set}`; with the token also `password` (reads are open to anyone on the network) |
+| POST | `/api/hotspot` | `{mode, name?, password?}` (token) | The same, with `password` |
+
+- `mode`: `off` (the default: the saved Wi-Fi only), `auto` (a saved Wi-Fi if one is in
+  range at start-up, else its own; "Away" in the UI) or `on` (always its own).
+- `name`: 1–32 printable ASCII characters, trimmed; default `Helix Bridge`. Left out:
+  kept.
+- `password`: WPA2, 8–63 printable ASCII characters. Left out: kept. `auto` and `on`
+  need one (400 `bad_request` otherwise), so the Pi never makes an open Wi-Fi.
+
 ## Live updates: `GET /api/live` (WebSocket)
 
 With `HELIX_BACKEND=usb` (and `fake`, which echoes its own writes) `/api/health` reports
-`live: true` and this socket pushes JSON messages. Read-only: no token.
+`live: true` and this socket pushes JSON messages. Read-only: no token, but a page from
+another site is refused (403 `cross_origin`).
 
 | Message | When |
 |---|---|

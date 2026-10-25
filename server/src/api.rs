@@ -4,9 +4,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use axum::extract::ws::{Message, Utf8Bytes, WebSocket, WebSocketUpgrade};
-use axum::extract::{FromRequestParts, Path, Query, State};
+use axum::extract::{FromRequestParts, Path, Query, Request, State};
 use axum::http::request::Parts;
 use axum::http::{header, HeaderMap, StatusCode};
+use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -17,7 +18,7 @@ use tokio::sync::broadcast;
 
 use crate::based_on::BasedOn;
 use crate::device::{Cause, ChainExtra, Command, Device, DeviceError, Live};
-use crate::parse;
+use crate::{hotspot, origin, parse};
 
 /// Shared by every request.
 pub struct AppState<D> {
@@ -34,6 +35,13 @@ pub struct AppState<D> {
     live: broadcast::Sender<Utf8Bytes>,
     /// The real gear behind each model, for `based_on` in `/api/chain`.
     based_on: BasedOn,
+    /// Host names to answer beyond the local ones (`crate::origin`).
+    hosts: Vec<String>,
+    /// This machine's own names, read when a host name is not otherwise
+    /// allowed (`origin::Own::read`; tests give their own).
+    own: fn() -> Option<origin::Own>,
+    /// Where the own-Wi-Fi setting is saved; `None` off the Pi.
+    hotspot: Option<hotspot::Store>,
 }
 
 impl<D: Device> AppState<D> {
@@ -44,12 +52,32 @@ impl<D: Device> AppState<D> {
             unsaved: AtomicBool::new(false),
             live: broadcast::channel(16).0,
             based_on: BasedOn::new(),
+            hosts: Vec::new(),
+            own: origin::Own::read,
+            hotspot: None,
         }
+    }
+
+    /// Let the app set the Pi's own Wi-Fi (`crate::hotspot`).
+    pub fn with_hotspot(mut self, store: Option<hotspot::Store>) -> Self {
+        self.hotspot = store;
+        self
     }
 
     /// Name the real gear behind each model (`crate::based_on`).
     pub fn with_based_on(mut self, based_on: BasedOn) -> Self {
         self.based_on = based_on;
+        self
+    }
+
+    /// Also answer these host names (`HELIX_ALLOWED_HOSTS`). Rarely needed:
+    /// the Pi's own names, the router's one included, need no setup.
+    pub fn with_allowed_hosts(mut self, hosts: impl IntoIterator<Item = String>) -> Self {
+        self.hosts = hosts
+            .into_iter()
+            .map(|h| origin::normalise(&h))
+            .filter(|h| !h.is_empty())
+            .collect();
         self
     }
 }
@@ -96,13 +124,109 @@ pub fn router<D: Device>(state: AppState<D>) -> Router {
         .route("/api/save", post(save::<D>))
         .route("/api/snapshot", post(snapshot::<D>))
         .route("/api/tempo", post(tempo::<D>))
+        .route("/api/hotspot", get(get_hotspot::<D>).post(set_hotspot::<D>))
         .route("/api/live", get(live::<D>))
         .route("/", get(index))
         .route("/app.css", get(app_css))
         .route("/app.js", get(app_js))
         .route("/latest.js", get(latest_js))
         .route("/lib/motion-13.4.6.js", get(motion_js))
+        .layer(middleware::from_fn_with_state(state.clone(), guard::<D>))
         .with_state(state)
+}
+
+/// Refuse a request for a host name a site on the internet could point at
+/// this server (DNS rebinding), and one a page on another site makes itself
+/// (`crate::origin`). Before any route, the UI's pages included.
+async fn guard<D: Device>(State(app): Shared<D>, req: Request, next: Next) -> Response {
+    let headers = req.headers();
+    // No `Host` at all is not a browser (HTTP/1.1 makes them send it).
+    let host = match headers.get(header::HOST).map(|v| v.to_str()) {
+        None => None,
+        Some(Ok(host))
+            if origin::host_allowed(host, &app.hosts)
+                || (app.own)().is_some_and(|own| own.answers(host)) =>
+        {
+            Some(host)
+        }
+        Some(host) => {
+            let host = host.unwrap_or("(not text)");
+            let err = ApiError::BadHost(host.to_owned());
+            // Someone who typed it into Safari gets a page with the right address.
+            let typed = headers
+                .get(header::ACCEPT)
+                .and_then(|v| v.to_str().ok())
+                .is_some_and(|accept| accept.contains("text/html"));
+            return if typed {
+                wrong_address(err, (app.own)(), host)
+            } else {
+                err.into_response()
+            };
+        }
+    };
+    if let Some(from) = headers.get(header::ORIGIN) {
+        let from = from.to_str().unwrap_or("(not text)");
+        if !host.is_some_and(|host| origin::same_origin(from, host)) {
+            return ApiError::CrossOrigin(from.to_owned()).into_response();
+        }
+    }
+    next.run(req).await
+}
+
+/// What a browser shows for a refused host name: a button to the Pi's
+/// `.local` address, so nobody has to know what a host name is.
+fn wrong_address(err: ApiError, own: Option<origin::Own>, host: &str) -> Response {
+    tracing::warn!(status = %err.status(), error = %err.message(), "request failed");
+    let link = match own {
+        Some(own) => {
+            let url = own.local_url(host);
+            let label = url.trim_start_matches("http://").trim_end_matches('/');
+            format!(
+                r#"<a class="go" href="{}">Open {}</a>"#,
+                html_escape(&url),
+                html_escape(label)
+            )
+        }
+        None => "<p>Open it by the address in its setup guide, or by its IP address.</p>".into(),
+    };
+    (
+        StatusCode::FORBIDDEN,
+        [(header::CONTENT_TYPE, "text/html; charset=utf-8"), NO_CACHE],
+        WRONG_ADDRESS.replace("{link}", &link),
+    )
+        .into_response()
+}
+
+const WRONG_ADDRESS: &str = r#"<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Helix Bridge</title>
+<style>
+  body { margin: 0; min-height: 100vh; box-sizing: border-box; padding: 16px;
+    display: grid; place-items: center; text-align: center;
+    background: oklch(0.1 0.004 260); color: oklch(0.97 0.003 260);
+    font: 17px/1.5 system-ui, -apple-system, sans-serif; }
+  main { max-width: 28rem; }
+  h1 { font-size: 1.5rem; margin: 0 0 0.5rem; }
+  p { color: oklch(0.72 0.01 260); margin: 0 0 1.5rem; }
+  .go { display: inline-block; padding: 14px 22px; border-radius: 12px;
+    background: oklch(0.55 0.2 300); color: #fff; font-weight: 600; text-decoration: none; }
+</style>
+<main>
+  <h1>Helix Bridge has another address</h1>
+  <p>This one is blocked so other websites cannot reach your pedal. Use this one, and bookmark it:</p>
+  {link}
+</main>
+</html>
+"#;
+
+fn html_escape(text: &str) -> String {
+    text.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#39;")
 }
 
 // The UI is compiled into the binary so the Pi gets one file to deploy.
@@ -167,6 +291,14 @@ enum ApiError {
     NoCatalog(u32),
     /// No model list to add blocks from (no HX Edit catalog).
     NoModelList,
+    /// A `Host` this server does not answer (`crate::origin`).
+    BadHost(String),
+    /// An `Origin` other than this server (`crate::origin`).
+    CrossOrigin(String),
+    /// Not on the Pi: nowhere to save the own-Wi-Fi setting.
+    NoHotspot,
+    /// The own-Wi-Fi setting could not be saved.
+    Storage(String),
 }
 
 impl ApiError {
@@ -186,6 +318,10 @@ impl ApiError {
             ApiError::Unauthorized => "unauthorized",
             ApiError::WritesDisabled => "writes_disabled",
             ApiError::BadRequest(_) => "bad_request",
+            ApiError::BadHost(_) => "bad_host",
+            ApiError::CrossOrigin(_) => "cross_origin",
+            ApiError::NoHotspot => "no_hotspot",
+            ApiError::Storage(_) => "storage",
         }
     }
 
@@ -203,8 +339,12 @@ impl ApiError {
             },
             ApiError::NoCatalog(_) | ApiError::NoModelList => StatusCode::NOT_FOUND,
             ApiError::Unauthorized => StatusCode::UNAUTHORIZED,
-            ApiError::WritesDisabled => StatusCode::FORBIDDEN,
+            ApiError::WritesDisabled | ApiError::BadHost(_) | ApiError::CrossOrigin(_) => {
+                StatusCode::FORBIDDEN
+            }
             ApiError::BadRequest(_) => StatusCode::BAD_REQUEST,
+            ApiError::NoHotspot => StatusCode::NOT_FOUND,
+            ApiError::Storage(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
 
@@ -222,6 +362,17 @@ impl ApiError {
             ApiError::NoModelList => {
                 "no model list: needs HX Edit data on the server (usb backend)".into()
             }
+            ApiError::BadHost(host) => format!(
+                "this server does not answer to {host:?}: open it by IP address or its .local \
+                 name, or add the name to HELIX_ALLOWED_HOSTS"
+            ),
+            ApiError::CrossOrigin(from) => {
+                format!("requests from {from:?} are refused: open the UI from this server")
+            }
+            ApiError::NoHotspot => {
+                "own Wi-Fi is set on the Pi only (no state directory here)".into()
+            }
+            ApiError::Storage(e) => format!("could not save the own-Wi-Fi setting: {e}"),
         }
     }
 }
@@ -806,6 +957,73 @@ async fn tempo<D: Device>(
     write(&app, access, Command::Tempo { bpm }).await
 }
 
+// ---------- Own Wi-Fi ----------
+
+#[derive(Serialize)]
+struct HotspotView {
+    mode: hotspot::Mode,
+    name: String,
+    /// Only to a request with the token: it is the Wi-Fi's password, and
+    /// reads are open to anyone on the network.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    password: Option<String>,
+    password_set: bool,
+}
+
+impl HotspotView {
+    fn new(s: hotspot::Settings, with_password: bool) -> Self {
+        HotspotView {
+            mode: s.mode,
+            password_set: !s.password.is_empty(),
+            password: with_password.then_some(s.password),
+            name: s.name,
+        }
+    }
+}
+
+/// `GET /api/hotspot`: the saved setting; it applies at the next start-up.
+async fn get_hotspot<D: Device>(
+    State(app): Shared<D>,
+    headers: HeaderMap,
+) -> ApiResult<HotspotView> {
+    let store = app.hotspot.as_ref().ok_or(ApiError::NoHotspot)?;
+    let with_password = authorize(app.token.as_deref(), &headers).is_ok();
+    Ok(Json(HotspotView::new(store.load(), with_password)))
+}
+
+#[derive(Deserialize)]
+struct HotspotBody {
+    mode: hotspot::Mode,
+    /// `None` keeps the saved name.
+    name: Option<String>,
+    /// `None` keeps the saved password.
+    password: Option<String>,
+}
+
+/// `POST /api/hotspot`: save the setting. Nothing changes now: switching
+/// Wi-Fi would cut off the iPad that asked.
+async fn set_hotspot<D: Device>(
+    State(app): Shared<D>,
+    _access: WriteAccess,
+    Json(body): Json<HotspotBody>,
+) -> ApiResult<HotspotView> {
+    let store = app.hotspot.as_ref().ok_or(ApiError::NoHotspot)?;
+    let mut settings = store.load();
+    settings.mode = body.mode;
+    if let Some(name) = body.name {
+        settings.name = name.trim().to_owned();
+    }
+    if let Some(password) = body.password {
+        settings.password = password;
+    }
+    settings.check().map_err(ApiError::BadRequest)?;
+    store
+        .save(&settings)
+        .map_err(|e| ApiError::Storage(e.to_string()))?;
+    tracing::info!(mode = ?settings.mode, name = %settings.name, "own Wi-Fi saved, applies at the next start-up");
+    Ok(Json(HotspotView::new(settings, true)))
+}
+
 // ---------- Live updates ----------
 
 /// One `/api/live` message: `{type: "chain", chain}` or `{type: "device", connected}`.
@@ -899,7 +1117,17 @@ mod tests {
     const TOKEN: &str = "test-token";
 
     fn app() -> Router {
-        router(AppState::new(FakeDevice::bundled(), Some(TOKEN.into())))
+        let mut state = AppState::new(FakeDevice::bundled(), Some(TOKEN.into()));
+        state.own = test_own;
+        router(state)
+    }
+
+    /// A Pi named `helix-bridge` on a FRITZ!Box network, whatever runs the tests.
+    fn test_own() -> Option<origin::Own> {
+        Some(origin::Own {
+            host: "helix-bridge".into(),
+            domains: vec!["fritz.box".into()],
+        })
     }
 
     async fn send(app: &Router, req: Request<Body>) -> (StatusCode, Value) {
@@ -1548,6 +1776,233 @@ mod tests {
         assert_eq!(msg["chain"]["blocks"][0]["enabled"], true);
         assert_eq!(msg["chain"]["unsaved"], true);
         assert_eq!(msg["chain"]["label"], "01C");
+    }
+
+    async fn get_with(app: &Router, uri: &str, headers: &[(&str, &str)]) -> (StatusCode, Value) {
+        let mut req = Request::get(uri);
+        for (name, value) in headers {
+            req = req.header(*name, *value);
+        }
+        send(app, req.body(Body::empty()).unwrap()).await
+    }
+
+    /// DNS rebinding: a name only the internet could point here is refused,
+    /// on the UI's pages as on the API.
+    #[tokio::test]
+    async fn guard_refuses_other_host_names() {
+        let app = app();
+        for uri in ["/", "/api/health", "/api/chain"] {
+            let (status, res) = get_with(&app, uri, &[("host", "evil.example")]).await;
+            assert_eq!(status, StatusCode::FORBIDDEN, "{uri}");
+            assert_eq!(res["code"], "bad_host", "{uri}");
+        }
+        for host in [
+            "helix-bridge.local",
+            "192.168.1.20:8080",
+            "[fe80::1]",
+            "localhost:8080",
+            "helix-bridge",
+        ] {
+            let (status, res) = get_with(&app, "/api/health", &[("host", host)]).await;
+            assert_eq!(status, StatusCode::OK, "{host}: {res}");
+        }
+        // Not text at all.
+        let req = Request::get("/api/health")
+            .header(
+                "host",
+                header::HeaderValue::from_bytes(b"pi\xff.local").unwrap(),
+            )
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(send(&app, req).await.0, StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn guard_answers_the_routers_name_for_the_pi() {
+        let app = app();
+        let (status, _) = get_with(&app, "/", &[("host", "helix-bridge.fritz.box")]).await;
+        assert_eq!(status, StatusCode::OK);
+        let (status, _) = get_with(&app, "/", &[("host", "nas.fritz.box")]).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+    }
+
+    /// Typed into a browser: a page with a button to the right address,
+    /// not JSON. The API still gets JSON.
+    #[tokio::test]
+    async fn wrong_address_page() {
+        let html = [("host", "evil.example:8080"), ("accept", "text/html,*/*")];
+        let res = app()
+            .oneshot(
+                Request::get("/")
+                    .header(html[0].0, html[0].1)
+                    .header(html[1].0, html[1].1)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
+        assert!(res.headers()[header::CONTENT_TYPE]
+            .to_str()
+            .unwrap()
+            .starts_with("text/html"));
+        let body = res.into_body().collect().await.unwrap().to_bytes();
+        let body = String::from_utf8_lossy(&body);
+        assert!(
+            body.contains(
+                r#"href="http://helix-bridge.local:8080/">Open helix-bridge.local:8080<"#
+            ),
+            "{body}"
+        );
+        assert!(
+            !body.contains("evil.example"),
+            "never echo the refused name"
+        );
+
+        // No hostname known: the page still says what to do.
+        let mut state = AppState::new(FakeDevice::bundled(), None);
+        state.own = || None;
+        let (status, body) = get_with(&router(state), "/", &html).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert!(body.as_str().unwrap().contains("IP address"), "{body}");
+
+        let (_, body) = get_with(&app(), "/api/chain", &[("host", "evil.example")]).await;
+        assert_eq!(body["code"], "bad_host");
+    }
+
+    #[tokio::test]
+    async fn guard_takes_extra_host_names() {
+        let state = AppState::new(FakeDevice::bundled(), None)
+            .with_allowed_hosts(["Pi.Fritz.Box".to_owned(), String::new()]);
+        let app = router(state);
+        let (status, _) = get_with(&app, "/api/health", &[("host", "pi.fritz.box:80")]).await;
+        assert_eq!(status, StatusCode::OK);
+        let (status, _) = get_with(&app, "/api/health", &[("host", "nas.fritz.box")]).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+    }
+
+    /// A request a page on another site makes: refused, even with the token.
+    #[tokio::test]
+    async fn guard_refuses_other_origins() {
+        let app = app();
+        let host = ("host", "helix-bridge.local:8080");
+        for origin in ["http://evil.example", "http://helix-bridge.local", "null"] {
+            let (status, res) = get_with(&app, "/api/chain", &[host, ("origin", origin)]).await;
+            assert_eq!(status, StatusCode::FORBIDDEN, "{origin}");
+            assert_eq!(res["code"], "cross_origin", "{origin}");
+        }
+        // An Origin with no Host to match.
+        let (status, _) = get_with(&app, "/api/chain", &[("origin", "http://x.local")]).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+
+        let write = |origin: &str| {
+            Request::post("/api/save")
+                .header("host", host.1)
+                .header("origin", origin)
+                .header(header::AUTHORIZATION, format!("Bearer {TOKEN}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from("{}"))
+                .unwrap()
+        };
+        let (status, res) = send(&app, write("http://evil.example")).await;
+        assert_eq!(
+            (status, res["code"].clone()),
+            (StatusCode::FORBIDDEN, json!("cross_origin"))
+        );
+        let (status, res) = send(&app, write("http://helix-bridge.local:8080")).await;
+        assert_eq!(status, StatusCode::OK, "{res}");
+    }
+
+    /// CORS does not cover WebSockets: `/api/live` checks Origin itself.
+    #[tokio::test]
+    async fn live_refuses_other_origins() {
+        use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app()).await });
+        let connect = |origin: String| async move {
+            let mut req = format!("ws://{addr}/api/live")
+                .into_client_request()
+                .unwrap();
+            req.headers_mut().insert("origin", origin.parse().unwrap());
+            tokio_tungstenite::connect_async(req).await
+        };
+        assert!(connect("http://evil.example".into()).await.is_err());
+        assert!(connect(format!("http://{addr}")).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn hotspot_hidden_off_the_pi() {
+        let (status, res) = get_json("/api/hotspot").await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(res["code"], "no_hotspot");
+    }
+
+    #[tokio::test]
+    async fn hotspot_setting() {
+        let dir = std::env::temp_dir().join(format!("helix-api-hotspot-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("hotspot.conf");
+        let state = AppState::new(FakeDevice::bundled(), Some(TOKEN.into()))
+            .with_hotspot(Some(hotspot::Store::new(&file)));
+        let app = router(state);
+        let t = Some(TOKEN);
+        let get = |token: Option<&str>| {
+            let mut req = Request::get("/api/hotspot");
+            if let Some(t) = token {
+                req = req.header(header::AUTHORIZATION, format!("Bearer {t}"));
+            }
+            send(&app, req.body(Body::empty()).unwrap())
+        };
+
+        // Off by default.
+        let (status, res) = get(None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            res,
+            json!({ "mode": "off", "name": "Helix Bridge", "password_set": false })
+        );
+
+        let body = json!({ "mode": "auto", "name": " Anna's rig ", "password": "gig-secret" });
+        let (status, _) = post(&app, "/api/hotspot", None, body.clone()).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        let (status, res) = post(&app, "/api/hotspot", t, json!({ "mode": "auto" })).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "no password yet: {res}");
+        let (status, res) = post(&app, "/api/hotspot", t, body).await;
+        assert_eq!(status, StatusCode::OK, "{res}");
+        assert_eq!(res["password"], "gig-secret");
+        assert!(std::fs::read_to_string(&file)
+            .unwrap()
+            .contains("HOTSPOT=auto\nNAME=Anna's rig\nPASSWORD=gig-secret\n"));
+
+        // The password only to a request with the token.
+        let (_, res) = get(None).await;
+        assert_eq!(
+            res,
+            json!({ "mode": "auto", "name": "Anna's rig", "password_set": true })
+        );
+        let (_, res) = get(t).await;
+        assert_eq!(res["password"], "gig-secret");
+
+        // Off again, keeping name and password for next time.
+        let (status, _) = post(&app, "/api/hotspot", t, json!({ "mode": "off" })).await;
+        assert_eq!(status, StatusCode::OK);
+        let (_, res) = get(t).await;
+        assert_eq!(
+            (res["mode"].clone(), res["password"].clone()),
+            (json!("off"), json!("gig-secret"))
+        );
+
+        for bad in [
+            json!({ "mode": "yes" }),
+            json!({ "mode": "on", "password": "short" }),
+            json!({ "mode": "on", "name": "x\nPASSWORD=y" }),
+        ] {
+            let (status, _) = post(&app, "/api/hotspot", t, bad.clone()).await;
+            assert!(status.is_client_error(), "{bad}");
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

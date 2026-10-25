@@ -26,6 +26,9 @@ env:
   ZIG_VERSION: "0.17.0"
   ZIGBUILD_VERSION: "0.23.4"
 
+# Every action is pinned to a commit SHA, not a tag that can move: the Pi
+# installs what this builds, as root. Dependabot proposes the bumps
+# (.github/dependabot.yml); the `check` job refuses an unpinned `uses:`.
 jobs:
   check:
     runs-on: ubuntu-24.04
@@ -33,11 +36,13 @@ jobs:
       run:
         working-directory: server
     steps:
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      # A pinned SHA cannot name the toolchain, so `toolchain:` does.
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
+          toolchain: stable
           components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: server
       - run: cargo fmt --check
@@ -47,7 +52,17 @@ jobs:
       - run: cargo test --locked -p hx-usb
       - name: shellcheck deploy scripts
         working-directory: .
-        run: shellcheck deploy/*.sh
+        run: shellcheck deploy/*.sh deploy/tests/*.sh
+      - name: own Wi-Fi script (fake nmcli)
+        working-directory: .
+        run: sh deploy/tests/hotspot.test.sh
+      - name: actions pinned to commit SHAs
+        working-directory: .
+        run: |
+          if grep -nE '^\s*(- )?uses:' .github/workflows/*.yml | grep -vE '@[0-9a-f]{40}( |$)'; then
+            echo "pin these to a full commit SHA (see the comment above jobs:)"
+            exit 1
+          fi
       - name: web unit tests (rate limiter)
         working-directory: .
         run: node --test web/tests/latest.test.mjs
@@ -57,8 +72,8 @@ jobs:
   pi-bundle:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           repository: crmne/tonepush
           ref: ${{ env.TONEPUSH_TAG }}
@@ -67,8 +82,9 @@ jobs:
         run: |
           got=$(git -C tonepush rev-parse HEAD)
           [ "$got" = "$TONEPUSH_COMMIT" ] || { echo "TonePush $TONEPUSH_TAG is $got, expected $TONEPUSH_COMMIT"; exit 1; }
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
+          toolchain: stable
           targets: ${{ env.TARGET }}
       # Prebuilt wheels; compiling cargo-zigbuild from source took 1.5 min.
       - name: Install zig and cargo-zigbuild
@@ -82,7 +98,7 @@ jobs:
       # build tools: cache it under exactly those (saves 1.5 min a build).
       - name: Restore tonepush
         id: tonepush-cache
-        uses: actions/cache@v5
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
         with:
           path: tonepush/target/${{ env.TARGET }}/release/tonepush
           key: tonepush-${{ env.TONEPUSH_COMMIT }}-${{ env.TARGET }}.${{ env.GLIBC }}-zig${{ env.ZIG_VERSION }}-zigbuild${{ env.ZIGBUILD_VERSION }}
@@ -105,7 +121,7 @@ jobs:
             "tonepush/target/$TARGET/release/tonepush" \
             tonepush dist
           ls -l dist
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: pi-bundle
           path: dist/*
@@ -118,11 +134,11 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v6
+      - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6.0.0
         with:
           name: pi-bundle
           path: dist
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           files: dist/*
           body: |

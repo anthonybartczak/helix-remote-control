@@ -18,6 +18,8 @@ struct Config {
     cooldown: Duration,
     /// Shared token for writes; unset or empty = writes off.
     token: Option<String>,
+    /// Host names to answer beyond IP addresses and local names.
+    hosts: Vec<String>,
 }
 
 fn env_or(key: &str, default: &str) -> String {
@@ -56,6 +58,10 @@ impl Config {
                 .ok()
                 .map(|t| t.trim().to_owned())
                 .filter(|t| !t.is_empty()),
+            hosts: env_or("HELIX_ALLOWED_HOSTS", "")
+                .split(',')
+                .map(str::to_owned)
+                .collect(),
         })
     }
 }
@@ -125,13 +131,14 @@ async fn main() {
                 CliDevice::new(&config.tonepush, config.timeout).with_cooldown(config.cooldown),
                 config.bind,
                 config.token,
+                config.hosts,
             )
             .await
         }
         "usb" => {
             let device = UsbDevice::start();
             let closer = device.closer();
-            let result = serve(device, config.bind, config.token).await;
+            let result = serve(device, config.bind, config.token, config.hosts).await;
             closer.close();
             result
         }
@@ -148,6 +155,7 @@ async fn main() {
                 fake.with_delay(config.fake_delay),
                 config.bind,
                 config.token,
+                config.hosts,
             )
             .await
         }
@@ -166,11 +174,15 @@ async fn serve<D: Device>(
     device: D,
     bind: SocketAddr,
     token: Option<String>,
+    hosts: Vec<String>,
 ) -> std::io::Result<()> {
     let writes = if token.is_some() { "on" } else { "off" };
     tracing::info!(backend = device.kind(), %bind, writes, "helix-bridge listening");
     let listener = tokio::net::TcpListener::bind(bind).await?;
-    let state = AppState::new(device, token).with_based_on(helix_bridge::based_on::load());
+    let state = AppState::new(device, token)
+        .with_based_on(helix_bridge::based_on::load())
+        .with_allowed_hosts(hosts)
+        .with_hotspot(helix_bridge::hotspot::Store::from_env());
     axum::serve(listener, api::router(state))
         .with_graceful_shutdown(shutdown_signal())
         .await

@@ -5,6 +5,8 @@ pub mod based_on;
 pub mod controls;
 pub mod device;
 mod fake;
+pub mod hotspot;
+pub mod origin;
 pub mod parse;
 pub mod routing;
 pub mod types;
