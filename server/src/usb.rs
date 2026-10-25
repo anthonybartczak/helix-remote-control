@@ -419,8 +419,11 @@ impl Worker {
     /// buffer differs from the stored copy of the loaded preset, it holds
     /// edits nothing here saw, so publish it as an [`Cause::Edit`] and the
     /// server marks it unsaved. Without this a restart forgot them, and a
-    /// load dropped them unasked (HX Effects, 2026-10-22). The stored copy
-    /// comes by opcode 4 (hx-usb `read_preset_at`), which loads nothing.
+    /// load dropped them unasked (HX Effects, 2026-10-22). If it matches,
+    /// publish it as a [`Cause::Preset`] instead, so a flag left from before
+    /// clears: a pedal restarted under a running service drops its edits but
+    /// kept `unsaved` on (HX Effects, 2026-10-25). The stored copy comes by
+    /// opcode 4 (hx-usb `read_preset_at`), which loads nothing.
     fn check_stored(&mut self) {
         let check = (|| -> Result<Option<Vec<String>>> {
             self.read_doc()?;
@@ -434,31 +437,32 @@ impl Worker {
                 None => vec!["(the slot is empty)".to_owned()],
             }))
         })();
-        match check {
-            Ok(Some(paths)) if !paths.is_empty() => {
-                tracing::info!(
-                    differs = paths
-                        .iter()
-                        .take(20)
-                        .cloned()
-                        .collect::<Vec<_>>()
-                        .join(", "),
-                    "the loaded preset holds edits not saved on the pedal; marked unsaved"
-                );
-                if self.read_switches().is_ok() {
-                    let doc = self.doc.as_ref().expect("just read");
-                    let text = self.render(doc);
-                    let extra = self.extra();
-                    self.shown = Some((text.clone(), extra.clone()));
-                    let _ = self.live.send(Live::Chain {
-                        text,
-                        cause: Cause::Edit,
-                        extra,
-                    });
-                }
+        let paths = match check {
+            Ok(Some(paths)) => paths,
+            Ok(None) => return,
+            Err(e) => {
+                tracing::debug!("could not compare with the stored preset: {e}");
+                return;
             }
-            Ok(_) => {}
-            Err(e) => tracing::debug!("could not compare with the stored preset: {e}"),
+        };
+        let cause = stored_cause(&paths);
+        if cause == Cause::Edit {
+            tracing::info!(
+                differs = paths
+                    .iter()
+                    .take(20)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                "the loaded preset holds edits not saved on the pedal; marked unsaved"
+            );
+        }
+        if self.read_switches().is_ok() {
+            let doc = self.doc.as_ref().expect("just read");
+            let text = self.render(doc);
+            let extra = self.extra();
+            self.shown = Some((text.clone(), extra.clone()));
+            let _ = self.live.send(Live::Chain { text, cause, extra });
         }
     }
 
@@ -1865,6 +1869,17 @@ fn claim_line(p: &mut hx_proto::Preset) -> std::result::Result<(), &'static str>
     }
 }
 
+/// What [`Worker::check_stored`] publishes for the [`unsaved_edits`] it
+/// found: an edit if any, else the stored preset as loaded, which clears a
+/// stale `unsaved` (the server sets the flag from the cause either way).
+fn stored_cause(edits: &[String]) -> Cause {
+    if edits.is_empty() {
+        Cause::Preset
+    } else {
+        Cause::Edit
+    }
+}
+
 /// Where the edit buffer `edit` holds edits its stored copy `stored` lacks,
 /// as [`tone_diff`] paths; empty if none. A snapshot switch is not an edit
 /// (the server's own rule, `/api/snapshot`), but it rewrites the buffer: on
@@ -2627,6 +2642,16 @@ mod tests {
         );
         let extra = msgmap! { 1 => Value::Array(slots()), 3 => msgmap! { 2 => Value::Int(5), 5 => Value::F32(120.0) }, 9 => Value::Nil };
         assert_eq!(tone_diff(&stored, &extra), ["9"]);
+    }
+
+    /// A clean comparison clears the flag rather than leaving it: after a
+    /// pedal restart the edits are gone, the service's flag was not.
+    #[test]
+    fn a_clean_comparison_clears_unsaved() {
+        assert_eq!(stored_cause(&[]), Cause::Preset);
+        assert_eq!(stored_cause(&["0/22/1/20/10".to_owned()]), Cause::Edit);
+        let empty_slot = ["(the slot is empty)".to_owned()];
+        assert_eq!(stored_cause(&empty_slot), Cause::Edit);
     }
 
     /// A snapshot switch alone is no edit; an edit made on top of one is.
