@@ -59,9 +59,13 @@ the preset. "Unsaved" in the preset bar means there are edits not saved yet. Cha
 anything needs the write token: the UI asks for it on the first change and remembers it
 in the browser. Without it, the UI is read-only and its write controls are dashed.
 
-- **Load a preset:** ‹ › or Presets → pick → Load. Asks first if there are unsaved edits.
-  On wide screens (1280 px and up) the button at the top left shows or hides the preset
-  list.
+- **Load a preset:** ‹ › or Presets → pick → Load, or tap it in the preset list on the
+  left. Asks first if there are unsaved edits. On wide screens (1280 px and up) the button
+  at the top left shows or hides the list; on a tablet in landscape, turn it on in the
+  settings.
+- **Settings** (the gear; on tablets and phones, the connection dots): block names as
+  Line 6 calls them or as the gear they are based on, and the preset list. Kept in this
+  browser.
 - **Rename / Save:** buttons in the preset bar. Save asks first and overwrites the
   loaded preset.
 - **Snapshot:** tap 1–4 in the preset bar. The active one is lit.
@@ -82,7 +86,10 @@ in the browser. Without it, the UI is read-only and its write controls are dashe
   on the HX Effects home screen, only in Signal Flow view (MENU, then the Signal Flow
   switch).
 - **Remove a block:** select it, tap Remove, confirm.
-- **Move a block:** select it, tap **Move**, then an empty cell on either path.
+- **Move a block:** drag it onto an empty cell on either path (on a touch screen, hold it
+  for a moment first), or select it, tap **Move**, then the cell.
+- **Phones:** the chain fills the screen, one cell per row (Path B in a second column).
+  Tap a block to open its settings full screen; Back returns to the chain.
 - **Path B:** a preset with blocks on Path B shows two rows, with the split and merge
   where they attach. **+ Path B** (while it is empty) adds its first block, which then
   runs parallel to the whole line. Tap the split or merge dot, then ‹ Earlier / Later ›,
