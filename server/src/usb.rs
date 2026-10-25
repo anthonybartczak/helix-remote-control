@@ -1226,12 +1226,9 @@ impl Worker {
     /// or Path B ([`routing::check_cell`]). The first block on an empty
     /// Path B then gets the split and merge attached around the whole line,
     /// after the model lands (the device zeroes them when it does), as
-    /// TonePush's GUI does. A block added to a Path B that has blocks leaves
-    /// the split and merge where they were: the HX Effects moved the split
-    /// (before cell 0 to before cell 2 on 01A, 2026-10-25), so they are put
-    /// back in one more write. Op78 + op40 confirmed on an HX Stomp by
-    /// TonePush and on the HX Effects for Path A (2026-10-15) and Path B
-    /// (2026-10-25).
+    /// TonePush's GUI does ([`Worker::claim_whole_line`]). Op78 + op40
+    /// confirmed on an HX Stomp by TonePush and on the HX Effects for Path A
+    /// (2026-10-15) and Path B (2026-10-25).
     fn add_block(&mut self, block: u32, model: u32) -> Result<String> {
         let catalog = self.catalog.clone().ok_or_else(|| {
             DeviceError::Invalid("adding a block needs HX Edit data on the server (/vendor)".into())
@@ -1265,32 +1262,10 @@ impl Worker {
             }
             Some(_) => {}
         }
-        let kept = match place {
-            routing::Place::Branch { claim: false } => attach_points(preset),
-            _ => None,
-        };
         self.with(|s| s.set_model(slot as i64, model))?;
         self.settle_slot(slot, Some(model));
         if place == (routing::Place::Branch { claim: true }) {
-            self.read_doc()?;
-            self.rewrite(claim_line)?;
-        } else if let Some(kept) = kept {
-            // The move can land after the model shows: look a few times.
-            for attempt in 0..SLOT_READS {
-                if attempt > 0 {
-                    thread::sleep(SLOT_READ_GAP);
-                }
-                self.read_doc()?;
-                let now = attach_points(&self.doc.as_ref().expect("just read").preset);
-                tracing::info!(attempt, ?kept, ?now, "Path B add: split and merge");
-                if now != Some(kept) {
-                    tracing::info!("the pedal moved Path B's ends; putting them back");
-                    self.rewrite(|p| reattach(p, kept))?;
-                    break;
-                }
-            }
-        } else if matches!(place, routing::Place::Branch { .. }) {
-            tracing::info!("Path B add: split and merge not attached before the add");
+            self.claim_whole_line()?;
         }
         Ok(format!(
             "block {block} is now {}\n",
@@ -1335,9 +1310,7 @@ impl Worker {
                 .ok_or("that block cannot move there")
         })?;
         if place == (routing::Place::Branch { claim: true }) {
-            // The pedal placed the split itself: read what it holds first.
-            self.read_doc()?;
-            self.rewrite(claim_line)?;
+            self.claim_whole_line()?;
         }
         // The document is the one written; only the switches need reading.
         self.read_switches()?;
@@ -1496,6 +1469,29 @@ impl Worker {
                     model_name(Some(&*catalog), held)
                 ))
             })
+    }
+
+    /// Attach the split and merge around the whole line ([`claim_line`]),
+    /// for the first block on an empty Path B. The pedal placed the split
+    /// itself when the block landed, and can place it again after the write:
+    /// on the HX Effects (01A, 2026-10-25) the split written before cell 0
+    /// read back there, then settled before cell 2. So read it back for
+    /// about a second, claiming again whenever it moved.
+    fn claim_whole_line(&mut self) -> Result<()> {
+        self.read_doc()?;
+        self.rewrite(claim_line)?;
+        let want = self.doc.as_ref().and_then(|d| attach_points(&d.preset));
+        for attempt in 0..SLOT_READS {
+            thread::sleep(SLOT_READ_GAP);
+            self.read_doc()?;
+            let now = self.doc.as_ref().and_then(|d| attach_points(&d.preset));
+            tracing::info!(attempt, ?want, ?now, "Path B claim: split and merge");
+            if now != want {
+                tracing::info!("the pedal moved Path B's ends after the claim; claiming again");
+                self.rewrite(claim_line)?;
+            }
+        }
+        Ok(())
     }
 
     /// Change a copy of the cached document and write it back whole (op21).
@@ -1896,20 +1892,10 @@ fn claim_line(p: &mut hx_proto::Preset) -> std::result::Result<(), &'static str>
 
 /// The first path's split and merge, each as (its slot, the slot it
 /// attaches before): `None` unless both are attached.
-type AttachPoints = [(usize, usize); 2];
-
-fn attach_points(p: &hx_proto::Preset) -> Option<AttachPoints> {
+fn attach_points(p: &hx_proto::Preset) -> Option<[(usize, usize); 2]> {
     let path = p.layout().paths.into_iter().next()?;
     let (split, join) = (path.split?, path.join?);
     Some([(split, p.attach_of(split)?), (join, p.attach_of(join)?)])
-}
-
-/// Attach the split and merge as `kept` says ([`attach_points`]).
-fn reattach(p: &mut hx_proto::Preset, kept: AttachPoints) -> std::result::Result<(), &'static str> {
-    kept.iter()
-        .all(|&(junction, before)| p.set_attach(junction, before))
-        .then_some(())
-        .ok_or("the preset has no split to attach")
 }
 
 /// What [`Worker::check_stored`] publishes for the [`unsaved_edits`] it
@@ -2821,17 +2807,19 @@ mod tests {
     /// opcode 56 left its mark (key 10: 0 stored, 7 after) on the entry.
     /// Shaped as 01A on the HX Effects (2026-10-25).
     #[test]
-    fn path_b_ends_put_back_where_they_were() {
+    fn a_claim_spans_the_line_and_sees_a_moved_split() {
         let bytes = include_bytes!("../../third_party/hx-proto/tests/preset.bin");
         let mut p = hx_proto::Preset::parse(bytes).expect("fixture parses");
         claim_line(&mut p).expect("the fixture has a split");
-        let kept = attach_points(&p).expect("attached");
-        // The pedal moves the split, as on 01A when a second block landed.
-        let (split, before) = kept[0];
-        assert!(p.set_attach(split, before + 2));
-        assert_ne!(attach_points(&p), Some(kept));
-        reattach(&mut p, kept).expect("reattached");
-        assert_eq!(attach_points(&p), Some(kept));
+        let path = p.layout().paths.into_iter().next().expect("a path");
+        let (input, output) = (path.input.unwrap(), path.output.unwrap());
+        let want = attach_points(&p).expect("attached");
+        assert_eq!([want[0].1, want[1].1], [input + 1, output]);
+        // The pedal settles the split two cells on, as on 01A.
+        assert!(p.set_attach(want[0].0, input + 3));
+        assert_ne!(attach_points(&p), Some(want));
+        claim_line(&mut p).expect("claimed again");
+        assert_eq!(attach_points(&p), Some(want));
     }
 
     #[test]
