@@ -19,6 +19,12 @@
 // Footswitches: the block panel puts the selected block on FS1–FS6 or none
 // (/api/blocks/{position}/footswitch); the add picker can do it in the same
 // step. Only a block on a footswitch shows in the HX Effects' Stomp view.
+// Moving: drag a block onto an empty cell (a long press first on touch), or
+// tap Move, then the cell.
+// Phones show the chain on its own; tapping a block opens its settings full
+// screen, Back returns.
+// Settings (kept in this browser): Line 6 model names or the gear they are
+// based on; the preset list on the left (desktop, tablet landscape).
 'use strict';
 
 const SLOTS = 9; // HX Effects block slots. Slot = chain position - 1 (position 1 is the input).
@@ -69,6 +75,28 @@ function blockCategory(b) {
   return { name: CATEGORIES[key][0], short: CATEGORIES[key][1], colour: `var(--cat-${key})`, subcategory: null };
 }
 
+// Names: Line 6's model names, or (a setting) the gear each model is based
+// on, from the Pilot's Guide (`based_on`). Line 6's own designs keep their name.
+const NAMES_KEY = 'helix-bridge-names';
+const LINE6_ORIGINAL = 'Line 6 Original';
+
+function realGear(based) {
+  return based && based !== LINE6_ORIGINAL ? based : null;
+}
+
+/** A model's name as the names setting shows it. */
+function shownName(model, based) {
+  return state.names === 'original' ? realGear(based) ?? model : model;
+}
+
+/** The line under a name: the other name, so both stay in view. */
+function otherName(model, based) {
+  if (state.names === 'original' && realGear(based)) return `Line 6 ${model}`;
+  return based ? `Based on ${based}` : '';
+}
+
+const blockName = (b) => shownName(b.model, b.based_on);
+
 /** "Line 6 HX Effects": every device TonePush supports is a Line 6 HX. */
 function deviceName(info) {
   return info?.name ? `Line 6 ${info.name}` : 'Line 6 HX';
@@ -104,6 +132,9 @@ const state = {
   moving: null, // slot of a block being moved (Move, then an empty cell)
   expOpen: null, // position/param whose expression pedal row is open
   travelDrag: null, // heel or toe slider under a finger: { el, index, end, pointer, x0, i0, i, started }
+  blockDrag: null, // block picked up in the chain: { slot, pointer, x0, y0, touch, timer, started, ghost, over }
+  view: 'chain', // phones: 'chain' (the whole chain) or 'edit' (the selected block, full screen)
+  names: 'line6', // 'line6' | 'original' (the gear a model is based on); kept in this browser
 };
 
 // ---------- API ----------
@@ -279,7 +310,7 @@ function connectLive() {
 const CHECK_MS = 30000;
 
 async function checkChain() {
-  const quiet = !inflight && !state.busy && !state.drag && !state.travelDrag &&
+  const quiet = !inflight && !state.busy && !state.drag && !state.travelDrag && !state.blockDrag &&
     !sender.busy() && !tempoSender.busy() && !state.blocked;
   if (!state.live || !state.chain || !quiet || document.visibilityState !== 'visible') return;
   let chain;
@@ -421,7 +452,7 @@ function editParam(index) {
   const p = b?.params.find((x) => x.index === index);
   if (!p) return;
   pins.delete(paramKey(b, p));
-  const value = window.prompt(`${b.model} · ${p.name}\nNow ${p.value}. Type a value in the same units, e.g. ${p.value}:`, p.value);
+  const value = window.prompt(`${blockName(b)} · ${p.name}\nNow ${p.value}. Type a value in the same units, e.g. ${p.value}:`, p.value);
   if (value == null || !value.trim() || value.trim() === p.value) return;
   write(`Setting ${p.name}…`, `/api/blocks/${b.position}/params/${p.index}`, { value: value.trim() },
     (res) => { p.value = res.value || value.trim(); });
@@ -545,6 +576,7 @@ function selectSlot(n) {
   renderChain();
   renderParams();
   if (!slotMap().has(n) && canWrite()) openPicker(n);
+  else openEdit();
 }
 
 function openPicker(slot) {
@@ -580,7 +612,7 @@ async function addBlock() {
   const { slot } = state.picker;
   const g = selectedGroup();
   if (slot == null || !g || slotMap().has(slot) || !canWrite()) return;
-  const m = { name: g.name, id: variantOf(g).id };
+  const m = { name: shownName(g.name, g.based_on), id: variantOf(g).id };
   const fs = addFootswitch();
   closePicker();
   state.selectedSlot = slot;
@@ -602,7 +634,7 @@ function footswitches() {
 function carriedBy(s, position) {
   const blocks = state.chain?.blocks || [];
   return s.blocks.filter((p) => p !== position)
-    .map((p) => blocks.find((b) => b.position === p)?.model ?? `slot ${p - 1}`);
+    .map((p) => { const b = blocks.find((x) => x.position === p); return b ? blockName(b) : `slot ${p - 1}`; });
 }
 
 function storedAddFs() {
@@ -629,7 +661,7 @@ function setFootswitch(sw) {
   const body = { switch: sw };
   // The model we show: if the pedal now has another one there, the server refuses (409).
   if (b.model_id != null) body.model = b.model_id;
-  write(sw ? `Putting ${b.model} on FS${sw}…` : `Taking ${b.model} off FS${b.footswitch}…`,
+  write(sw ? `Putting ${blockName(b)} on FS${sw}…` : `Taking ${blockName(b)} off FS${b.footswitch}…`,
     `/api/blocks/${b.position}/footswitch`, body);
 }
 
@@ -681,10 +713,10 @@ function removeBlock() {
   const slot = state.selectedSlot;
   const b = slotMap().get(slot);
   if (!b) return;
-  if (!window.confirm(`Remove ${b.model} from slot ${slotLabel(slot)}?\nThe preset stays unsaved until you save it.`)) return;
+  if (!window.confirm(`Remove ${blockName(b)} from slot ${slotLabel(slot)}?\nThe preset stays unsaved until you save it.`)) return;
   // The model we show: if the pedal now has another one there, the server refuses (409).
   const seen = b.model_id != null ? `?model=${b.model_id}` : '';
-  write(`Removing ${b.model}…`, `/api/blocks/${b.position}${seen}`, undefined, 'live', 'DELETE');
+  write(`Removing ${blockName(b)}…`, `/api/blocks/${b.position}${seen}`, undefined, 'live', 'DELETE');
 }
 
 // ---------- Paths ----------
@@ -710,6 +742,7 @@ function selectJunction(which) {
   state.moving = null;
   renderChain();
   renderParams();
+  openEdit();
 }
 
 function moveJunction(delta) {
@@ -725,6 +758,7 @@ function toggleMove() {
   state.moving = state.moving == null && slotMap().has(state.selectedSlot) ? state.selectedSlot : null;
   renderChain();
   renderParams();
+  if (state.moving != null) closeEdit(); // phones: the cells to tap are on the chain view
 }
 
 function moveTo(n) {
@@ -738,7 +772,199 @@ function moveTo(n) {
   state.selectedSlot = n; // the selection follows the block
   const body = { to: n + 1 };
   if (b.model_id != null) body.model = b.model_id;
-  write(`Moving ${b.model} to ${slotLabel(n)}…`, `/api/blocks/${b.position}/move`, body);
+  write(`Moving ${blockName(b)} to ${slotLabel(n)}…`, `/api/blocks/${b.position}/move`, body);
+}
+
+// Drag and drop: pick a block up and let go over an empty cell, the same
+// move as Move then a tap. A mouse picks it up once it travels a few pixels;
+// a finger holds still for a moment first, so a swipe still scrolls. While
+// one is held, the cells it may go to light up, as for Move.
+
+const HOLD_MS = 320; // touch: hold this long to pick a block up
+const HOLD_SLOP_PX = 8; // touch: more travel than this during the hold scrolls instead
+const EDGE_PX = 48; // near the chain's top or bottom edge, a held block scrolls it
+
+function movable() {
+  return state.writes && !!state.chain?.routing && canWrite();
+}
+
+function blockDown(e) {
+  const el = e.target.closest('.slot[data-slot]');
+  if (!el || state.blockDrag || e.button > 0 || !movable()) return;
+  const slot = Number(el.dataset.slot);
+  if (!slotMap().has(slot)) return;
+  const touch = e.pointerType === 'touch';
+  const d = { slot, pointer: e.pointerId, x0: e.clientX, y0: e.clientY, x: e.clientX, y: e.clientY, touch, timer: 0, started: false, ghost: null, over: null };
+  if (touch) d.timer = setTimeout(() => startBlockDrag(d), HOLD_MS);
+  state.blockDrag = d;
+}
+
+function startBlockDrag(d) {
+  if (state.blockDrag !== d || !movable() || !slotMap().has(d.slot)) {
+    cancelBlockDrag();
+    return;
+  }
+  const chain = $('chain');
+  const node = chain.querySelector(`.slot[data-slot="${d.slot}"] .node`);
+  d.started = true;
+  try { chain.setPointerCapture(d.pointer); } catch { /* pointer already gone */ }
+  if (node) {
+    const box = node.getBoundingClientRect();
+    const ghost = document.createElement('div');
+    ghost.className = 'drag-ghost slot on';
+    ghost.style.setProperty('--c', getComputedStyle(node).getPropertyValue('--c'));
+    ghost.style.setProperty('--node-w', `${box.width}px`);
+    ghost.style.setProperty('--node', `${box.height}px`);
+    ghost.appendChild(node.cloneNode(true));
+    document.body.appendChild(ghost);
+    d.ghost = ghost;
+    d.dx = d.x0 - box.left;
+    d.dy = d.y0 - box.top;
+    moveGhost(d);
+  }
+  if (d.touch) navigator.vibrate?.(12);
+  state.moving = d.slot;
+  state.selectedSlot = d.slot;
+  state.junction = null;
+  chain.classList.add('dragging');
+  renderChain();
+  scrollLoop(d);
+}
+
+function moveGhost(d) {
+  if (d.ghost) d.ghost.style.transform = `translate(${d.x - d.dx}px, ${d.y - d.dy}px) scale(1.08)`;
+}
+
+/** The drop cell under the finger, lit while it is there. */
+function dropTarget(d) {
+  const under = document.elementFromPoint(d.x, d.y)?.closest('[data-move-to]') ?? null;
+  if (under !== d.over) {
+    d.over?.classList.remove('over');
+    under?.classList.add('over');
+    d.over = under;
+  }
+  return under;
+}
+
+/** Scroll the chain while a held block sits near its edge (the phone's tall chain). */
+function scrollLoop(d) {
+  if (state.blockDrag !== d) return;
+  const chain = $('chain');
+  const box = chain.getBoundingClientRect();
+  const step = d.y < box.top + EDGE_PX ? -8 : d.y > box.bottom - EDGE_PX ? 8 : 0;
+  if (step && chain.scrollHeight > chain.clientHeight) {
+    chain.scrollTop += step;
+    dropTarget(d);
+  }
+  requestAnimationFrame(() => scrollLoop(d));
+}
+
+function blockMove(e) {
+  const d = state.blockDrag;
+  if (!d || e.pointerId !== d.pointer) return;
+  d.x = e.clientX;
+  d.y = e.clientY;
+  if (!d.started) {
+    const far = Math.hypot(d.x - d.x0, d.y - d.y0);
+    if (d.touch && far > HOLD_SLOP_PX) cancelBlockDrag(); // a swipe: let it scroll
+    else if (!d.touch && far > DRAG_START_PX) startBlockDrag(d);
+    return;
+  }
+  e.preventDefault();
+  moveGhost(d);
+  dropTarget(d);
+}
+
+function blockUp(e) {
+  const d = state.blockDrag;
+  if (!d || e.pointerId !== d.pointer) return;
+  if (!d.started) {
+    cancelBlockDrag();
+    return;
+  }
+  d.x = e.clientX || d.x;
+  d.y = e.clientY || d.y;
+  const target = e.type === 'pointerup' ? dropTarget(d) : null;
+  endBlockDrag();
+  swallowClick();
+  if (target) {
+    moveTo(Number(target.dataset.moveTo));
+    return;
+  }
+  state.moving = null; // dropped elsewhere: it stays where it was
+  renderChain();
+  renderParams();
+}
+
+/** Stop a hold or a drag, leaving the chain as it was. */
+function cancelBlockDrag() {
+  const d = state.blockDrag;
+  if (!d) return;
+  const started = d.started;
+  endBlockDrag();
+  if (started) {
+    state.moving = null;
+    renderChain();
+  }
+}
+
+function endBlockDrag() {
+  const d = state.blockDrag;
+  if (!d) return;
+  state.blockDrag = null;
+  clearTimeout(d.timer);
+  d.over?.classList.remove('over');
+  d.ghost?.remove();
+  const chain = $('chain');
+  chain.classList.remove('dragging');
+  try { chain.releasePointerCapture(d.pointer); } catch { /* released already */ }
+}
+
+// The click that ends a drag lands on whatever is under the mouse: ignore it.
+let swallowUntil = 0;
+function swallowClick() {
+  swallowUntil = performance.now() + 400;
+}
+
+// ---------- Phone views ----------
+// Under 768 px the chain fills the screen and the selected block's panel
+// opens over it. The browser's Back (a history entry) closes it too.
+
+const phone = window.matchMedia('(max-width: 767px)');
+
+function openEdit() {
+  if (!phone.matches || state.view === 'edit') return;
+  state.view = 'edit';
+  try { history.pushState({ helixEdit: true }, ''); } catch { /* sandboxed: Back button only */ }
+  renderView();
+  $('params').scrollTop = 0;
+}
+
+function closeEdit() {
+  if (state.view !== 'edit') return;
+  if (history.state?.helixEdit) {
+    history.back(); // popstate shows the chain
+    return;
+  }
+  state.view = 'chain';
+  renderView();
+}
+
+window.addEventListener('popstate', () => {
+  if (state.view === 'edit' && !history.state?.helixEdit) {
+    state.view = 'chain';
+    renderView();
+  }
+});
+
+function renderView() {
+  const app = $('app');
+  const before = app.classList.contains('view-edit');
+  const edit = state.view === 'edit';
+  app.classList.toggle('view-edit', edit);
+  if (before === edit || !phone.matches) return;
+  if (edit) fx($('params'), { opacity: [0, 1], x: [36, 0] }, { ...SPRING, opacity: FADE });
+  else fx($('chain'), { opacity: [0, 1], x: [-36, 0] }, { ...SPRING, opacity: FADE });
 }
 
 /** Start Path B: pick a model for its first cell; it parallels the whole line. */
@@ -1279,6 +1505,7 @@ function keepSelection() {
   const label = state.chain?.label ?? null;
   const samePreset = label === state.selectionLabel;
   state.selectionLabel = label;
+  if (!samePreset) closeEdit(); // phones: another preset starts on its chain
   const s = state.selectedSlot;
   if (s != null && (map.has(s) || (samePreset && s >= 1 && s <= SLOTS))) return;
   const first = [...map.keys()].sort((a, b) => a - b)[0];
@@ -1402,6 +1629,7 @@ function render() {
   app.classList.toggle('is-loading', state.loading);
   app.classList.toggle('is-blocked', !!state.blocked);
   $('blocker').hidden = !state.blocked;
+  renderView();
   renderConnection();
   renderPresetBar();
   renderBanner();
@@ -1455,7 +1683,8 @@ function renderConnection() {
   const name = state.info ? deviceName(state.info) : '';
   for (const el of document.querySelectorAll('.conn-dots')) {
     el.innerHTML = `<span class="dot ${dotClass('server')}"></span><span class="dot ${dotClass('device')}"></span>` +
-      (name ? `<span class="conn-name">${esc(name)}</span>` : '');
+      (name ? `<span class="conn-name">${esc(name)}</span>` : '') +
+      '<svg class="conn-gear" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2"><use href="#gear"/></svg>';
   }
   $('device-name').textContent = state.info ? `${name} · FW ${state.info.firmware}` : '';
 
@@ -1467,7 +1696,20 @@ function renderConnection() {
     ['Presets', state.info?.presets ?? '–'],
   ];
   $('conn-info').innerHTML = rows.map(([k, v]) => `<div><dt>${esc(k)}</dt><dd>${esc(v)}</dd></div>`).join('');
+  renderSettings();
   $('conn-popover').hidden = !state.connOpen;
+}
+
+/** The settings in the popover: names, preset list. */
+function renderSettings() {
+  const seg = (attr, value, label, on) => `<button class="seg-btn${on ? ' active' : ''}" type="button" ${attr}="${value}" aria-pressed="${on}">${label}</button>`;
+  $('set-names').innerHTML = seg('data-names', 'line6', 'Line 6', state.names !== 'original') +
+    seg('data-names', 'original', 'Original gear', state.names === 'original');
+  const shown = sidebarWanted();
+  $('set-sidebar').innerHTML = seg('data-sidebar-set', 'shown', 'Show', shown) + seg('data-sidebar-set', 'hidden', 'Hide', !shown);
+  $('set-sidebar-note').textContent = roomy.matches
+    ? 'Tap a preset in the list to load it.'
+    : 'Needs a wider screen: a tablet in landscape or a computer. Here the Presets button lists them.';
 }
 
 function renderPresetBar() {
@@ -1582,7 +1824,7 @@ function renderChain() {
     const sel = n === state.selectedSlot && !state.junction;
     if (!b) {
       if (targets?.has(n)) {
-        return `<button class="slot empty target" type="button" data-move-to="${n}" aria-label="Move ${esc(map.get(moving).model)} to slot ${label}">` +
+        return `<button class="slot empty target" type="button" data-move-to="${n}" aria-label="Move ${esc(blockName(map.get(moving)))} to slot ${label}">` +
           `<div class="slot-num">${label}</div><div class="node-empty"></div><div class="slot-name"></div></button>`;
       }
       return `<button class="slot empty${sel ? ' selected' : ''}" type="button" data-slot="${n}" aria-pressed="${sel}"` +
@@ -1592,17 +1834,27 @@ function renderChain() {
     const cat = blockCategory(b);
     const cls = ['slot', b.enabled ? 'on' : '', sel ? 'selected' : '', n === moving ? 'moving' : ''].join(' ');
     const exp = [...new Set((b.assignments ?? []).map((a) => sourceLabel(a.source).replace(' ', '')))];
-    const fs = (b.footswitch ? ` · <span class="slot-fs">FS${b.footswitch}</span>` : '') +
-      exp.map((e) => ` · <span class="slot-fs slot-exp">${e}</span>`).join('');
+    const tags = (b.footswitch ? [`<span class="slot-fs">FS${b.footswitch}</span>`] : [])
+      .concat(exp.map((e) => `<span class="slot-fs slot-exp">${e}</span>`));
+    const name = blockName(b);
+    // The phone's vertical chain has room for a second line: tags and the other
+    // name, or the category for Line 6's own designs.
+    const other = realGear(b.based_on) ? otherName(b.model, b.based_on) : cat.name;
+    const sub = `<div class="slot-sub">${tags.join(' ')} ${esc(other)}</div>`;
     return `<button class="${cls}" type="button" data-slot="${n}" style="--c:${cat.colour}"` +
-      ` aria-pressed="${sel}" aria-label="Slot ${label}: ${esc(b.model)}, ${esc(cat.name)}${b.based_on ? `, based on ${esc(b.based_on)}` : ''}${b.enabled ? '' : ', bypassed'}${b.footswitch ? `, on footswitch ${b.footswitch}` : ''}"${b.based_on ? ` title="${esc(b.model)}: ${esc(b.based_on)}"` : ''}>` +
-      `<div class="slot-num">${label}${fs}</div>${pedal(cat)}` +
-      `<div class="slot-name">${esc(b.model)}</div></button>`;
+      ` aria-pressed="${sel}" aria-label="Slot ${label}: ${esc(name)}, ${esc(cat.name)}${b.based_on ? `, based on ${esc(b.based_on)}` : ''}${b.enabled ? '' : ', bypassed'}${b.footswitch ? `, on footswitch ${b.footswitch}` : ''}"${b.based_on ? ` title="${esc(b.model)}: ${esc(b.based_on)}"` : ''}>` +
+      `<div class="slot-num">${label}<span class="slot-tags">${tags.map((t) => ` · ${t}`).join('')}</span></div>${pedal(cat)}` +
+      `<div class="slot-name">${esc(name)}</div>${sub}</button>`;
   };
   // While a block moves and Path B is empty, Path B shows as a drop row.
   const ghost = !branch.length && moving != null && cells.length > 0;
   const rowB = branch.length ? branch : ghost ? cells : [];
   let html = '<div class="io"><div class="io-bar"></div>In</div>';
+  // Phones: Move left the block's panel, so say here what a tap does now.
+  if (moving != null && !state.blockDrag?.started) {
+    html += `<div class="move-hint"><span>Tap an empty cell for ${esc(blockName(map.get(moving)))}</span>` +
+      '<button class="act ph-toggle" type="button" data-move>Cancel</button></div>';
+  }
   if (rowB.length) {
     // Two rows on one grid: Path B's cell k under Path A's cell k, as HX Edit
     // draws it. The bracket runs from the split down to Path B and back up to
@@ -1637,6 +1889,10 @@ function renderChain() {
   chainFx(map);
 }
 
+// Phones only (CSS): back from the full-screen panel to the chain.
+const BACK = '<button class="icon-btn back-btn" type="button" data-back aria-label="Back to the chain">' +
+  '<svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 5l-7 7 7 7"/></svg></button>';
+
 function renderParams() {
   // Never rebuild a slider under the finger; sliderUp / travelUp render.
   if (state.drag || state.travelDrag) return;
@@ -1658,7 +1914,7 @@ function paintJunction(el) {
     : `<button class="later ph-toggle" type="button" disabled title="${esc(WRITES_OFF)}">${label}</button>`;
   el.style.setProperty('--c', 'var(--line-strong)');
   el.innerHTML =
-    `<div class="params-head"><div class="ph-code">${which === 'split' ? 'Split' : 'Merge'}</div>` +
+    `<div class="params-head">${BACK}<div class="ph-code">${which === 'split' ? 'Split' : 'Merge'}</div>` +
     `<div class="ph-title"><div class="ph-model">${name}</div>` +
     `<div class="ph-based">before ${at >= main.length ? 'the output' : `cell ${at + 1}`}</div></div>` +
     `<div class="ph-meta">Path B runs under cells ${split + 1} to ${join}</div><div class="spacer"></div>` +
@@ -1695,7 +1951,7 @@ function paintParams() {
       ? `<button class="act ph-toggle" type="button" data-add${live ? '' : ' disabled'}>Add block</button>`
       : `<button class="later ph-toggle" type="button" disabled title="${esc(WRITES_OFF)}">Add block</button>`;
     el.innerHTML =
-      `<div class="params-head"><div class="ph-code">+</div>` +
+      `<div class="params-head">${BACK}<div class="ph-code">+</div>` +
       `<div class="ph-title"><div class="ph-model">Empty slot</div></div>` +
       `<div class="ph-meta">slot ${slotLabel(slot)}</div><div class="spacer"></div>${add}</div>` +
       `<div class="params-empty">${state.writes ? `Add an effect here: tap Add block, pick a model.<br>${esc(footswitches() ? PICK_FOOTSWITCH : NO_FOOTSWITCH)}` : 'Nothing in this slot.'}</div>`;
@@ -1707,8 +1963,10 @@ function paintParams() {
   const onOff = assignmentOf(b, null);
   const meta = `${kind} · slot ${slotLabel(state.selectedSlot)} · ${b.enabled ? 'on' : 'bypassed'}` +
     (onOff ? ` · ${sourceLabel(onOff.source)} switches it` : '');
-  // The real gear behind the model, from the Pilot's Guide (server: vendor/based-on.json).
-  const based = b.based_on ? `<div class="ph-based">Based on ${esc(b.based_on)}</div>` : '';
+  // The real gear behind the model, from the Pilot's Guide (server: vendor/based-on.json),
+  // or the Line 6 name when the names setting shows the gear.
+  const other = otherName(b.model, b.based_on);
+  const based = other ? `<div class="ph-based">${esc(other)}</div>` : '';
   const params = b.params.map((p) => {
     const c = controlOf(b, p);
     if (c) return controlHtml(b, p, c, live);
@@ -1725,7 +1983,7 @@ function paintParams() {
     ? `<button class="act ph-toggle" type="button" data-toggle${live ? '' : ' disabled'}>${b.enabled ? 'Turn off' : 'Turn on'}</button>`
     : `<button class="later ph-toggle" type="button" disabled title="${esc(WRITES_OFF)}">${b.enabled ? 'Turn off' : 'Turn on'}</button>`;
   const remove = state.writes
-    ? `<button class="act ph-toggle ph-remove" type="button" data-remove${live ? '' : ' disabled'} aria-label="Remove ${esc(b.model)}">Remove</button>`
+    ? `<button class="act ph-toggle ph-remove" type="button" data-remove${live ? '' : ' disabled'} aria-label="Remove ${esc(blockName(b))}">Remove</button>`
     : '';
   // Moving needs the preset document (routing): usb and fake.
   const moving = state.moving === state.selectedSlot;
@@ -1734,8 +1992,8 @@ function paintParams() {
       ` aria-pressed="${moving}">${moving ? 'Cancel move' : 'Move'}</button>`
     : '';
   el.innerHTML =
-    `<div class="params-head"><div class="ph-code">${esc(cat.short)}</div>` +
-    `<div class="ph-title"><div class="ph-model">${esc(b.model)}</div>${based}</div>` +
+    `<div class="params-head">${BACK}<div class="ph-code">${esc(cat.short)}</div>` +
+    `<div class="ph-title"><div class="ph-model">${esc(blockName(b))}</div>${based}</div>` +
     `<div class="ph-meta">${esc(moving ? 'Tap an empty cell to move it there' : meta)}</div><div class="spacer"></div>` +
     `${move}${remove}${toggle}</div>` +
     footswitchRow(b, live) +
@@ -1776,9 +2034,11 @@ function renderPresetList() {
   if (key === listKey) return;
   listKey = key;
   const list = $('preset-list');
+  // A tap loads, as in the Presets sheet; unsaved edits ask first (loadPreset).
   list.innerHTML = state.presets.map((p) =>
-    `<li class="pl-row${p.loaded ? ' loaded' : ''}${p.label.endsWith('A') && p.index > 0 ? ' bank-start' : ''}">` +
-    `<span class="pl-label">${esc(p.label)}</span><span class="pl-name">${esc(p.name)}</span></li>`).join('');
+    `<li class="${p.label.endsWith('A') && p.index > 0 ? 'bank-start' : ''}"><button class="pl-row${p.loaded ? ' loaded' : ''}" type="button"` +
+    ` data-pl="${p.index}" aria-current="${p.loaded}" aria-label="${esc(p.label)} ${esc(p.name)}${p.loaded ? ', loaded' : '. Tap to load'}">` +
+    `<span class="pl-label">${esc(p.label)}</span><span class="pl-name">${esc(p.name)}</span></button></li>`).join('');
   $('all-chip').textContent = state.presets.length ? `All ${state.presets.length}` : 'All';
   const row = list.querySelector('.loaded');
   if (row) row.scrollIntoView({ block: 'center' });
@@ -1903,14 +2163,18 @@ function renderPicker() {
 
   // A badge only where it tells something: Legacy, or a model with one version.
   const badge = (g) => g.legacy ? LEGACY : g.variants.length === 1 && g.variants[0].shelf ? g.variants[0].shelf : '';
+  // With the names setting on the gear, the gear is the tile's name and Line 6's goes under it.
+  const gear = (g) => state.names === 'original' && !!realGear(g.based_on);
   const tile = (g) => {
     const sel = g.key === p.selected;
     const b = badge(g);
+    const name = gear(g) ? g.based_on : g.name;
+    const sub = gear(g) ? `Line 6 ${g.name}` : g.based_on ?? '';
     return `<button class="mtile${sel ? ' selected' : ''}" type="button" data-group="${esc(g.key)}"` +
       ` style="--c:${esc(g.category.colour)}" aria-pressed="${sel}"` +
-      ` aria-label="${esc(g.name)}${b ? `, ${esc(b)} only` : ''}${g.based_on ? `, based on ${esc(g.based_on)}` : ''}">` +
-      `<span class="mtile-top"><span class="mtile-name">${esc(g.name)}</span>${b ? `<span class="mtile-shelf">${esc(b)}</span>` : ''}</span>` +
-      `<span class="mtile-based">${esc(g.based_on ?? '')}</span></button>`;
+      ` aria-label="${esc(name)}${b ? `, ${esc(b)} only` : ''}${gear(g) ? `, Line 6 ${esc(g.name)}` : g.based_on ? `, based on ${esc(g.based_on)}` : ''}">` +
+      `<span class="mtile-top"><span class="mtile-name">${esc(name)}</span>${b ? `<span class="mtile-shelf">${esc(b)}</span>` : ''}</span>` +
+      `<span class="mtile-based">${esc(sub)}</span></button>`;
   };
   const grid = (gs) => `<div class="shelf">${gs.map(tile).join('')}</div>`;
   const head = (name, colour) => `<div class="group-name"${colour ? ` style="--c:${esc(colour)}"` : ''}>${esc(name)}</div>`;
@@ -1954,9 +2218,9 @@ function renderPicker() {
 
   const g = selectedGroup();
   const v = g && variantOf(g);
-  $('pf-name').textContent = g?.name ?? 'Pick a model';
+  $('pf-name').textContent = g ? shownName(g.name, g.based_on) : 'Pick a model';
   $('pf-note').textContent = g
-    ? [g.category.name, g.type, g.legacy && LEGACY, g.based_on && `based on ${g.based_on}`].filter(Boolean).join(' · ')
+    ? [g.category.name, g.type, g.legacy && LEGACY, gear(g) ? `Line 6 ${g.name}` : g.based_on && `based on ${g.based_on}`].filter(Boolean).join(' · ')
     : footswitches() ? PICK_FOOTSWITCH : NO_FOOTSWITCH;
   // Mono or Stereo, for a model that has both.
   const variants = $('pf-variant');
@@ -1987,14 +2251,32 @@ function closeBrowser() {
 
 // ---------- Events ----------
 
-// ---------- Preset list (desktop sidebar) ----------
-// Shown or hidden from the top bar, kept in this browser. Hidden, the Presets
-// button opens the full sheet instead.
+// ---------- Preset list (sidebar) ----------
+// Shown or hidden from the top bar or the settings, kept in this browser:
+// 'shown' or 'hidden'; unset (or '' from before), computers show it and
+// tablets in landscape do not. Too narrow a screen never shows it. Hidden,
+// the Presets button opens the full sheet instead.
 
 const SIDEBAR_KEY = 'helix-bridge-sidebar';
+const desktop = window.matchMedia('(min-width: 1280px)');
+const roomy = window.matchMedia('(min-width: 1280px), (min-width: 1024px) and (orientation: landscape)');
 
-function setSidebar(open, animate) {
-  $('app').classList.toggle('no-sidebar', !open);
+function sidebarSetting() {
+  const v = stored(SIDEBAR_KEY, '');
+  return v === 'shown' || v === 'hidden' ? v : '';
+}
+
+function sidebarWanted() {
+  const v = sidebarSetting();
+  return v ? v === 'shown' : desktop.matches;
+}
+
+function setSidebar(animate) {
+  const v = sidebarSetting();
+  const app = $('app');
+  app.classList.toggle('no-sidebar', v === 'hidden');
+  app.classList.toggle('sidebar-on', v === 'shown');
+  const open = sidebarWanted() && roomy.matches;
   const btn = document.querySelector('[data-sidebar]');
   btn.setAttribute('aria-pressed', String(open));
   btn.title = open ? 'Hide the preset list' : 'Show the preset list';
@@ -2003,11 +2285,30 @@ function setSidebar(open, animate) {
   $('preset-list').querySelector('.loaded')?.scrollIntoView({ block: 'center' });
 }
 
-function toggleSidebar() {
-  const open = $('app').classList.contains('no-sidebar');
-  store(SIDEBAR_KEY, open ? '' : 'hidden');
-  setSidebar(open, true);
+function showSidebar(open) {
+  store(SIDEBAR_KEY, open ? 'shown' : 'hidden');
+  setSidebar(true);
+  renderSettings();
 }
+
+function toggleSidebar() {
+  showSidebar(!sidebarWanted());
+}
+
+function setNames(names) {
+  state.names = names === 'original' ? 'original' : 'line6';
+  store(NAMES_KEY, state.names);
+  render();
+}
+
+// A drag that ends over a button must not also tap it (blockUp).
+document.addEventListener('click', (e) => {
+  if (performance.now() < swallowUntil) {
+    swallowUntil = 0;
+    e.stopPropagation();
+    e.preventDefault();
+  }
+}, true);
 
 document.addEventListener('click', (e) => {
   const t = e.target.closest('button, [data-conn]');
@@ -2018,6 +2319,14 @@ document.addEventListener('click', (e) => {
   if (!t) return;
   if (t.matches('[data-sidebar]')) {
     toggleSidebar();
+  } else if (t.matches('[data-sidebar-set]')) {
+    showSidebar(t.dataset.sidebarSet === 'shown');
+  } else if (t.matches('[data-names]')) {
+    setNames(t.dataset.names);
+  } else if (t.matches('[data-back]')) {
+    closeEdit();
+  } else if (t.matches('[data-pl]')) {
+    loadPreset(Number(t.dataset.pl));
   } else if (t.matches('[data-conn]')) {
     state.connOpen = !state.connOpen;
     renderConnection();
@@ -2126,6 +2435,15 @@ paramsEl.addEventListener('lostpointercapture', travelUp);
 paramsEl.addEventListener('keydown', travelKey);
 paramsEl.addEventListener('change', menuChange);
 
+const chainEl = $('chain');
+chainEl.addEventListener('pointerdown', blockDown);
+chainEl.addEventListener('pointermove', blockMove);
+chainEl.addEventListener('pointerup', blockUp);
+chainEl.addEventListener('pointercancel', blockUp);
+// Once a block is held, a moving finger drags it instead of scrolling the page.
+chainEl.addEventListener('touchmove', (e) => { if (state.blockDrag?.started) e.preventDefault(); }, { passive: false });
+chainEl.addEventListener('contextmenu', (e) => { if (state.blockDrag) e.preventDefault(); });
+
 // Taps count on touch-down, not on release: closer to the beat.
 $('tap-btn').addEventListener('pointerdown', (e) => {
   if (e.button !== 0 || $('tap-btn').disabled) return;
@@ -2155,9 +2473,11 @@ $('banks').addEventListener('scroll', () => {
 
 document.addEventListener('keydown', (e) => {
   if (e.key !== 'Escape') return;
-  if (state.connOpen) { state.connOpen = false; renderConnection(); } else if (state.picker.open) closePicker();
+  if (state.blockDrag) cancelBlockDrag();
+  else if (state.connOpen) { state.connOpen = false; renderConnection(); } else if (state.picker.open) closePicker();
   else if (state.moving != null) toggleMove();
   else if (state.browser.open) closeBrowser();
+  else closeEdit();
 });
 
 // Re-read when the iPad comes back to the page (screen lock, app switch).
@@ -2169,6 +2489,10 @@ document.addEventListener('visibilitychange', () => {
   connectLive();
 });
 
-setSidebar(stored(SIDEBAR_KEY, '') !== 'hidden', false);
+state.names = stored(NAMES_KEY, 'line6') === 'original' ? 'original' : 'line6';
+setSidebar(false);
+// Rotating or resizing across a breakpoint: the sidebar and the phone views follow.
+for (const m of [desktop, roomy]) m.addEventListener('change', () => { setSidebar(false); renderSettings(); });
+phone.addEventListener('change', () => { if (!phone.matches) closeEdit(); render(); });
 render();
 refresh();

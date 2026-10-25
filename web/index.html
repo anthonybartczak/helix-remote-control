@@ -21,6 +21,9 @@
     <div class="device-name" id="device-name"></div>
     <div class="spacer"></div>
     <button class="conn conn-pill" type="button" data-conn aria-haspopup="dialog"></button>
+    <button class="icon-btn settings-btn" type="button" data-conn aria-haspopup="dialog" aria-label="Settings" title="Settings">
+      <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><use href="#gear"/></svg>
+    </button>
   </header>
 
   <div class="layout">
@@ -44,7 +47,7 @@
           <div class="spacer"></div>
           <button class="act later later-sm rename-btn" type="button" id="rename-btn" aria-label="Rename" disabled><span class="rename-text">Rename</span><svg class="rename-icon" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round"><path d="M4 20h4L19 9l-4-4L4 16z"/><path d="M13.5 6.5l4 4"/></svg></button>
           <button class="act later later-sm" type="button" id="save-btn" disabled>Save</button>
-          <button class="conn conn-dots" type="button" data-conn aria-haspopup="dialog" aria-label="Connection"></button>
+          <button class="conn conn-dots" type="button" data-conn aria-haspopup="dialog" aria-label="Settings and connection"></button>
           <div class="progress" id="progress"></div>
         </div>
         <div class="snaps snaps-inline" id="snaps-inline"></div>
@@ -134,11 +137,27 @@
   </div>
 </div>
 
-<div class="popover" id="conn-popover" role="dialog" aria-label="Connection" hidden>
-  <div class="caps muted">CONNECTION</div>
+<div class="popover" id="conn-popover" role="dialog" aria-label="Settings and connection" hidden>
+  <div class="caps muted">SETTINGS</div>
+  <div class="setting">
+    <div class="setting-name">Block names</div>
+    <div class="seg setting-seg" role="group" aria-label="Block names" id="set-names"></div>
+    <div class="setting-note">Line 6's model names, or the gear each model is based on.</div>
+  </div>
+  <div class="setting">
+    <div class="setting-name">Preset list on the left</div>
+    <div class="seg setting-seg" role="group" aria-label="Preset list on the left" id="set-sidebar"></div>
+    <div class="setting-note" id="set-sidebar-note"></div>
+  </div>
+  <div class="setting-note">Settings stay in this browser.</div>
+  <div class="caps muted popover-sep">CONNECTION</div>
   <dl class="kv" id="conn-info"></dl>
   <button class="btn-solid" type="button" data-retry>Refresh from device</button>
 </div>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></symbol>
+</svg>
 
 <script src="lib/motion-13.4.6.js"></script>
 <script src="latest.js"></script>
