@@ -1226,8 +1226,12 @@ impl Worker {
     /// or Path B ([`routing::check_cell`]). The first block on an empty
     /// Path B then gets the split and merge attached around the whole line,
     /// after the model lands (the device zeroes them when it does), as
-    /// TonePush's GUI does. Op78 + op40 confirmed on an HX Stomp by TonePush
-    /// and on the HX Effects for Path A (2026-10-15); Path B unverified.
+    /// TonePush's GUI does. A block added to a Path B that has blocks leaves
+    /// the split and merge where they were: the HX Effects moved the split
+    /// (before cell 0 to before cell 2 on 01A, 2026-10-25), so they are put
+    /// back in one more write. Op78 + op40 confirmed on an HX Stomp by
+    /// TonePush and on the HX Effects for Path A (2026-10-15) and Path B
+    /// (2026-10-25).
     fn add_block(&mut self, block: u32, model: u32) -> Result<String> {
         let catalog = self.catalog.clone().ok_or_else(|| {
             DeviceError::Invalid("adding a block needs HX Edit data on the server (/vendor)".into())
@@ -1261,11 +1265,26 @@ impl Worker {
             }
             Some(_) => {}
         }
+        let kept = match place {
+            routing::Place::Branch { claim: false } => attach_points(preset),
+            _ => None,
+        };
         self.with(|s| s.set_model(slot as i64, model))?;
         self.settle_slot(slot, Some(model));
         if place == (routing::Place::Branch { claim: true }) {
             self.read_doc()?;
             self.rewrite(claim_line)?;
+        } else if let Some(kept) = kept {
+            self.read_doc()?;
+            let now = attach_points(&self.doc.as_ref().expect("just read").preset);
+            if now != Some(kept) {
+                tracing::info!(
+                    ?kept,
+                    ?now,
+                    "the pedal moved Path B's ends; putting them back"
+                );
+                self.rewrite(|p| reattach(p, kept))?;
+            }
         }
         Ok(format!(
             "block {block} is now {}\n",
@@ -1867,6 +1886,24 @@ fn claim_line(p: &mut hx_proto::Preset) -> std::result::Result<(), &'static str>
         }
         _ => Err("the preset has no split to attach"),
     }
+}
+
+/// The first path's split and merge, each as (its slot, the slot it
+/// attaches before): `None` unless both are attached.
+type AttachPoints = [(usize, usize); 2];
+
+fn attach_points(p: &hx_proto::Preset) -> Option<AttachPoints> {
+    let path = p.layout().paths.into_iter().next()?;
+    let (split, join) = (path.split?, path.join?);
+    Some([(split, p.attach_of(split)?), (join, p.attach_of(join)?)])
+}
+
+/// Attach the split and merge as `kept` says ([`attach_points`]).
+fn reattach(p: &mut hx_proto::Preset, kept: AttachPoints) -> std::result::Result<(), &'static str> {
+    kept.iter()
+        .all(|&(junction, before)| p.set_attach(junction, before))
+        .then_some(())
+        .ok_or("the preset has no split to attach")
 }
 
 /// What [`Worker::check_stored`] publishes for the [`unsaved_edits`] it
@@ -2777,6 +2814,20 @@ mod tests {
     /// A block moved to another footswitch and back is no edit, though
     /// opcode 56 left its mark (key 10: 0 stored, 7 after) on the entry.
     /// Shaped as 01A on the HX Effects (2026-10-25).
+    #[test]
+    fn path_b_ends_put_back_where_they_were() {
+        let bytes = include_bytes!("../../third_party/hx-proto/tests/preset.bin");
+        let mut p = hx_proto::Preset::parse(bytes).expect("fixture parses");
+        claim_line(&mut p).expect("the fixture has a split");
+        let kept = attach_points(&p).expect("attached");
+        // The pedal moves the split, as on 01A when a second block landed.
+        let (split, before) = kept[0];
+        assert!(p.set_attach(split, before + 2));
+        assert_ne!(attach_points(&p), Some(kept));
+        reattach(&mut p, kept).expect("reattached");
+        assert_eq!(attach_points(&p), Some(kept));
+    }
+
     #[test]
     fn a_footswitch_round_trip_is_not_an_edit() {
         let tone = |mark: i64, on: Option<i64>| {

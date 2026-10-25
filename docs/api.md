@@ -81,8 +81,12 @@ the chain; the UI does this for parameter and bypass edits.
   `routing.main` or, under the split and merge, of `routing.branch` (`server/src/routing.rs`);
   elsewhere 400. The first block on an empty Path B (any of its cells) is followed by a
   preset document write (op21) attaching the split after the input and the merge before
-  the output, as TonePush's GUI does: the device zeroes them when the model lands. Path A
-  verified on the HX Effects; Path B unverified. The device may refuse a model (not enough DSP for a polyphonic pitch model, an FX Loop the
+  the output, as TonePush's GUI does: the device zeroes them when the model lands. A block
+  added to a Path B that already has blocks keeps the split and merge where they were: the
+  HX Effects moves the split when the model lands (before cell 0 to before cell 2 on 01A),
+  so the server puts both back in one more write (op21). Path A and Path B verified on the
+  HX Effects 3.80 (2026-10-15, 2026-10-25); removing a Path B block leaves the split where
+  it is, and removing the last one empties Path B. The device may refuse a model (not enough DSP for a polyphonic pitch model, an FX Loop the
   device lacks): 502 `failed` with its error. `usb` reads the preset back until the
   change shows (up to 1 s). Removing with `?model=M` (the block's `model_id`) refuses
   with 409 `stale` if the slot now holds another model; an empty slot is 409 too. `cli`
