@@ -77,6 +77,8 @@ logged "wifi-sec.psk gig-secret-1"
 logged "connection up helix-bridge-hotspot"
 said "Join it on the iPad, then open http://helix-bridge.local"
 
+# A literal `$(x)`: the password must reach nmcli as text, never run.
+# shellcheck disable=SC2016
 run "on, own name and odd characters" 0 "$(saved on ' pa=ss $(x) ' "Anna's rig")"
 logged "ssid Anna's rig 802-11"
 logged "wifi-sec.psk  pa=ss \$(x)  wifi-sec.proto"
