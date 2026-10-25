@@ -137,10 +137,12 @@ the chain; the UI does this for parameter and bypass edits.
   too; an empty slot, or `model` other than the slot's, 409 `stale`. `cli` can assign but
   not take off (400) and does not take a block off a previous switch. Confirmed on an HX
   Stomp by TonePush; assigning from the iPad worked on the HX Effects 3.80 (Pi 4,
-  2026-10-15, checked by hand). Switch numbering not cross-checked with
-  `probe-switches` yet (README).
-- Not exposed: reorder (`tonepush move`, marked untested on hardware by TonePush),
-  changing an existing block's model, snapshot rename, routing, IRs, settings, restore.
+  2026-10-15, checked by hand). The numbering agrees with the preset's own footswitch
+  table (opcode 33 and tone key 3/8 on 01A, 2026-10-25).
+- Not exposed: changing an existing block's model, snapshot rename, IRs, settings,
+  restore. Moves and routing are exposed (`/api/blocks/{position}/move`,
+  `/api/routing`) as the server's own preset writes, `usb`/`fake` only; `tonepush move`
+  (marked untested on hardware by TonePush) is not used.
 
 ## `/api/chain` blocks
 
@@ -348,5 +350,5 @@ re-reads).
 `GET /`, `/app.css`, `/app.js`, `/latest.js` serve the UI from `/web`. The files are compiled into
 the binary (`include_str!`), so edit them and rebuild; sent with `Cache-Control: no-cache`.
 
-Not yet: WebSocket live state (needs the bridge to hold one device session; the CLI
-backend opens a new one per command).
+Live state over a WebSocket (`/api/live`, below) needs the `usb` backend, which holds
+one device session; the `cli` backend opens a new one per command.
