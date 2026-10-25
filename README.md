@@ -66,6 +66,12 @@ in the browser. Without it, the UI is read-only and its write controls are dashe
 - **Settings** (the gear; on tablets and phones, the connection dots): block names as
   Line 6 calls them or as the gear they are based on, and the preset list. Kept in this
   browser.
+- **Own Wi-Fi for gigs** (Settings, on the Pi only): so nobody on a venue's Wi-Fi can
+  see the bridge, the Pi makes its own password-protected Wi-Fi that only your iPad
+  joins. **Off** (the default) never does; **Away** joins your saved Wi-Fi when it is in
+  range and makes its own anywhere else; **Always** makes its own even at home. Saving
+  needs the write token and applies the next time the Pi is switched on. See
+  docs/deploy.md, "Own Wi-Fi for gigs".
 - **Rename / Save:** buttons in the preset bar. Save asks first and overwrites the
   loaded preset.
 - **Snapshot:** tap 1–4 in the preset bar. The active one is lit.
@@ -112,6 +118,7 @@ Set in `/etc/helix-bridge/helix-bridge.env` on the Pi, then
 | `HELIX_TOKEN` | unset | Shared token for changes. Unset or empty = read-only. Never commit it |
 | `HELIX_BACKEND` | `fake` (Pi: `usb`) | `usb` = the pedal, one held USB connection, live updates (recommended); `cli` = the pedal via the `tonepush` program, one connection per call, no live updates; `fake` = recorded demo data |
 | `HELIX_BIND` | `0.0.0.0:8080` (Pi: port 80) | Listen address. Keep it on your local network: there is no other protection than the token |
+| `HELIX_ALLOWED_HOSTS` | unset | Rarely needed. Extra host names to answer, comma-separated. Work with no setup: IP addresses, `helix-bridge.local`, `helix-bridge`, the router's name for the Pi (e.g. `helix-bridge.fritz.box`) and `.lan`/`.home`/`.home.arpa`/`.internal` names. Any other name is refused (protects against DNS rebinding); a browser gets a page with a button to the right address |
 | `HX_EDIT_RESOURCES` | unset | HX Edit's data folder, for model and parameter names |
 | `HELIX_TONEPUSH` | `tonepush` | `cli` only: path to the `tonepush` program |
 | `HELIX_TONEPUSH_TIMEOUT_SECS` | `30` | `cli` only: stop a `tonepush` call that runs longer |

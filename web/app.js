@@ -135,6 +135,7 @@ const state = {
   blockDrag: null, // block picked up in the chain: { slot, pointer, x0, y0, touch, timer, started, ghost, over }
   view: 'chain', // phones: 'chain' (the whole chain) or 'edit' (the selected block, full screen)
   names: 'line6', // 'line6' | 'original' (the gear a model is based on); kept in this browser
+  hotspot: null, // own Wi-Fi for gigs (/api/hotspot): { saved, mode, saving, status }, { missing } off the Pi
 };
 
 // ---------- API ----------
@@ -354,6 +355,30 @@ function askToken(again) {
   return t ? t.trim() : '';
 }
 
+/**
+ * Run `call(token)`, asking for the token when none is known or it is
+ * refused. Returns its result, or null when the token prompt was cancelled.
+ */
+async function withToken(call) {
+  let token = sessionToken || storedToken();
+  for (let attempt = 0; attempt < 2; attempt++) {
+    if (!token) token = askToken(attempt > 0);
+    if (!token) return null;
+    try {
+      const res = await call(token);
+      sessionToken = token;
+      storeToken(token);
+      return res;
+    } catch (e) {
+      if (!(e instanceof ApiError) || e.code !== 'unauthorized') throw e;
+      sessionToken = '';
+      storeToken('');
+      token = '';
+    }
+  }
+  return null;
+}
+
 function canWrite() {
   return state.writes && !state.busy && !state.loading && state.device === 'ok' && !state.blocked;
 }
@@ -379,24 +404,10 @@ async function write(label, path, body, then = 'live', method = 'POST') {
   let res = null;
   let stale = false;
   try {
-    let token = sessionToken || storedToken();
-    for (let attempt = 0; attempt < 2; attempt++) {
-      if (!token) token = askToken(attempt > 0);
-      if (!token) return false;
-      try {
-        res = await api(path, { method, body, token });
-        sessionToken = token;
-        storeToken(token);
-        state.unsaved = !!res.unsaved;
-        ok = true;
-        break;
-      } catch (e) {
-        if (!(e instanceof ApiError) || e.code !== 'unauthorized') throw e;
-        sessionToken = '';
-        storeToken('');
-        token = '';
-      }
-    }
+    res = await withToken((token) => api(path, { method, body, token }));
+    if (!res) return false;
+    state.unsaved = !!res.unsaved;
+    ok = true;
   } catch (e) {
     const err = e instanceof ApiError ? e : new ApiError(0, 'client', String(e));
     if (err.code === 'writes_disabled') state.writes = false;
@@ -1710,6 +1721,84 @@ function renderSettings() {
   $('set-sidebar-note').textContent = roomy.matches
     ? 'Tap a preset in the list to load it.'
     : 'Needs a wider screen: a tablet in landscape or a computer. Here the Presets button lists them.';
+  renderHotspot();
+}
+
+// ---------- Own Wi-Fi for gigs ----------
+
+const HOTSPOT_MODES = [['off', 'Off'], ['auto', 'Away'], ['on', 'Always']];
+const HOTSPOT_NOTES = {
+  off: 'The Pi only joins your Wi-Fi. At a gig, anyone on the same Wi-Fi could open this page.',
+  auto: 'At home the Pi joins your Wi-Fi. Anywhere else it makes its own, with a password, so only your iPad gets in.',
+  on: 'The Pi always makes its own Wi-Fi, even at home. Updates need your home Wi-Fi: choose Away for those.',
+};
+
+/** Read the saved setting as the popover opens; with the token, its password too. */
+async function loadHotspot() {
+  let res;
+  try {
+    res = await api('/api/hotspot', { token: sessionToken || storedToken() });
+  } catch (e) {
+    // Off the Pi there is nothing to set; any other failure: try again next open.
+    state.hotspot = e instanceof ApiError && e.code === 'no_hotspot' ? { missing: true } : null;
+    renderHotspot();
+    return;
+  }
+  state.hotspot = { saved: res, mode: res.mode, saving: false, status: '' };
+  // Typed fields are only ever filled here, so a re-render never wipes them.
+  $('hotspot-name').value = res.name;
+  $('hotspot-password').value = res.password ?? '';
+  $('hotspot-password').placeholder = res.password_set && res.password == null
+    ? 'Saved (hidden). Type to change'
+    : '8 or more characters';
+  renderHotspot();
+}
+
+function renderHotspot() {
+  const h = state.hotspot;
+  const box = $('hotspot');
+  box.hidden = !h || !!h.missing;
+  if (box.hidden) return;
+  $('set-hotspot').innerHTML = HOTSPOT_MODES.map(([value, label]) =>
+    `<button class="seg-btn${h.mode === value ? ' active' : ''}" type="button" data-hotspot-mode="${value}" aria-pressed="${h.mode === value}">${label}</button>`).join('');
+  $('hotspot-note').textContent = HOTSPOT_NOTES[h.mode];
+  $('hotspot-fields').hidden = h.mode === 'off';
+  const save = box.querySelector('[data-hotspot-save]');
+  save.disabled = !state.writes || h.saving;
+  save.textContent = h.saving ? 'Saving…' : 'Save';
+  $('hotspot-status').textContent = state.writes ? h.status : 'Saving needs the write token (HELIX_TOKEN) on the Pi.';
+}
+
+/** Save it on the Pi. Nothing switches now: that would cut off this iPad. */
+async function saveHotspot() {
+  const h = state.hotspot;
+  if (!h?.saved || h.saving) return;
+  const body = { mode: h.mode, name: $('hotspot-name').value.trim() };
+  const password = $('hotspot-password').value;
+  // Left empty while one is saved (hidden without the token): keep that one.
+  if (password || !h.saved.password_set) body.password = password;
+  h.saving = true;
+  h.status = '';
+  renderHotspot();
+  try {
+    const res = await withToken((token) => api('/api/hotspot', { method: 'POST', body, token }));
+    if (res) {
+      h.saved = res;
+      h.mode = res.mode;
+      $('hotspot-password').value = res.password ?? '';
+      const address = location.hostname.endsWith('.local') ? location.hostname : '10.42.0.1';
+      h.status = res.mode === 'off'
+        ? 'Saved. From the next time the Pi is switched on, it only joins your Wi-Fi.'
+        : `Saved. Next time the Pi is switched on${res.mode === 'auto' ? ' away from home' : ''}, ` +
+          `join “${res.name}” in the iPad's Wi-Fi settings with this password, then open ${address}.`;
+    }
+  } catch (e) {
+    const message = e instanceof ApiError ? e.message : String(e);
+    h.status = message.charAt(0).toUpperCase() + message.slice(1);
+  } finally {
+    h.saving = false;
+    renderHotspot();
+  }
 }
 
 function renderPresetBar() {
@@ -2323,6 +2412,14 @@ document.addEventListener('click', (e) => {
     showSidebar(t.dataset.sidebarSet === 'shown');
   } else if (t.matches('[data-names]')) {
     setNames(t.dataset.names);
+  } else if (t.matches('[data-hotspot-mode]')) {
+    if (state.hotspot?.saved) {
+      state.hotspot.mode = t.dataset.hotspotMode;
+      state.hotspot.status = '';
+      renderHotspot();
+    }
+  } else if (t.matches('[data-hotspot-save]')) {
+    saveHotspot();
   } else if (t.matches('[data-back]')) {
     closeEdit();
   } else if (t.matches('[data-pl]')) {
@@ -2330,7 +2427,10 @@ document.addEventListener('click', (e) => {
   } else if (t.matches('[data-conn]')) {
     state.connOpen = !state.connOpen;
     renderConnection();
-    if (state.connOpen) fx($('conn-popover'), { opacity: [0, 1], scale: [0.94, 1], y: [-8, 0] }, { ...SPRING, opacity: FADE });
+    if (state.connOpen) {
+      fx($('conn-popover'), { opacity: [0, 1], scale: [0.94, 1], y: [-8, 0] }, { ...SPRING, opacity: FADE });
+      loadHotspot();
+    }
   } else if (t.matches('[data-retry]')) {
     state.connOpen = false;
     state.banner = null;

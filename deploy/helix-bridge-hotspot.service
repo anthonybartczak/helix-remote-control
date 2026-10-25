@@ -1,0 +1,24 @@
+# The Pi's own Wi-Fi for gigs, as set in the app (/var/lib/helix-bridge/hotspot.conf).
+# Installed by install.sh to /etc/systemd/system/helix-bridge-hotspot.service.
+# Runs once at start-up; when off (the default) it only makes sure ours is not running.
+[Unit]
+Description=Helix Bridge own Wi-Fi for gigs
+Documentation=https://github.com/anthonybartczak/helix-remote-control
+After=NetworkManager.service
+Wants=NetworkManager.service
+
+[Service]
+# Not oneshot: "auto" waits up to 45 s for a saved Wi-Fi, and start-up need
+# not wait with it.
+Type=exec
+ExecStart=/opt/helix-bridge/bin/helix-bridge-hotspot
+
+# Root, for NetworkManager; it only talks to it over D-Bus.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+RestrictAddressFamilies=AF_UNIX
+
+[Install]
+WantedBy=multi-user.target

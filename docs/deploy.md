@@ -15,6 +15,7 @@ Total time: about 45 minutes, most of it flashing the SD card and the first boot
 | `/opt/helix-bridge/vendor/res/` | HX Edit data, copied by you (step 6). Never committed |
 | `/etc/helix-bridge/helix-bridge.env` | Settings, incl. the write token. Mode `600`. Kept on update |
 | `/etc/systemd/system/helix-bridge.service` | Service, runs as user `helix-bridge` on port 80 |
+| `/etc/systemd/system/helix-bridge-hotspot.service` | Own Wi-Fi for gigs, as set in the app (`/var/lib/helix-bridge/hotspot.conf`): runs `/opt/helix-bridge/bin/helix-bridge-hotspot` at start-up |
 | `/etc/udev/rules.d/70-helix-bridge.rules` | USB access to vendor `0e41` for that user |
 | `/etc/avahi/services/helix-bridge.service` | mDNS advert for the web UI |
 
@@ -100,6 +101,30 @@ Total time: about 45 minutes, most of it flashing the SD card and the first boot
     ```
     Back to the old behaviour: same with `HELIX_BACKEND=cli`.
 
+## Own Wi-Fi for gigs (about 5 minutes, optional)
+
+On a venue's Wi-Fi, anyone else on it can open the bridge and watch your setup. With
+its own Wi-Fi the Pi makes a password-protected network that only your iPad joins.
+It is set in the app and is off until you turn it on. **Away** is the easy choice: at
+home the Pi joins your Wi-Fi as before (for updates); anywhere it finds no saved Wi-Fi
+it makes its own, about 1 minute after power-on. Needs the write token (step 9).
+
+1. **Open Settings** in the app: the gear, or the connection dots on a tablet or phone.
+2. **Under Own Wi-Fi for gigs, tap Away.** Keep the name or change it, and type a
+   password of 8 or more characters.
+3. **Tap Save.** Nothing changes now: switching would cut off this iPad.
+4. **Try it once at home (about 2 minutes):** switch your Wi-Fi router off (or take
+   the Pi out of its range), power the Pi off and on, and wait 1 minute.
+5. **Join it on the iPad:** Settings → Wi-Fi → **Helix Bridge**, type the password once.
+   iOS says "No Internet Connection": that is expected, stay on it. Then open
+   `http://helix-bridge.local` (or `http://10.42.0.1`).
+
+- **Always** makes its own Wi-Fi even at home; **Off** (the default) never does.
+- Do not save the venue's Wi-Fi on the Pi: with Away it would join that instead.
+- The app saves it to `/var/lib/helix-bridge/hotspot.conf` (`HOTSPOT=off|auto|on`,
+  `NAME=`, `PASSWORD=`); `helix-bridge-hotspot.service` reads it at start-up, as root,
+  as data only. What it did: `journalctl -u helix-bridge-hotspot -b`.
+
 ## Updating
 
 One command on the Pi, once set up: `sudo helix-bridge-update`. It takes the newest
@@ -151,6 +176,7 @@ HX_EDIT_RESOURCES=/opt/helix-bridge/vendor/res /opt/helix-bridge/bin/tonepush in
 | Symptom | Cause and fix |
 |---|---|
 | `helix-bridge.local` does not resolve | Hostname not set or Avahi down. Check `hostname` and `systemctl status avahi-daemon`. Fallback: `http://<pi-ip>` (`hostname -I`) |
+| "Helix Bridge has another address" | The page was opened by a name the bridge does not answer to, to keep websites away from the pedal. Tap the button on that page and bookmark where it leads. (Experts: `HELIX_ALLOWED_HOSTS` in the settings file adds names) |
 | UI loads, device calls fail with a permission error | udev rule not applied. Run `sudo udevadm trigger --action=change --subsystem-match=usb`, then check step 7 |
 | Device calls time out | HX Edit is open somewhere, or the pedal is wedged. Close HX Edit. If still stuck, pull the pedal's **power adapter** (a USB replug does not help, PROTOCOL.md) |
 | No model names, `FX` everywhere | `vendor/res` missing, wrong folder, or unreadable. `ls -ld /opt/helix-bridge/vendor/res` must show `drwxr-xr-x`; fix with `sudo chmod -R a+rX /opt/helix-bridge/vendor/res`, or re-run `install.sh` |
@@ -159,6 +185,8 @@ HX_EDIT_RESOURCES=/opt/helix-bridge/vendor/res /opt/helix-bridge/bin/tonepush in
 | `helix-bridge-update`: "GitHub API request failed" | Token expired, mistyped, or lacks Actions: read. Make a new one (Updating, step 2) |
 | Write buttons dashed, "Writes are off" | No `HELIX_TOKEN` in the settings file. See step 9 |
 | iPad keeps asking for the token | Token typed wrong, or changed on the Pi. Re-type it; the UI asks again after each refusal |
+| No "Helix Bridge" Wi-Fi at the gig | A saved Wi-Fi was in range (Away joined it), or the setting is Off. `journalctl -u helix-bridge-hotspot -b` says which |
+| Pi on its own Wi-Fi at home, needed on your Wi-Fi | Always keeps it there. Join "Helix Bridge" on the iPad, open the app, set Away or Off in Settings, then switch the Pi off and on |
 
 Memory: `systemctl status helix-bridge` shows the service's RAM, `free -h` the whole Pi.
 The unit caps the service at 180 MB (`MemoryMax`).

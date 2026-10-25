@@ -13,6 +13,7 @@ PREFIX=/opt/helix-bridge
 CONF_DIR=/etc/helix-bridge
 SVC_USER=helix-bridge
 UNIT=/etc/systemd/system/helix-bridge.service
+HOTSPOT_UNIT=/etc/systemd/system/helix-bridge-hotspot.service
 RULES=/etc/udev/rules.d/70-helix-bridge.rules
 AVAHI=/etc/avahi/services/helix-bridge.service
 
@@ -44,13 +45,17 @@ done
 if [ "$uninstall" -eq 1 ]; then
     say "Stopping and removing helix-bridge"
     systemctl disable --now helix-bridge 2>/dev/null || true
-    rm -f "$UNIT" "$RULES" "$AVAHI"
+    # Not stopped here: that could cut this very session. Ours has autoconnect
+    # off, so the Pi is back on its saved Wi-Fi after the next reboot.
+    systemctl disable helix-bridge-hotspot 2>/dev/null || true
+    rm -f "$UNIT" "$HOTSPOT_UNIT" "$RULES" "$AVAHI"
     systemctl daemon-reload
     udevadm control --reload-rules || true
     systemctl reload avahi-daemon 2>/dev/null || true
     rm -rf "${PREFIX:?}/bin" "${PREFIX:?}/fixtures" "${PREFIX:?}/licenses" "${PREFIX:?}/BUILD_INFO"
     rm -f /usr/local/sbin/helix-bridge-update
     say "Removed. Kept: $CONF_DIR, $PREFIX/vendor, /var/lib/helix-bridge, user $SVC_USER"
+    say "If the Pi's own Wi-Fi is on, it stops at the next reboot"
     exit 0
 fi
 
@@ -59,7 +64,8 @@ arch=$(uname -m)
 
 here=$(cd "$(dirname "$0")" && pwd)
 for f in bin/helix-bridge bin/tonepush deploy/helix-bridge.service deploy/helix-bridge.env \
-    deploy/70-helix-bridge.rules deploy/avahi-helix-bridge.service; do
+    deploy/70-helix-bridge.rules deploy/avahi-helix-bridge.service \
+    deploy/hotspot.sh deploy/helix-bridge-hotspot.service; do
     [ -e "$here/$f" ] || die "missing $f: run this from the unpacked release folder"
 done
 
@@ -93,6 +99,7 @@ fi
 if [ -e "$here/deploy/update.sh" ]; then
     install -m 755 "$here/deploy/update.sh" /usr/local/sbin/helix-bridge-update
 fi
+install -m 755 "$here/deploy/hotspot.sh" "$PREFIX/bin/helix-bridge-hotspot"
 
 # 3. Settings: installed once, never overwritten.
 install -d -m 755 "$CONF_DIR"
@@ -137,6 +144,11 @@ install -m 644 "$here/deploy/helix-bridge.service" "$UNIT"
 systemctl daemon-reload
 systemctl enable helix-bridge >/dev/null 2>&1
 systemctl restart helix-bridge
+# Own Wi-Fi: takes effect at the next reboot, never now, as switching Wi-Fi
+# would cut the SSH session (or update) this runs in.
+install -m 644 "$here/deploy/helix-bridge-hotspot.service" "$HOTSPOT_UNIT"
+systemctl daemon-reload
+systemctl enable helix-bridge-hotspot >/dev/null 2>&1
 
 # 7. Check. /api/health does not touch the device.
 port=$(sed -n 's/^HELIX_BIND=.*:\([0-9]*\)$/\1/p' "$CONF_DIR/helix-bridge.env" | tail -n 1)

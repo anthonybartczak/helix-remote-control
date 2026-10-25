@@ -810,6 +810,16 @@ button.snap:disabled { opacity: .6; }
 .setting-seg .seg-btn { flex: 1; }
 .setting-note { font-size: var(--fs-xs); color: var(--muted); line-height: 1.4; }
 .popover-sep { margin-top: var(--s1); padding-top: var(--s3); border-top: 1px solid var(--hair); }
+/* Own Wi-Fi fields. 16px text, so Safari does not zoom in on focus. */
+.hotspot-fields { display: flex; flex-direction: column; gap: var(--s2); }
+.field { display: flex; flex-direction: column; gap: var(--s1); }
+.field-name { font-size: var(--fs-xs); color: var(--muted); }
+.field-input {
+  height: var(--tap); min-width: 0; padding: 0 var(--s3); border: 0; border-radius: var(--r2);
+  background: var(--surface); color: var(--ink); font: var(--fs-m) var(--font-ui); -webkit-appearance: none; appearance: none;
+}
+.field-input::placeholder { color: var(--muted); }
+.setting .btn-solid:disabled { opacity: .4; }
 .conn-gear { width: 16px; height: 16px; flex: none; color: var(--muted); margin-left: 2px; }
 
 /* ---------- Dragging a block ---------- */

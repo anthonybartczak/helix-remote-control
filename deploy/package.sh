@@ -21,6 +21,7 @@ install -m 755 "$bridge_bin" "$dir/bin/helix-bridge"
 install -m 755 "$tonepush_bin" "$dir/bin/tonepush"
 install -m 755 "$repo/deploy/install.sh" "$dir/install.sh"
 install -m 755 "$repo/deploy/update.sh" "$dir/deploy/update.sh"
+install -m 755 "$repo/deploy/hotspot.sh" "$dir/deploy/hotspot.sh"
 # What this bundle is, for helix-bridge-update. GITHUB_* are set in Actions.
 {
     echo "version=$version"
@@ -29,7 +30,8 @@ install -m 755 "$repo/deploy/update.sh" "$dir/deploy/update.sh"
         echo "ref=${GITHUB_REF_NAME:-$(git -C "$repo" rev-parse --abbrev-ref HEAD 2>/dev/null)}"
     fi
 } > "$dir/BUILD_INFO"
-for f in helix-bridge.service helix-bridge.env 70-helix-bridge.rules avahi-helix-bridge.service; do
+for f in helix-bridge.service helix-bridge-hotspot.service helix-bridge.env \
+    70-helix-bridge.rules avahi-helix-bridge.service; do
     install -m 644 "$repo/deploy/$f" "$dir/deploy/$f"
 done
 # Lets HELIX_BACKEND=fake run on the Pi without the pedal.

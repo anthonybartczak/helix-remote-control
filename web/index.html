@@ -150,6 +150,19 @@
     <div class="setting-note" id="set-sidebar-note"></div>
   </div>
   <div class="setting-note">Settings stay in this browser.</div>
+  <div class="setting popover-sep" id="hotspot" hidden>
+    <div class="setting-name">Own Wi-Fi for gigs</div>
+    <div class="seg setting-seg" role="group" aria-label="Own Wi-Fi for gigs" id="set-hotspot"></div>
+    <div class="setting-note" id="hotspot-note"></div>
+    <div class="hotspot-fields" id="hotspot-fields">
+      <label class="field"><span class="field-name">Wi-Fi name</span>
+        <input class="field-input" id="hotspot-name" maxlength="32" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"></label>
+      <label class="field"><span class="field-name">Password</span>
+        <input class="field-input" id="hotspot-password" maxlength="63" placeholder="8 or more characters" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"></label>
+    </div>
+    <button class="btn-solid" type="button" data-hotspot-save>Save</button>
+    <div class="setting-note" id="hotspot-status" role="status"></div>
+  </div>
   <div class="caps muted popover-sep">CONNECTION</div>
   <dl class="kv" id="conn-info"></dl>
   <button class="btn-solid" type="button" data-retry>Refresh from device</button>

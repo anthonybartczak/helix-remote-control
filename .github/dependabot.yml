@@ -1,0 +1,11 @@
+# Keeps the commit SHAs the workflows pin their actions to current
+# (.github/workflows/release.yml). Weekly, one grouped PR.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
