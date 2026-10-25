@@ -2249,6 +2249,46 @@ pub fn probe_unsaved() -> std::result::Result<(), String> {
     Ok(())
 }
 
+/// `helix-bridge probe-switch-table`: read-only. For every stored preset of
+/// the loaded setlist (opcode 4, which loads nothing), print what its
+/// footswitch table (tone key 3/8, one entry list per switch) holds: per
+/// entry, key 10 and the target's name. Key 10 is undecoded; this shows
+/// which values the pedal keeps there.
+pub fn probe_switch_table() -> std::result::Result<(), String> {
+    let mut session = probe_open()?;
+    let (setlist, _, _) = session.preset_info().map_err(|e| e.to_string())?;
+    let mut counts: std::collections::BTreeMap<String, u32> = Default::default();
+    for index in 0..128 {
+        let Some(preset) = session
+            .read_preset_at(setlist, index)
+            .map_err(|e| e.to_string())?
+        else {
+            continue;
+        };
+        let Some(Value::Array(switches)) = preset.tone.get(3).and_then(|t| t.get(8)) else {
+            println!("{index:>3}: no switch table: {:?}", preset.tone.get(3));
+            continue;
+        };
+        let mut line = Vec::new();
+        for (n, entries) in switches.iter().enumerate() {
+            let Value::Array(entries) = entries else {
+                continue;
+            };
+            for e in entries {
+                let k10 = format!("{:?}", e.get(10));
+                let name = e.get(11).and_then(|t| t.get(5)).cloned();
+                line.push(format!("FS{} {k10} {name:?}", n + 1));
+                *counts.entry(k10).or_default() += 1;
+            }
+        }
+        if !line.is_empty() {
+            println!("{index:>3}: {}", line.join(" | "));
+        }
+    }
+    println!("key 10 values: {counts:?}");
+    Ok(())
+}
+
 /// `helix-bridge probe-switches`: read-only. Print each footswitch's raw
 /// opcode 33 reply and how hx-usb decodes it, the loaded preset's blocks
 /// and its controller table (tone key 4) by ordinal, and what the bridge
