@@ -9,8 +9,15 @@
 //! A continuous parameter becomes a grid of `steps + 1` positions, each with
 //! the label HX Edit would show for it. A drag moves between grid positions;
 //! exact values stay reachable by typing.
+//!
+//! Also the model browser for adding blocks (`GET /api/catalog`, [`browser`]).
+
+use std::collections::{HashMap, HashSet};
+use std::sync::OnceLock;
 
 use serde::Serialize;
+
+use crate::types;
 
 /// A continuous range with no more grid positions than this uses a round step
 /// (0.01 on a 0..1 knob, 1 dB on -120..12 dB).
@@ -108,6 +115,259 @@ pub fn category(
             .find(|s| s.models.contains(&model.id))
             .map(|s| s.name.clone()),
     })
+}
+
+/// A category in the model browser (`GET /api/catalog`), as HX Edit lists it.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ModelGroup {
+    /// "Distortion".
+    pub name: String,
+    /// "Dist".
+    pub short: String,
+    /// HX Edit's tint, `#rrggbb`.
+    pub colour: String,
+    /// Effect types in display order ("Boost", "Overdrive", …), only those
+    /// some model has. Ours, not Line 6's ([`crate::types`]); empty for a
+    /// category without types (Wah, Volume/Pan, Send/Return).
+    pub types: Vec<String>,
+    /// HX Edit's shelves ("Mono", "Stereo", "Legacy"), in its order. One
+    /// unnamed shelf for a category without them.
+    pub shelves: Vec<Shelf>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Shelf {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    pub models: Vec<ModelEntry>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ModelEntry {
+    /// Model number, for `POST /api/blocks/{position}`.
+    pub id: u32,
+    pub name: String,
+    /// Effect type within the category ("Fuzz"), from [`crate::types`].
+    #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
+    pub effect_type: Option<String>,
+    /// The real gear behind it (`crate::based_on`); filled in by the API.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub based_on: Option<String>,
+}
+
+/// HX Edit's catalog ids with no constant in `hx_catalog`.
+const LOOPER: u32 = 17;
+const FAVORITES: u32 = 23;
+
+/// Whether blocks of this category can be added. The HX Effects has no amp,
+/// preamp, cab or IR blocks (Pilot's Guide 3.80, p. 57) and no looper; the
+/// structural categories (input, output, split, merge) are not blocks at all,
+/// and Favorites re-lists models from the others.
+fn offered(c: &hx_catalog::Category) -> bool {
+    use hx_catalog::Category as C;
+    let not_here = [
+        C::AMP,
+        C::PREAMP,
+        C::CAB,
+        C::IR,
+        C::AMP_CAB,
+        LOOPER,
+        FAVORITES,
+    ];
+    c.is_effect() && !c.paired && !not_here.contains(&c.id)
+}
+
+/// The numbers the device uses (`Helix.sym`) for each catalog model. The
+/// catalog keeps one model for a mono and a stereo version, listed on both
+/// shelves; the device numbers them apart (`HD2_DelaySimpleDelayMono` is 80,
+/// `HD2_DelaySimpleDelayStereo` 92).
+struct Numbers<'a>(HashMap<&'a str, Variants>);
+
+/// Device numbers of one catalog model: the symbol named as the model, and
+/// the ones with a `Mono` or `Stereo` suffix.
+#[derive(Default)]
+struct Variants {
+    plain: Option<u32>,
+    mono: Option<u32>,
+    stereo: Option<u32>,
+}
+
+impl<'a> Numbers<'a> {
+    fn new(catalog: &'a hx_catalog::Catalog) -> Self {
+        let mut numbers: HashMap<&str, Variants> = HashMap::new();
+        for s in catalog.symbols() {
+            let Some(id) = s.model.as_deref() else {
+                continue;
+            };
+            let v = numbers.entry(id).or_default();
+            let slot = match s.symbol.strip_prefix(id) {
+                Some("Mono") => &mut v.mono,
+                Some("Stereo") => &mut v.stereo,
+                _ => &mut v.plain,
+            };
+            slot.get_or_insert(s.number);
+        }
+        Numbers(numbers)
+    }
+
+    /// The number for model `id` on shelf `shelf`.
+    fn get(&self, id: &str, shelf: Option<&str>) -> Option<u32> {
+        let v = self.0.get(id)?;
+        match shelf {
+            Some("Mono") => v.mono.or(v.plain),
+            Some("Stereo") => v.stereo.or(v.plain),
+            _ => v.plain.or(v.mono).or(v.stereo),
+        }
+    }
+}
+
+/// Catalog ids the browser leaves out, read once from HX Edit's files
+/// (`hx_catalog` reads neither flag):
+/// - marked `"hidden"` in `HX_ModelCatalog.json`: kept only so old presets
+///   still load (Victoria_ShufflingDelay, an older Glitch Delay);
+/// - with a `devices` list in a `.models` file that lacks the HX Effects
+///   (FX Loop, Send and Return 3 and 4 are Helix-only). A model without the
+///   list runs on every device.
+fn left_out() -> &'static HashSet<String> {
+    static LEFT_OUT: OnceLock<HashSet<String>> = OnceLock::new();
+    LEFT_OUT.get_or_init(|| {
+        let mut ids = HashSet::new();
+        let Some(dir) = hx_catalog::resources_dir() else {
+            return ids;
+        };
+        let json = |path: &std::path::Path| -> Option<serde_json::Value> {
+            serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()
+        };
+        if let Some(catalog) = json(&dir.join("HX_ModelCatalog.json")) {
+            collect_hidden(&catalog, &mut ids);
+        }
+        let files = std::fs::read_dir(&dir).into_iter().flatten().flatten();
+        for path in files.map(|f| f.path()) {
+            if path.extension().is_some_and(|e| e == "models") {
+                if let Some(models) = json(&path) {
+                    collect_elsewhere(&models, hx_proto::HX_EFFECTS.device_id, &mut ids);
+                }
+            }
+        }
+        ids
+    })
+}
+
+/// Models of a `.models` file whose `devices` list lacks `device`.
+fn collect_elsewhere(models: &serde_json::Value, device: u32, ids: &mut HashSet<String>) {
+    let Some(models) = models.as_array() else {
+        return;
+    };
+    for m in models {
+        let (Some(id), Some(devices)) = (
+            m.get("symbolicID").and_then(|v| v.as_str()),
+            m.get("devices").and_then(|v| v.as_array()),
+        ) else {
+            continue;
+        };
+        let here = devices
+            .iter()
+            .any(|d| d.get("id").and_then(|v| v.as_u64()) == Some(u64::from(device)));
+        if !here {
+            ids.insert(id.to_owned());
+        }
+    }
+}
+
+fn collect_hidden(value: &serde_json::Value, ids: &mut HashSet<String>) {
+    match value {
+        serde_json::Value::Object(map) => {
+            if let (Some(serde_json::Value::String(id)), Some(serde_json::Value::Bool(true))) =
+                (map.get("id"), map.get("hidden"))
+            {
+                ids.insert(id.clone());
+            }
+            map.values().for_each(|v| collect_hidden(v, ids));
+        }
+        serde_json::Value::Array(items) => items.iter().for_each(|v| collect_hidden(v, ids)),
+        _ => {}
+    }
+}
+
+/// Every model a block can be added with, by category and shelf, in HX
+/// Edit's order, each with its effect type ([`crate::types`]). Left out:
+/// models the device has no number for, the ones HX Edit hides, and the ones
+/// another device has but the HX Effects not ([`left_out`]).
+pub fn browser(catalog: &hx_catalog::Catalog) -> Vec<ModelGroup> {
+    let numbers = Numbers::new(catalog);
+    let left_out = left_out();
+    catalog
+        .categories()
+        .iter()
+        .filter(|c| offered(c))
+        .filter_map(|c| {
+            let entries = |ids: &[String], shelf: Option<&str>| -> Vec<ModelEntry> {
+                ids.iter()
+                    .filter(|id| !left_out.contains(*id))
+                    .filter_map(|id| {
+                        let name = catalog.model(id)?.name.clone();
+                        Some(ModelEntry {
+                            id: numbers.get(id, shelf)?,
+                            effect_type: types::of(&c.name, &name).map(str::to_owned),
+                            name,
+                            based_on: None,
+                        })
+                    })
+                    .collect()
+            };
+            let shelves: Vec<Shelf> = if c.subcategories.is_empty() {
+                vec![Shelf {
+                    name: None,
+                    models: entries(&c.models, None),
+                }]
+            } else {
+                c.subcategories
+                    .iter()
+                    .map(|s| Shelf {
+                        name: Some(s.name.clone()),
+                        models: entries(&s.models, Some(&s.name)),
+                    })
+                    .collect()
+            };
+            let shelves: Vec<Shelf> = shelves
+                .into_iter()
+                .filter(|s| !s.models.is_empty())
+                .collect();
+            (!shelves.is_empty()).then(|| ModelGroup {
+                name: c.name.clone(),
+                short: c.short_name.clone(),
+                colour: format!("#{:06x}", c.colour & 0xff_ffff),
+                types: used_types(&c.name, &shelves),
+                shelves,
+            })
+        })
+        .collect()
+}
+
+/// A category's effect types in display order, only those some model has.
+pub fn used_types(category: &str, shelves: &[Shelf]) -> Vec<String> {
+    types::order(category)
+        .into_iter()
+        .filter(|t| {
+            shelves
+                .iter()
+                .flat_map(|s| &s.models)
+                .any(|m| m.effect_type.as_deref() == Some(*t))
+        })
+        .map(str::to_owned)
+        .collect()
+}
+
+/// Whether model number `number` is one [`browser`] offers.
+pub fn addable(catalog: &hx_catalog::Catalog, number: u32) -> bool {
+    let Some(model) = catalog.model_number(number) else {
+        return false;
+    };
+    !left_out().contains(&model.id)
+        && catalog
+            .categories()
+            .iter()
+            .any(|c| offered(c) && c.models.contains(&model.id))
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -364,6 +624,150 @@ mod tests {
         // A range that cannot carry a control is typed instead.
         let broken = describe(2, "X", Kind::Continuous, 1.0, 1.0, 1.0, &pct);
         assert_eq!((broken.kind, broken.labels.len()), (Kind::Text, 0));
+    }
+
+    /// Against HX Edit's catalog, when this machine has one (dev machine,
+    /// `HX_EDIT_RESOURCES`); skipped elsewhere.
+    #[test]
+    fn browser_offers_effects_only() {
+        let Ok(catalog) = hx_catalog::Catalog::load() else {
+            return;
+        };
+        let groups = browser(&catalog);
+        let names: Vec<&str> = groups.iter().map(|g| g.name.as_str()).collect();
+        // HX Edit 3.80's effect categories, in its order (Pilot's Guide p. 57).
+        assert_eq!(
+            names,
+            [
+                "Distortion",
+                "Dynamics",
+                "EQ",
+                "Modulation",
+                "Delay",
+                "Reverb",
+                "Pitch/Synth",
+                "Filter",
+                "Wah",
+                "Volume/Pan",
+                "Send/Return"
+            ]
+        );
+        let shelves: Vec<_> = groups[0]
+            .shelves
+            .iter()
+            .map(|s| s.name.as_deref())
+            .collect();
+        assert_eq!(shelves, [Some("Mono"), Some("Stereo"), Some("Legacy")]);
+        let all: Vec<&ModelEntry> = groups
+            .iter()
+            .flat_map(|g| &g.shelves)
+            .flat_map(|s| &s.models)
+            .collect();
+        assert!(all.iter().all(|m| addable(&catalog, m.id)));
+        let symbol = |id: u32| catalog.symbol(id).unwrap().symbol.clone();
+        // Mono and stereo are one catalog model but two device numbers.
+        let delay = &groups[4];
+        let simple = |shelf: usize| {
+            delay.shelves[shelf]
+                .models
+                .iter()
+                .find(|m| m.name == "Simple Delay")
+                .unwrap()
+                .id
+        };
+        assert_eq!(symbol(simple(0)), "HD2_DelaySimpleDelayMono");
+        assert_eq!(symbol(simple(1)), "HD2_DelaySimpleDelayStereo");
+        // HX Edit's hidden models (an older Glitch Delay) are left out: no
+        // name twice on a shelf.
+        for shelf in groups.iter().flat_map(|g| &g.shelves) {
+            let mut names: Vec<&str> = shelf.models.iter().map(|m| m.name.as_str()).collect();
+            names.sort();
+            let before = names.len();
+            names.dedup();
+            assert_eq!(names.len(), before, "{:?}", shelf.name);
+        }
+        let numbers = Numbers::new(&catalog);
+        let old_glitch = numbers.get("Victoria_ShufflingDelay", Some("Mono"));
+        assert!(old_glitch.is_some_and(|n| !addable(&catalog, n)));
+        // An amp is a real model, but not one this device can add.
+        let amp = catalog
+            .models_in(hx_catalog::Category::AMP)
+            .first()
+            .and_then(|m| numbers.get(&m.id, None));
+        assert!(amp.is_some_and(|n| !addable(&catalog, n)));
+
+        // Helix-only loops are left out; the HX Effects' own two stay.
+        let names: Vec<&str> = all.iter().map(|m| m.name.as_str()).collect();
+        for gone in [
+            "FX Loop 3",
+            "FX Loop 4",
+            "FX Loop 3/4",
+            "Send 3",
+            "Return 4",
+        ] {
+            assert!(!names.contains(&gone), "{gone}");
+        }
+        for kept in [
+            "FX Loop 1",
+            "FX Loop 2",
+            "FX Loop 1/2",
+            "Send 1",
+            "Return 2",
+        ] {
+            assert!(names.contains(&kept), "{kept}");
+        }
+
+        // Every model in a category with types has one from the table: a
+        // model HX Edit adds later shows up here as "Other".
+        for g in &groups {
+            for m in g.shelves.iter().flat_map(|s| &s.models) {
+                assert_ne!(
+                    m.effect_type.as_deref(),
+                    Some(types::OTHER),
+                    "{}: {} has no type",
+                    g.name,
+                    m.name
+                );
+            }
+        }
+        let distortion = &groups[0];
+        assert_eq!(
+            distortion.types,
+            ["Boost", "Overdrive", "Distortion", "Fuzz", "Bass", "Lo-fi"]
+        );
+        let kinky = distortion.shelves[0]
+            .models
+            .iter()
+            .find(|m| m.name == "Kinky Boost")
+            .unwrap();
+        assert_eq!(kinky.effect_type.as_deref(), Some("Boost"));
+        assert!(groups[8].types.is_empty(), "Wah has no types");
+    }
+
+    #[test]
+    fn device_lists_leave_other_devices_models_out() {
+        let models = serde_json::json!([
+            { "symbolicID": "Everywhere", "name": "FX Loop 1" },
+            { "symbolicID": "HelixOnly", "devices": [{ "id": 2162689 }, { "id": 2162690 }] },
+            { "symbolicID": "AlsoHere", "devices": [{ "id": 2162689 }, { "id": 2162693 }] }
+        ]);
+        let mut ids = HashSet::new();
+        collect_elsewhere(&models, hx_proto::HX_EFFECTS.device_id, &mut ids);
+        assert_eq!(ids, HashSet::from(["HelixOnly".to_owned()]));
+    }
+
+    #[test]
+    fn hidden_flags_anywhere_in_the_tree() {
+        let json = serde_json::json!({
+            "categories": [{ "models": [
+                { "id": "Old", "name": "Glitch Delay", "hidden": true },
+                { "id": "New", "name": "Glitch Delay", "hidden": false },
+                { "id": "Ref", "use_subcategory": 4 }
+            ]}]
+        });
+        let mut ids = HashSet::new();
+        collect_hidden(&json, &mut ids);
+        assert_eq!(ids, HashSet::from(["Old".to_owned()]));
     }
 
     #[test]

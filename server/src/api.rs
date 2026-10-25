@@ -3,7 +3,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
+use axum::extract::ws::{Message, Utf8Bytes, WebSocket, WebSocketUpgrade};
 use axum::extract::{FromRequestParts, Path, Query, State};
 use axum::http::request::Parts;
 use axum::http::{header, HeaderMap, StatusCode};
@@ -24,11 +24,14 @@ pub struct AppState<D> {
     device: D,
     /// Shared token for write requests. `None` turns writes off.
     token: Option<String>,
-    /// True after a bypass or parameter change through the bridge, until the
-    /// next load or save. Edits made on the pedal itself are not seen.
+    /// True after an edit of the buffer, until the next load or save: a write
+    /// here, a [`Cause::Edit`] from the device (a knob on the pedal, or the
+    /// `usb` worker finding the edit buffer differs from storage when its
+    /// session opens).
     unsaved: AtomicBool,
-    /// JSON messages for `/api/live` clients.
-    live: broadcast::Sender<String>,
+    /// JSON messages for `/api/live` clients, serialised once and shared by
+    /// every client (a clone is a reference count, not a copy).
+    live: broadcast::Sender<Utf8Bytes>,
     /// The real gear behind each model, for `based_on` in `/api/chain`.
     based_on: BasedOn,
 }
@@ -68,7 +71,23 @@ pub fn router<D: Device>(state: AppState<D>) -> Router {
         .route("/api/chain", get(chain::<D>))
         .route("/api/models/{id}", get(model::<D>))
         .route("/api/select", post(select::<D>))
+        .route("/api/catalog", get(catalog::<D>))
+        .route(
+            "/api/blocks/{position}",
+            post(add_block::<D>).delete(remove_block::<D>),
+        )
         .route("/api/blocks/{position}/enabled", post(enable::<D>))
+        .route("/api/blocks/{position}/footswitch", post(footswitch::<D>))
+        .route("/api/blocks/{position}/move", post(move_block::<D>))
+        .route("/api/routing", post(junction::<D>))
+        .route(
+            "/api/blocks/{position}/params/{index}/controller",
+            post(controller::<D>),
+        )
+        .route(
+            "/api/blocks/{position}/params/{index}/controller/range",
+            post(controller_range::<D>),
+        )
         .route(
             "/api/blocks/{position}/params/{index}",
             post(set_param::<D>),
@@ -82,6 +101,7 @@ pub fn router<D: Device>(state: AppState<D>) -> Router {
         .route("/app.css", get(app_css))
         .route("/app.js", get(app_js))
         .route("/latest.js", get(latest_js))
+        .route("/lib/motion-13.4.6.js", get(motion_js))
         .with_state(state)
 }
 
@@ -123,6 +143,18 @@ async fn latest_js() -> impl IntoResponse {
     )
 }
 
+/// Motion (motion.dev, MIT, web/lib/motion-LICENSE.md). The version is in the
+/// path, so Safari may keep it; bump the name with the file.
+async fn motion_js() -> impl IntoResponse {
+    (
+        [
+            (header::CONTENT_TYPE, "text/javascript; charset=utf-8"),
+            (header::CACHE_CONTROL, "public, max-age=31536000, immutable"),
+        ],
+        include_str!("../../web/lib/motion-13.4.6.js"),
+    )
+}
+
 enum ApiError {
     Device(DeviceError),
     /// Write sent without the right token.
@@ -133,6 +165,8 @@ enum ApiError {
     BadRequest(String),
     /// No parameter metadata for this model (no HX Edit catalog, or unknown).
     NoCatalog(u32),
+    /// No model list to add blocks from (no HX Edit catalog).
+    NoModelList,
 }
 
 impl ApiError {
@@ -148,7 +182,7 @@ impl ApiError {
             ApiError::Device(DeviceError::Parse(_)) => "parse",
             ApiError::Device(DeviceError::Stale(_)) => "stale",
             ApiError::Device(DeviceError::Invalid(_)) => "bad_request",
-            ApiError::NoCatalog(_) => "no_catalog",
+            ApiError::NoCatalog(_) | ApiError::NoModelList => "no_catalog",
             ApiError::Unauthorized => "unauthorized",
             ApiError::WritesDisabled => "writes_disabled",
             ApiError::BadRequest(_) => "bad_request",
@@ -167,7 +201,7 @@ impl ApiError {
                 DeviceError::Stale(_) => StatusCode::CONFLICT,
                 DeviceError::Invalid(_) => StatusCode::BAD_REQUEST,
             },
-            ApiError::NoCatalog(_) => StatusCode::NOT_FOUND,
+            ApiError::NoCatalog(_) | ApiError::NoModelList => StatusCode::NOT_FOUND,
             ApiError::Unauthorized => StatusCode::UNAUTHORIZED,
             ApiError::WritesDisabled => StatusCode::FORBIDDEN,
             ApiError::BadRequest(_) => StatusCode::BAD_REQUEST,
@@ -185,6 +219,9 @@ impl ApiError {
             ApiError::NoCatalog(id) => format!(
                 "no parameter data for model {id}: needs HX Edit data on the server (usb backend)"
             ),
+            ApiError::NoModelList => {
+                "no model list: needs HX Edit data on the server (usb backend)".into()
+            }
         }
     }
 }
@@ -312,6 +349,25 @@ async fn model<D: Device>(
         .ok_or(ApiError::NoCatalog(id))
 }
 
+#[derive(Serialize)]
+struct Catalog {
+    categories: Vec<crate::controls::ModelGroup>,
+}
+
+/// `GET /api/catalog`: the models a block can be added with, by category,
+/// with the gear each is based on. Catalog only, no device call.
+async fn catalog<D: Device>(State(app): Shared<D>) -> ApiResult<Catalog> {
+    let mut categories = app.device.catalog().ok_or(ApiError::NoModelList)?;
+    for model in categories
+        .iter_mut()
+        .flat_map(|c| &mut c.shelves)
+        .flat_map(|s| &mut s.models)
+    {
+        model.based_on = app.based_on.get(&model.name).cloned();
+    }
+    Ok(Json(Catalog { categories }))
+}
+
 // ---------- Writes ----------
 
 /// HX preset names are at most 16 characters (front panel and HX Edit).
@@ -408,11 +464,20 @@ async fn write<D: Device>(
     cmd: Command,
 ) -> ApiResult<WriteResult> {
     let is_set = matches!(cmd, Command::Set { .. } | Command::SetNative { .. });
+    // Every edit of the buffer counts, as TonePush's GUI marks it dirty: a
+    // move or a controller left out here let a load drop it unasked.
     let unsaved = match cmd {
         Command::Enable { .. }
         | Command::Set { .. }
         | Command::SetNative { .. }
-        | Command::Tempo { .. } => Some(true),
+        | Command::Tempo { .. }
+        | Command::AddBlock { .. }
+        | Command::RemoveBlock { .. }
+        | Command::Footswitch { .. }
+        | Command::MoveBlock { .. }
+        | Command::Junction { .. }
+        | Command::Controller { .. }
+        | Command::ControllerRange { .. } => Some(true),
         Command::Select { .. } | Command::Save => Some(false),
         _ => None,
     };
@@ -448,6 +513,45 @@ async fn select<D: Device>(
 }
 
 #[derive(Deserialize)]
+struct AddBody {
+    /// Model number, from `/api/catalog`.
+    model: u32,
+}
+
+/// Put a model into an empty slot. Never replaces: a taken slot is 409.
+async fn add_block<D: Device>(
+    State(app): Shared<D>,
+    access: WriteAccess,
+    Path(position): Path<u32>,
+    Json(body): Json<AddBody>,
+) -> ApiResult<WriteResult> {
+    let cmd = Command::AddBlock {
+        block: checked_position(position)?,
+        model: body.model,
+    };
+    write(&app, access, cmd).await
+}
+
+#[derive(Deserialize)]
+struct RemoveQuery {
+    /// The block's `model_id` as the client saw it; another model there is 409.
+    model: Option<u32>,
+}
+
+async fn remove_block<D: Device>(
+    State(app): Shared<D>,
+    access: WriteAccess,
+    Path(position): Path<u32>,
+    Query(q): Query<RemoveQuery>,
+) -> ApiResult<WriteResult> {
+    let cmd = Command::RemoveBlock {
+        block: checked_position(position)?,
+        model: q.model,
+    };
+    write(&app, access, cmd).await
+}
+
+#[derive(Deserialize)]
 struct EnableBody {
     enabled: bool,
 }
@@ -461,6 +565,129 @@ async fn enable<D: Device>(
     let cmd = Command::Enable {
         block: checked_position(position)?,
         on: body.enabled,
+    };
+    write(&app, access, cmd).await
+}
+
+#[derive(Deserialize)]
+struct FootswitchBody {
+    /// One-based, as on the pedal; `null` takes the block off its switch.
+    switch: Option<u8>,
+    /// The block's `model_id` as the client saw it; another model there is 409.
+    model: Option<u32>,
+}
+
+/// Put a block's bypass on a footswitch, or take it off: a block on a
+/// footswitch shows in the HX Effects' Stomp view.
+async fn footswitch<D: Device>(
+    State(app): Shared<D>,
+    access: WriteAccess,
+    Path(position): Path<u32>,
+    Json(body): Json<FootswitchBody>,
+) -> ApiResult<WriteResult> {
+    if body.switch == Some(0) {
+        return Err(ApiError::BadRequest(
+            "footswitches are numbered from 1, as on the pedal".into(),
+        ));
+    }
+    let cmd = Command::Footswitch {
+        block: checked_position(position)?,
+        switch: body.switch,
+        model: body.model,
+    };
+    write(&app, access, cmd).await
+}
+
+#[derive(Deserialize)]
+struct MoveBody {
+    /// The empty cell to move to, as a `position` in `/api/chain`.
+    to: u32,
+    /// The block's `model_id` as the client saw it; another model there is 409.
+    model: Option<u32>,
+}
+
+/// Move a block into an empty cell of Path A or Path B.
+async fn move_block<D: Device>(
+    State(app): Shared<D>,
+    access: WriteAccess,
+    Path(position): Path<u32>,
+    Json(body): Json<MoveBody>,
+) -> ApiResult<WriteResult> {
+    let cmd = Command::MoveBlock {
+        block: checked_position(position)?,
+        to: checked_position(body.to)?,
+        model: body.model,
+    };
+    write(&app, access, cmd).await
+}
+
+#[derive(Deserialize)]
+struct JunctionBody {
+    /// `split` or `join` (the merge).
+    junction: crate::routing::Junction,
+    /// The cell of `routing.main` (zero-based) it is to sit before.
+    before: u32,
+}
+
+/// Move the split or the merge along Path A.
+async fn junction<D: Device>(
+    State(app): Shared<D>,
+    access: WriteAccess,
+    Json(body): Json<JunctionBody>,
+) -> ApiResult<WriteResult> {
+    let cmd = Command::Junction {
+        which: body.junction,
+        before: body.before,
+    };
+    write(&app, access, cmd).await
+}
+
+#[derive(Deserialize)]
+struct ControllerBody {
+    /// Expression pedal 1 or 2; `null` takes the parameter off its controller.
+    pedal: Option<u8>,
+    /// The block's `model_id` as the client saw it; another model there is 409.
+    model: Option<u32>,
+}
+
+/// Put a parameter under an expression pedal, or take it off.
+async fn controller<D: Device>(
+    State(app): Shared<D>,
+    access: WriteAccess,
+    Path((position, index)): Path<(u32, u32)>,
+    Json(body): Json<ControllerBody>,
+) -> ApiResult<WriteResult> {
+    let cmd = Command::Controller {
+        block: checked_position(position)?,
+        param: index,
+        pedal: body.pedal,
+        model: body.model,
+    };
+    write(&app, access, cmd).await
+}
+
+#[derive(Deserialize)]
+struct RangeBody {
+    /// Heel end, native value (as `params[].native`).
+    min: Option<f32>,
+    /// Toe end, native value.
+    max: Option<f32>,
+    model: Option<u32>,
+}
+
+/// Move the heel and/or toe end of a parameter's pedal travel.
+async fn controller_range<D: Device>(
+    State(app): Shared<D>,
+    access: WriteAccess,
+    Path((position, index)): Path<(u32, u32)>,
+    Json(body): Json<RangeBody>,
+) -> ApiResult<WriteResult> {
+    let cmd = Command::ControllerRange {
+        block: checked_position(position)?,
+        param: index,
+        min: body.min,
+        max: body.max,
+        model: body.model,
     };
     write(&app, access, cmd).await
 }
@@ -581,6 +808,16 @@ async fn tempo<D: Device>(
 
 // ---------- Live updates ----------
 
+/// One `/api/live` message: `{type: "chain", chain}` or `{type: "device", connected}`.
+// Serialised as soon as it is built, so its size does not matter.
+#[allow(clippy::large_enum_variant)]
+#[derive(Serialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
+enum LiveMessage {
+    Chain { chain: ChainView },
+    Device { connected: bool },
+}
+
 /// Turn device changes into client messages, keeping `unsaved` current:
 /// a footswitch or knob on the pedal edits the buffer as much as we do.
 async fn relay<D: Device>(app: Arc<AppState<D>>, mut changes: broadcast::Receiver<Live>) {
@@ -593,25 +830,31 @@ async fn relay<D: Device>(app: Arc<AppState<D>>, mut changes: broadcast::Receive
                     Cause::Other => {}
                 }
                 match full_chain(&app, &text, &extra) {
-                    Ok(chain) => json!({
-                        "type": "chain",
-                        "chain": ChainView {
+                    Ok(chain) => LiveMessage::Chain {
+                        chain: ChainView {
                             chain,
                             unsaved: app.unsaved.load(Ordering::Relaxed),
                         },
-                    }),
+                    },
                     Err(e) => {
                         tracing::warn!("live chain unreadable: {e}");
                         continue;
                     }
                 }
             }
-            Ok(Live::Connected(connected)) => json!({ "type": "device", "connected": connected }),
+            Ok(Live::Connected(connected)) => LiveMessage::Device { connected },
             Err(broadcast::error::RecvError::Lagged(_)) => continue,
             Err(broadcast::error::RecvError::Closed) => return,
         };
+        let text = match serde_json::to_string(&msg) {
+            Ok(text) => text,
+            Err(e) => {
+                tracing::warn!("live message unserialisable: {e}");
+                continue;
+            }
+        };
         // No listeners is fine.
-        let _ = app.live.send(msg.to_string());
+        let _ = app.live.send(text.into());
     }
 }
 
@@ -622,12 +865,12 @@ async fn live<D: Device>(State(app): Shared<D>, ws: WebSocketUpgrade) -> Respons
     ws.on_upgrade(move |socket| live_client(socket, messages))
 }
 
-async fn live_client(mut socket: WebSocket, mut messages: broadcast::Receiver<String>) {
+async fn live_client(mut socket: WebSocket, mut messages: broadcast::Receiver<Utf8Bytes>) {
     loop {
         tokio::select! {
             msg = messages.recv() => match msg {
                 Ok(text) => {
-                    if socket.send(Message::Text(text.into())).await.is_err() {
+                    if socket.send(Message::Text(text)).await.is_err() {
                         return;
                     }
                 }
@@ -726,6 +969,7 @@ mod tests {
             ("/app.css", "text/css"),
             ("/app.js", "text/javascript"),
             ("/latest.js", "text/javascript"),
+            ("/lib/motion-13.4.6.js", "text/javascript"),
         ] {
             let res = app()
                 .oneshot(Request::get(uri).body(Body::empty()).unwrap())
@@ -988,6 +1232,257 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn catalog_lists_models() {
+        let (status, body) = get_json("/api/catalog").await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let models: Vec<&Value> = body["categories"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|c| c["shelves"].as_array().unwrap())
+            .flat_map(|s| s["models"].as_array().unwrap())
+            .collect();
+        let gate = models.iter().find(|m| m["id"] == 123).expect("Noise Gate");
+        assert_eq!(gate["name"], "Noise Gate");
+        assert!(body["categories"][0]["colour"]
+            .as_str()
+            .unwrap()
+            .starts_with('#'));
+    }
+
+    #[tokio::test]
+    async fn add_and_remove_blocks() {
+        let app = app();
+        let t = Some(TOKEN);
+        let delete = |uri: &str, token: Option<&str>| {
+            let mut req = Request::delete(uri);
+            if let Some(t) = token {
+                req = req.header(header::AUTHORIZATION, format!("Bearer {t}"));
+            }
+            send(&app, req.body(Body::empty()).unwrap())
+        };
+
+        let (status, res) = post(&app, "/api/blocks/4", t, json!({ "model": 123 })).await;
+        assert_eq!(status, StatusCode::OK, "{res}");
+        assert_eq!(res["message"], "block 4 is now Noise Gate");
+        assert_eq!(res["unsaved"], true);
+        let (_, chain) = send(
+            &app,
+            Request::get("/api/chain").body(Body::empty()).unwrap(),
+        )
+        .await;
+        assert_eq!(chain["blocks"][2]["position"], 4);
+        assert_eq!(chain["blocks"][2]["model_id"], 123);
+
+        // Taken: adding never replaces.
+        let (status, res) = post(&app, "/api/blocks/4", t, json!({ "model": 296 })).await;
+        assert_eq!(status, StatusCode::CONFLICT, "{res}");
+        assert_eq!(res["code"], "stale");
+        // Another model than the client saw: nothing removed.
+        let (status, res) = delete("/api/blocks/4?model=296", t).await;
+        assert_eq!(status, StatusCode::CONFLICT, "{res}");
+
+        let (status, res) = delete("/api/blocks/4", None).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{res}");
+        let (status, res) = delete("/api/blocks/4?model=123", t).await;
+        assert_eq!(status, StatusCode::OK, "{res}");
+        assert_eq!(res["message"], "removed Noise Gate from block 4");
+        let (status, res) = delete("/api/blocks/4", t).await;
+        assert_eq!(status, StatusCode::CONFLICT, "{res}");
+
+        // Not a block slot; not a model; position 0.
+        let (status, _) = post(&app, "/api/blocks/1", t, json!({ "model": 123 })).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let (status, _) = post(&app, "/api/blocks/4", t, json!({ "model": 999999 })).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let (status, _) = post(&app, "/api/blocks/0", t, json!({ "model": 123 })).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn paths() {
+        let app = app();
+        let t = Some(TOKEN);
+        let chain = |app: Router| async move {
+            send(
+                &app,
+                Request::get("/api/chain").body(Body::empty()).unwrap(),
+            )
+            .await
+            .1
+        };
+        let routing = chain(app.clone()).await["routing"].clone();
+        assert!(
+            routing["split"].get("before").is_none(),
+            "Path B starts empty"
+        );
+
+        // A junction cannot move while Path B is empty.
+        let body = json!({ "junction": "join", "before": 4 });
+        let (status, res) = post(&app, "/api/routing", t, body.clone()).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{res}");
+
+        // The first block on Path B (B1 = 13) claims the whole line.
+        let (status, res) = post(&app, "/api/blocks/13", t, json!({ "model": 123 })).await;
+        assert_eq!(status, StatusCode::OK, "{res}");
+        let routing = chain(app.clone()).await["routing"].clone();
+        assert_eq!(routing["split"]["before"], 0);
+        assert_eq!(routing["join"]["before"], 9);
+
+        // The merge moves in; the split cannot pass it, nor Path B's block.
+        // A save first, so the move below has to set the flag itself.
+        let (status, res) = post(&app, "/api/save", t, json!({})).await;
+        assert_eq!(
+            (status, res["unsaved"].clone()),
+            (StatusCode::OK, json!(false))
+        );
+        let (status, res) = post(&app, "/api/routing", t, body).await;
+        assert_eq!(status, StatusCode::OK, "{res}");
+        assert_eq!(res["message"], "merge now before cell 5");
+        assert_eq!(res["unsaved"], true, "a moved merge is an edit");
+        let split = json!({ "junction": "split", "before": 1 });
+        let (status, _) = post(&app, "/api/routing", t, split).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "B1 would fall outside");
+
+        // Noise Gate (10) onto B2; then outside the bracket (B6 = 18) is refused.
+        let uri = "/api/blocks/10/move";
+        let (status, res) = post(&app, uri, t, json!({ "to": 14, "model": 123 })).await;
+        assert_eq!(status, StatusCode::OK, "{res}");
+        let (status, _) = post(&app, "/api/blocks/14/move", t, json!({ "to": 18 })).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        // Into a taken cell: stale.
+        let (status, _) = post(&app, "/api/blocks/14/move", t, json!({ "to": 13 })).await;
+        assert_eq!(status, StatusCode::CONFLICT);
+
+        let c = chain(app.clone()).await;
+        let gate = c["blocks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|b| b["position"] == 14)
+            .unwrap();
+        assert_eq!(gate["model"], "Noise Gate");
+        assert_eq!(
+            gate["params"][0]["value"], "-22.1 dB",
+            "values move with it"
+        );
+
+        // Both off Path B: it empties and its attach points go.
+        let (status, _) = post(&app, "/api/blocks/14/move", t, json!({ "to": 10 })).await;
+        assert_eq!(status, StatusCode::OK);
+        let req = Request::delete("/api/blocks/13")
+            .header("authorization", format!("Bearer {TOKEN}"))
+            .body(Body::empty())
+            .unwrap();
+        let (status, res) = send(&app, req).await;
+        assert_eq!(status, StatusCode::OK, "{res}");
+        let routing = chain(app.clone()).await["routing"].clone();
+        assert!(routing["split"].get("before").is_none(), "{routing}");
+    }
+
+    #[tokio::test]
+    async fn expression_pedals() {
+        let app = app();
+        let t = Some(TOKEN);
+        let blocks = |app: Router| async move {
+            send(
+                &app,
+                Request::get("/api/chain").body(Body::empty()).unwrap(),
+            )
+            .await
+            .1["blocks"]
+                .clone()
+        };
+        // As recorded: Fassel's Position and on/off on expression pedal 1.
+        let b = blocks(app.clone()).await;
+        let fassel = b[0]["assignments"].as_array().unwrap();
+        assert_eq!(fassel.len(), 2, "{fassel:?}");
+        let position = fassel.iter().find(|a| a["param"] == 0).unwrap();
+        assert_eq!(position["source"], "exp1");
+        assert_eq!(position["min_value"], "0 %");
+        assert_eq!(position["max_value"], "100 %");
+        let on_off = fassel.iter().find(|a| a.get("param").is_none()).unwrap();
+        assert_eq!(on_off["source"], "exp1");
+
+        // Simple Pitch (3) Cents (1) onto pedal 2: the whole range at first.
+        let uri = "/api/blocks/3/params/1/controller";
+        let (status, res) = post(&app, uri, t, json!({ "pedal": 2, "model": 296 })).await;
+        assert_eq!(status, StatusCode::OK, "{res}");
+        assert_eq!(res["unsaved"], true, "an assignment is an edit");
+        let b = blocks(app.clone()).await;
+        let a = &b[1]["assignments"][0];
+        assert_eq!(
+            (a["param"].clone(), a["source"].clone()),
+            (json!(1), json!("exp2"))
+        );
+        assert_eq!(
+            (a["min"].clone(), a["max"].clone()),
+            (json!(-50.0), json!(50.0))
+        );
+
+        // Heel and toe; outside the range is refused.
+        let range = "/api/blocks/3/params/1/controller/range";
+        let (status, res) = post(&app, range, t, json!({ "min": 0.0, "max": 25.0 })).await;
+        assert_eq!(status, StatusCode::OK, "{res}");
+        let (status, _) = post(&app, range, t, json!({ "max": 99.0 })).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let b = blocks(app.clone()).await;
+        assert_eq!(b[1]["assignments"][0]["min"], 0.0);
+        assert_eq!(b[1]["assignments"][0]["max"], 25.0);
+
+        // Off again; then a range has nothing to move. Pedal 3 does not exist.
+        let (status, _) = post(&app, uri, t, json!({ "pedal": null })).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(blocks(app.clone()).await[1].get("assignments").is_none());
+        let (status, _) = post(&app, range, t, json!({ "min": 0.0 })).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let (status, _) = post(&app, uri, t, json!({ "pedal": 3 })).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn footswitches() {
+        let app = app();
+        let t = Some(TOKEN);
+        let (_, chain) = get_json("/api/chain").await;
+        assert_eq!(chain["footswitches"].as_array().unwrap().len(), 6);
+        assert!(chain["blocks"][2].get("footswitch").is_none());
+
+        let uri = "/api/blocks/5/footswitch";
+        let (status, res) = post(&app, uri, None, json!({ "switch": 2 })).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{res}");
+        let (status, res) = post(&app, uri, t, json!({ "switch": 2, "model": 141 })).await;
+        assert_eq!(status, StatusCode::OK, "{res}");
+        assert_eq!(res["message"], "block 5 on footswitch 2");
+        assert_eq!(res["unsaved"], true);
+        let (_, chain) = send(
+            &app,
+            Request::get("/api/chain").body(Body::empty()).unwrap(),
+        )
+        .await;
+        assert_eq!(chain["blocks"][2]["position"], 5);
+        assert_eq!(chain["blocks"][2]["footswitch"], 2);
+        assert_eq!(
+            chain["footswitches"][1],
+            json!({ "switch": 2, "blocks": [5] })
+        );
+
+        let (status, res) = post(&app, uri, t, json!({ "switch": null })).await;
+        assert_eq!(status, StatusCode::OK, "{res}");
+        assert_eq!(res["message"], "block 5 on no footswitch");
+
+        // No switch 0 or 7; no block at 4; another model than the client saw.
+        let (status, _) = post(&app, uri, t, json!({ "switch": 0 })).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let (status, _) = post(&app, uri, t, json!({ "switch": 7 })).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let (status, _) = post(&app, "/api/blocks/4/footswitch", t, json!({ "switch": 1 })).await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        let (status, _) = post(&app, uri, t, json!({ "switch": 1, "model": 123 })).await;
+        assert_eq!(status, StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
     async fn bad_write_targets() {
         let app = app();
         let t = Some(TOKEN);
@@ -1053,6 +1548,12 @@ mod tests {
         assert_eq!(msg["chain"]["blocks"][0]["enabled"], true);
         assert_eq!(msg["chain"]["unsaved"], true);
         assert_eq!(msg["chain"]["label"], "01C");
+    }
+
+    #[test]
+    fn live_device_message() {
+        let msg = serde_json::to_value(LiveMessage::Device { connected: false }).unwrap();
+        assert_eq!(msg, json!({ "type": "device", "connected": false }));
     }
 
     #[test]

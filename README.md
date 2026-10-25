@@ -84,6 +84,7 @@ HTTP API over the device. Endpoints: [docs/api.md](docs/api.md). Writes need
 | `HELIX_FIXTURES` | bundled `server/fixtures` | Fixture directory for `fake` |
 | `HELIX_SESSION_COOLDOWN_MS` | `3000` | `cli` only: gap between two `tonepush` sessions. 3 s was needed on Windows; try `500` on the Pi |
 | `HELIX_FAKE_DELAY_MS` | `0` | `fake` only: wait before each reply, e.g. `1500` to see loading states |
+| `HELIX_FAKE_SPLIT` | unset | `fake` only: `1` starts the loaded preset with two blocks on Path B (synthetic), to see the two-row chain |
 | `HELIX_TOKEN` | unset | Shared token for writes. Unset or empty = read-only. Keep it in `.env` or the Pi's settings file, never in git |
 | `RUST_LOG` | `info` | Log filter |
 
@@ -97,7 +98,14 @@ does: stop the service before using HX Edit or `tonepush` by hand.
 
 Plain HTML, CSS and JS, no build step. The server compiles the files into its binary, so
 rebuild (`cargo run`) after editing them. Design: `docs/design/stage-and-studio-layouts`
-(direction 2A "Rig").
+(direction 2A "Rig"); the bank tiles from that design are gone, the Presets sheet loads presets.
+On desktop widths (1280 px and up) the button at the top left shows or hides the preset
+list (remembered in the browser); hidden, the Presets button opens the sheet.
+
+Animation: [Motion](https://motion.dev) 13.4.6 (MIT), vendored as one file in `web/lib/`
+with its license. To bump it, replace the file and change the version in its name in
+`web/index.html` and `server/src/api.rs` (the browser caches it by name). Without it, or
+with Reduce Motion on, the UI works the same, only without animation.
 
 1. Start the server (see above), e.g. `cd server && cargo run`.
 2. Open http://localhost:8080 on the same machine, or `http://<machine-ip>:8080` on the iPad.
@@ -106,7 +114,21 @@ rebuild (`cargo run`) after editing them. Design: `docs/design/stage-and-studio-
 Writes (server needs `HELIX_TOKEN`; the UI asks for it on the first write and keeps it
 in the browser):
 
-- **Load a preset:** ‹ ›, a bank tile, or Presets → pick → Load. Asks first if there are
+- **Expression pedals:** a pedal tagged `EXP1`/`EXP2` above it has a setting (or its
+  on/off) on that pedal; the panel shows it on the setting with its heel → toe range.
+  Tap a setting's **EXP** tag: pick None / EXP 1 / EXP 2, then drag the small **Heel**
+  and **Toe** sliders (one write when you let go), or tap **Full range**. Needs HX Edit data on the server
+  (`usb`). **Unverified on the HX Effects**: the first assignment on the pedal needs a
+  go-ahead (AGENTS.md 6). Footswitch/MIDI/snapshot controllers show as `CTL n`, read only.
+- **Paths:** a preset with blocks on Path B shows two rows: Path B under Path A, with the
+  split and the merge where they attach (`usb`; `cli` shows one row). Path B's slots are
+  B1–B9. **+ Path B** (while it is empty) adds its first block, which parallels the whole
+  line. Tap an empty Path B cell to add there. **Move**, then an empty cell, moves the
+  selected block (either path). Tap the split or merge dot, then ‹ Earlier / Later ›, to
+  move it. Path B's blocks always stay between the split and merge. Moves and junctions
+  rewrite the whole preset (op21): **unverified on the HX Effects**, so the first one on
+  the pedal needs a backup and a go-ahead (AGENTS.md 6). No recording with a split yet.
+- **Load a preset:** ‹ › or Presets → pick → Load. Asks first if there are
   unsaved edits.
 - **Block on/off:** select a block, tap Turn on / Turn off.
 - **Parameter:** drag its slider left or right (the value shows under your finger), pick
@@ -121,6 +143,33 @@ in the browser):
 - **Tempo:** tap TAP on the beat; the BPM shows as you tap (amber until the pedal has
   it) and is sent once you pause for 1.5 s. Tap the BPM to type a value (40–240).
   Snapshot switch, tap and typed tempo verified 2026-10-14 on the HX Effects 3.80 (Pi 4).
+- **Add a block:** tap an empty slot (or select one and tap Add block). Pick a category;
+  each model shows once, sorted by effect type (Distortion: Boost, Overdrive, Distortion,
+  Fuzz, Bass, Lo-fi); a type chip shows only that type. Mono or Stereo is picked in the
+  footer, for models that have both. Legacy models hide behind the Legacy toggle; Recent
+  lists the last 8 models added. Version, Legacy toggle and Recent are remembered in the
+  browser. The filter searches names, types and the gear they are based on, Legacy
+  included. Tap Add, or tap the model a second time. The types are ours
+  (`server/src/types.rs`), not Line 6's. The block lands in that
+  slot, switched on, with HX Edit's default values. Needs HX Edit data on the server
+  (`usb` with `/vendor`; `fake` uses it when the machine has HX Edit, else offers the 4
+  recorded models). Path A slots 1–9 only; a taken slot is refused, never replaced.
+  **A new block gets no footswitch** unless you pick one: the HX Effects home screen
+  (Stomp mode) draws only footswitch blocks, so without one it is only in Signal Flow
+  view (MENU, then the Signal Flow switch). The Footswitch menu next to Add offers
+  No footswitch, First free (as the pedal does for a front-panel add) or FS1–FS6;
+  the choice is remembered in the browser and defaults to No footswitch.
+- **Remove a block:** select it, tap Remove, confirm. The slot stays selected, ready for
+  another block. Add and remove change the edit buffer only (Save keeps them). Both
+  verified 2026-10-15 on the HX Effects 3.80 (Pi 4, iPad Safari, build `d211589`), checked
+  in the pedal's Signal Flow view.
+- **Footswitch:** select a block; the Footswitch row under its name shows the switch it
+  is on (also `· FS3` above it in the chain) and puts it on None or FS1–FS6. A dot on a
+  switch means another block is on it too; the line beside says which. A block moves
+  off its old switch. Edit buffer only (Save keeps it). Needs `usb` or `fake`; hidden
+  with `cli`. Assigning from the iPad worked on the HX Effects 3.80 (Pi 4, iPad Safari,
+  2026-10-15, checked by hand on the pedal). The switch numbering has not been
+  cross-checked with `probe-switches` yet (hardware check below).
 - **Rename / Save:** buttons in the preset bar. Save asks first and overwrites the
   loaded preset. "Unsaved" in the bar means edits are only in the edit buffer.
 
@@ -142,7 +191,24 @@ Without a token, write controls are dashed and inert. Known limits:
 - **Sliders snap to a grid** (0.01 on 0..1 knobs, 1 dB on levels). Type for finer values.
   Without HX Edit data (`cli`, or no `/vendor`), parameters are typed and only `%`
   values get a bar.
-- **Unsaved flag:** with `usb`, pedal edits count too; with `cli`, only bridge edits.
+- **Unsaved flag:** with `usb`, pedal edits count too, and edits survive a restart (the
+  edit buffer is compared with the stored preset when the session opens); with `cli`,
+  only bridge edits.
+
+Diagnostics, run on the Pi with the service stopped (`sudo systemctl stop helix-bridge`,
+then wait 40 s): `helix-bridge watch [SECONDS]` prints the pedal's notifications;
+`helix-bridge probe-slot POSITION` prints the preset's slot row and one raw slot
+(read-only); `helix-bridge probe-unsaved` (read-only) prints where the edit buffer
+differs from the stored preset; `helix-bridge probe-add POSITION MODEL` adds a block the way the bridge does
+(op78, op40) and prints every reply, notification and the slot before and after;
+`helix-bridge probe-switches` (read-only) prints each footswitch's raw opcode 33 reply,
+the preset's blocks and controller table, and which positions the bridge would show on
+each switch.
+
+Footswitch hardware check (HX Effects, before the first assign from the bridge,
+AGENTS.md 6): on the pedal, put a block on a footswitch by hand and note which; stop the
+service, wait 40 s, run `helix-bridge probe-switches`, and check that block's position
+is listed under that FS number. Only then try an assign from the iPad.
 
 Web tests (Node 22; Chromium from Playwright, never `playwright install` in the cloud):
 

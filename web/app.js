@@ -1,4 +1,4 @@
-// Helix Bridge UI. No build step, no dependencies.
+// Helix Bridge UI. No build step; one vendored library (Motion, web/lib) for animation.
 // Talks to the server's REST API (docs/api.md). Every device call runs one
 // `tonepush` command on the server, about 1–3 s each, serialised.
 // Phase 6 writes: load preset, block on/off, parameter value, rename, save.
@@ -13,6 +13,12 @@
 // are sliders, menus pickers and switches toggles (/api/models/{id}); writes
 // go out by native value through LatestSender (latest.js), at most one in
 // flight. Tapping a value still types it.
+// Blocks: tap an empty slot to add an effect there (model picker from
+// /api/catalog, HX Edit's categories and shelves); Remove takes the selected
+// block out. Both change the edit buffer only, like any other edit.
+// Footswitches: the block panel puts the selected block on FS1–FS6 or none
+// (/api/blocks/{position}/footswitch); the add picker can do it in the same
+// step. Only a block on a footswitch shows in the HX Effects' Stomp view.
 'use strict';
 
 const SLOTS = 9; // HX Effects block slots. Slot = chain position - 1 (position 1 is the input).
@@ -76,7 +82,12 @@ const state = {
   info: null, // /api/device
   presets: [], // /api/presets .presets
   chain: null, // /api/chain
-  selectedSlot: null,
+  selectedSlot: null, // 1..SLOTS; may be an empty slot
+  selectionLabel: null, // preset label the selection belongs to
+  catalog: null, // /api/catalog .categories | CATALOG_PENDING | { error }
+  // category: index or RECENT; type: TYPE_ALL or a type filter; selected: a model group's key;
+  // variant: Mono | Stereo, the version to add; legacy: show Legacy models. Last two kept in this browser.
+  picker: { open: false, slot: null, category: 0, type: 'All', filter: '', selected: null, variant: 'Mono', legacy: false, fs: 'none' },
   loading: false,
   banner: null, // non-blocking error: { message, context }
   blocked: null, // blocking error: { icon, title, text, detail }
@@ -89,6 +100,10 @@ const state = {
   models: new Map(), // model_id -> /api/models/{id} | MODEL_PENDING | null (no data: type values)
   drag: null, // slider under a finger: { key, el, pointer, x0, i0, i, started, ctx }
   tempoPending: null, // BPM tapped or typed, not yet confirmed by the server
+  junction: null, // split | join: shown in the panel instead of a block
+  moving: null, // slot of a block being moved (Move, then an empty cell)
+  expOpen: null, // position/param whose expression pedal row is open
+  travelDrag: null, // heel or toe slider under a finger: { el, index, end, pointer, x0, i0, i, started }
 };
 
 // ---------- API ----------
@@ -256,6 +271,27 @@ function connectLive() {
   };
 }
 
+// Every 30 s, compare the screen with the server's chain and take the
+// server's if they differ: a push lost on the way (a socket that died without
+// closing, a client too slow to keep up) shows up within half a minute. Live
+// backends only: there the server answers from its copy, which it checks
+// against the pedal itself (server/src/usb.rs, `audit`), so no USB read.
+const CHECK_MS = 30000;
+
+async function checkChain() {
+  const quiet = !inflight && !state.busy && !state.drag && !state.travelDrag &&
+    !sender.busy() && !tempoSender.busy() && !state.blocked;
+  if (!state.live || !state.chain || !quiet || document.visibilityState !== 'visible') return;
+  let chain;
+  try { chain = await api('/api/chain'); } catch { return; } // a refresh or live message will tell
+  if (JSON.stringify(chain) !== JSON.stringify(state.chain) && !state.drag && !state.travelDrag) {
+    console.info('Helix Bridge: the screen differed from the server; updated it');
+    applyLiveChain(chain);
+  }
+}
+
+setInterval(checkChain, CHECK_MS);
+
 function applyLiveChain(chain) {
   state.chain = chain;
   state.unsaved = !!chain.unsaved;
@@ -291,26 +327,33 @@ function canWrite() {
   return state.writes && !state.busy && !state.loading && state.device === 'ok' && !state.blocked;
 }
 
+/** The server's live socket is up: it pushes every chain change, writes included. */
+function liveOpen() {
+  return liveSocket?.readyState === WebSocket.OPEN;
+}
+
 /**
  * Send one write. Asks for the token when none is known or it is refused.
- * `then` picks what follows: 'chain' (re-read the chain), 'full' (also preset
- * names), or a function that applies the result locally with no device read.
- * A read costs 3–5 s on hardware, so cheap edits use the function.
+ * `then` picks what follows: 'live' (the server pushes the new chain; re-read
+ * it only without live updates), 'chain' (re-read the chain), 'full' (also
+ * preset names), or a function that applies the result locally with no device
+ * read. A read costs 3–5 s with `cli`, so cheap edits use the function.
  * Returns true on success.
  */
-async function write(label, path, body, then = 'chain') {
+async function write(label, path, body, then = 'live', method = 'POST') {
   if (!canWrite()) return false;
   state.busy = label;
   render();
   let ok = false;
   let res = null;
+  let stale = false;
   try {
     let token = sessionToken || storedToken();
     for (let attempt = 0; attempt < 2; attempt++) {
       if (!token) token = askToken(attempt > 0);
       if (!token) return false;
       try {
-        res = await api(path, { method: 'POST', body, token });
+        res = await api(path, { method, body, token });
         sessionToken = token;
         storeToken(token);
         state.unsaved = !!res.unsaved;
@@ -330,6 +373,8 @@ async function write(label, path, body, then = 'chain') {
       handleError(err);
     } else {
       state.banner = { message: err.message, context: `${label.replace(/…$/, '')} failed.` };
+      // The chain changed under us (409): show what is there now.
+      if (err.code === 'stale') stale = true;
     }
   } finally {
     state.busy = null;
@@ -338,7 +383,7 @@ async function write(label, path, body, then = 'chain') {
   if (ok && typeof then === 'function') {
     then(res);
     render();
-  } else if (ok) {
+  } else if (stale || (ok && (then !== 'live' || !liveOpen()))) {
     await refresh({ full: then === 'full' });
   }
   return ok;
@@ -351,7 +396,9 @@ function confirmDiscard() {
 async function loadPreset(index) {
   const p = state.presets.find((x) => x.index === index);
   if (!p || p.loaded || !confirmDiscard()) return false;
-  return write(`Loading ${p.label}…`, '/api/select', { index });
+  // Read it, as before: the push comes only once the pedal settles, and until
+  // then the old preset would show with nothing saying it is loading.
+  return write(`Loading ${p.label}…`, '/api/select', { index }, 'chain');
 }
 
 function stepPreset(delta) {
@@ -378,6 +425,493 @@ function editParam(index) {
   if (value == null || !value.trim() || value.trim() === p.value) return;
   write(`Setting ${p.name}…`, `/api/blocks/${b.position}/params/${p.index}`, { value: value.trim() },
     (res) => { p.value = res.value || value.trim(); });
+}
+
+// ---------- Adding and removing blocks ----------
+
+const CATALOG_PENDING = 'pending';
+// The pedal puts a block added on its front panel on a free footswitch; a
+// block added over USB (op40) gets none, and the HX Effects home
+// screen draws only footswitch blocks. Verified 2026-10-15 on the HX Effects.
+const NO_FOOTSWITCH = 'New blocks get no footswitch: on the pedal they show in Signal Flow (MENU → Signal Flow).';
+const PICK_FOOTSWITCH = 'Pick a footswitch to see it in the pedal’s Stomp view too.';
+// What the add picker does about a footswitch: 'none', 'free' (the first
+// switch carrying nothing, as the front panel does) or a number. Kept in this
+// browser.
+const ADD_FS_KEY = 'helix-bridge-add-footswitch';
+
+/** Fetch the model list once (catalog data only, no device call); again after a failure. */
+function loadCatalog() {
+  if (state.catalog === CATALOG_PENDING || Array.isArray(state.catalog)) return;
+  state.catalog = CATALOG_PENDING;
+  api('/api/catalog').then(
+    (c) => { state.catalog = c.categories; },
+    (e) => {
+      state.catalog = {
+        error: e.code === 'no_catalog'
+          ? 'Adding blocks needs HX Edit data on the server (/vendor, usb backend).'
+          : e.message,
+      };
+    },
+  ).finally(() => { if (state.picker.open) renderPicker(); });
+}
+
+// The picker shows each model once: its Mono and Stereo versions are one tile,
+// and the footer picks the version (the last one used, kept in this browser).
+// Legacy models (HX Edit's older HD-era shelf) hide behind a toggle; a search
+// finds them anyway. "Recent" lists the models added last.
+const TYPE_ALL = 'All';
+const RECENT = -1; // picker.category for the Recent list
+const RECENT_MAX = 8;
+const VARIANT_KEY = 'helix-bridge-variant';
+const LEGACY_KEY = 'helix-bridge-legacy';
+const RECENT_KEY = 'helix-bridge-recent';
+const LEGACY = 'Legacy';
+
+function stored(key, fallback) {
+  try { return localStorage.getItem(key) ?? fallback; } catch { return fallback; }
+}
+
+function store(key, value) {
+  try { localStorage.setItem(key, value); } catch { /* private mode: forget it */ }
+}
+
+function storedRecent() {
+  try {
+    const ids = JSON.parse(stored(RECENT_KEY, '[]'));
+    return Array.isArray(ids) ? ids.filter(Number.isInteger) : [];
+  } catch { return []; }
+}
+
+function rememberRecent(id) {
+  store(RECENT_KEY, JSON.stringify([id, ...storedRecent().filter((x) => x !== id)].slice(0, RECENT_MAX)));
+}
+
+/**
+ * A category's groups in sections: by effect type when the server sends
+ * types (Boost, Overdrive, Fuzz…; ours, not Line 6's), else one unnamed one.
+ * Returns [name, groups] pairs, empty sections left out.
+ */
+function sections(c, list) {
+  if (!c.types?.length) return list.length ? [['', list]] : [];
+  const keys = [...c.types, ...new Set(list.map((g) => g.type).filter((t) => !c.types.includes(t)))];
+  return keys.map((k) => [k, list.filter((g) => g.type === k)]).filter(([, gs]) => gs.length);
+}
+
+let groupCache = { catalog: null, groups: [] };
+
+/**
+ * Models merged by name within a category: { key, name, type, based_on,
+ * category, ci, legacy, variants: [{ shelf, id }] }. Legacy models stay apart
+ * (a few share a name with a current one).
+ */
+function modelGroups() {
+  if (!Array.isArray(state.catalog)) return [];
+  if (groupCache.catalog === state.catalog) return groupCache.groups;
+  const byKey = new Map();
+  for (const m of catalogModels()) {
+    const legacy = m.shelf === LEGACY;
+    const key = `${m.ci}|${legacy ? 'L' : ''}|${m.name}`;
+    if (!byKey.has(key)) {
+      byKey.set(key, { key, name: m.name, type: m.type ?? null, based_on: m.based_on ?? null,
+        category: m.category, ci: m.ci, legacy, variants: [] });
+    }
+    byKey.get(key).variants.push({ shelf: m.shelf, id: m.id });
+  }
+  groupCache = { catalog: state.catalog, groups: [...byKey.values()] };
+  return groupCache.groups;
+}
+
+/** The model id a group adds: the version picked in the footer, else its only one. */
+function variantOf(g) {
+  return g.variants.find((v) => v.shelf === state.picker.variant) ?? g.variants[0];
+}
+
+function selectedGroup() {
+  return modelGroups().find((g) => g.key === state.picker.selected) ?? null;
+}
+
+/** Every model in the list, with its category and shelf. */
+function catalogModels() {
+  if (!Array.isArray(state.catalog)) return [];
+  return state.catalog.flatMap((c, ci) => c.shelves.flatMap((s) =>
+    s.models.map((m) => ({ ...m, category: c, ci, shelf: s.name ?? null }))));
+}
+
+function selectSlot(n) {
+  state.selectedSlot = n;
+  state.junction = null;
+  state.moving = null;
+  renderChain();
+  renderParams();
+  if (!slotMap().has(n) && canWrite()) openPicker(n);
+}
+
+function openPicker(slot) {
+  state.picker = {
+    ...state.picker, open: true, slot, filter: '', selected: null, type: TYPE_ALL,
+    variant: stored(VARIANT_KEY, 'Mono'), legacy: stored(LEGACY_KEY, '') === '1', fs: storedAddFs(),
+  };
+  state.connOpen = false;
+  $('model-filter').value = '';
+  showSheet($('picker'));
+  loadCatalog();
+  renderConnection();
+  renderPicker();
+  $('models').scrollTop = 0;
+  // Portrait shows categories as a strip: bring the last one used into view.
+  document.querySelector('.cat.active')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+}
+
+/** Redraw the model list from its top, tiles rising in. */
+function showModels() {
+  renderPicker();
+  const models = $('models');
+  models.scrollTop = 0;
+  fx(models.querySelectorAll('.group-name, .mtile'), { opacity: [0, 1], y: [8, 0] }, { ...RISE, delay: stagger(0.008) });
+}
+
+function closePicker() {
+  state.picker.open = false;
+  hideSheet($('picker'), () => !state.picker.open);
+}
+
+async function addBlock() {
+  const { slot } = state.picker;
+  const g = selectedGroup();
+  if (slot == null || !g || slotMap().has(slot) || !canWrite()) return;
+  const m = { name: g.name, id: variantOf(g).id };
+  const fs = addFootswitch();
+  closePicker();
+  state.selectedSlot = slot;
+  const added = await write(`Adding ${m.name}…`, `/api/blocks/${slot + 1}`, { model: m.id });
+  if (added) rememberRecent(m.id);
+  if (added && fs) {
+    await write(`Putting ${m.name} on FS${fs}…`, `/api/blocks/${slot + 1}/footswitch`, { switch: fs, model: m.id });
+  }
+}
+
+// ---------- Footswitches ----------
+
+/** The chain's footswitches, or null when the backend does not read them. */
+function footswitches() {
+  return state.chain?.footswitches ?? null;
+}
+
+/** Model names of the blocks on switch `s`, leaving out `position`. */
+function carriedBy(s, position) {
+  const blocks = state.chain?.blocks || [];
+  return s.blocks.filter((p) => p !== position)
+    .map((p) => blocks.find((b) => b.position === p)?.model ?? `slot ${p - 1}`);
+}
+
+function storedAddFs() {
+  try { return localStorage.getItem(ADD_FS_KEY) || 'none'; } catch { return 'none'; }
+}
+
+function storeAddFs(value) {
+  try { localStorage.setItem(ADD_FS_KEY, value); } catch { /* private mode: forget it */ }
+}
+
+/** The switch the add picker's choice means now, or null for none. */
+function addFootswitch() {
+  const switches = footswitches();
+  const choice = state.picker.fs;
+  if (!switches || choice === 'none') return null;
+  if (choice === 'free') return switches.find((s) => !s.blocks.length)?.switch ?? null;
+  const n = Number(choice);
+  return switches.some((s) => s.switch === n) ? n : null;
+}
+
+function setFootswitch(sw) {
+  const b = slotMap().get(state.selectedSlot);
+  if (!b || (b.footswitch ?? null) === sw) return;
+  const body = { switch: sw };
+  // The model we show: if the pedal now has another one there, the server refuses (409).
+  if (b.model_id != null) body.model = b.model_id;
+  write(sw ? `Putting ${b.model} on FS${sw}…` : `Taking ${b.model} off FS${b.footswitch}…`,
+    `/api/blocks/${b.position}/footswitch`, body);
+}
+
+/** The add picker's footswitch menu; hidden when the backend has no footswitches. */
+function renderAddFootswitch() {
+  const wrap = $('pf-fs-wrap');
+  const switches = footswitches();
+  wrap.hidden = !switches || !state.writes;
+  if (wrap.hidden) return;
+  const free = switches.find((s) => !s.blocks.length);
+  const opt = (value, label) => `<option value="${value}"${String(state.picker.fs) === String(value) ? ' selected' : ''}>${esc(label)}</option>`;
+  $('pf-fs').innerHTML = [
+    opt('none', 'No footswitch'),
+    opt('free', free ? `First free (FS${free.switch})` : 'First free (none free)'),
+    ...switches.map((s) => {
+      const others = carriedBy(s, null);
+      return opt(s.switch, others.length ? `FS${s.switch} · ${others.join(', ')}` : `FS${s.switch}`);
+    }),
+  ].join('');
+}
+
+/** The block panel's footswitch row: None, FS1…FS6, and what it means. */
+function footswitchRow(b, live) {
+  const switches = footswitches();
+  if (!switches) return '';
+  const on = b.footswitch ?? null;
+  const off = state.writes && live ? '' : ' disabled';
+  const btn = (n, label, title) => `<button class="seg-btn fs-btn${on === n ? ' active' : ''}" type="button" data-fs="${n ?? 0}"` +
+    ` aria-pressed="${on === n}" title="${esc(title)}"${off}>${label}</button>`;
+  const buttons = [btn(null, 'None', 'No footswitch')].concat(switches.map((s) => {
+    const others = carriedBy(s, b.position);
+    const name = s.label ? `FS${s.switch} (${s.label})` : `FS${s.switch}`;
+    const title = others.length ? `${name}, also switches ${others.join(', ')}` : name;
+    return btn(s.switch, `FS${s.switch}${others.length ? '<span class="fs-taken" aria-hidden="true"></span>' : ''}`, title);
+  })).join('');
+  let note;
+  if (on == null) {
+    note = 'No footswitch: on the pedal it shows in Signal Flow only.';
+  } else {
+    const others = carriedBy(switches.find((s) => s.switch === on) ?? { blocks: [] }, b.position);
+    note = `Shows in Stomp view on FS${on}.${others.length ? ` FS${on} also switches ${others.join(', ')}.` : ''}`;
+  }
+  return `<div class="fs-row"><span class="fs-label">Footswitch</span>` +
+    `<div class="seg fs-seg" role="group" aria-label="Footswitch">${buttons}</div>` +
+    `<span class="fs-note">${esc(note)}</span></div>`;
+}
+
+function removeBlock() {
+  const slot = state.selectedSlot;
+  const b = slotMap().get(slot);
+  if (!b) return;
+  if (!window.confirm(`Remove ${b.model} from slot ${slotLabel(slot)}?\nThe preset stays unsaved until you save it.`)) return;
+  // The model we show: if the pedal now has another one there, the server refuses (409).
+  const seen = b.model_id != null ? `?model=${b.model_id}` : '';
+  write(`Removing ${b.model}…`, `/api/blocks/${b.position}${seen}`, undefined, 'live', 'DELETE');
+}
+
+// ---------- Paths ----------
+// Path B runs under Path A between the split and the merge (lanes()). A block
+// is added to an empty Path B cell through the picker, like on Path A; the
+// first one claims the whole line. Moving a block and moving the split or
+// merge rewrite the whole preset on the pedal (TonePush's way): unverified on
+// the HX Effects. The rules mirror server/src/routing.rs, which checks them.
+
+/** Whether the split or merge may sit before cell `before` of Path A. */
+function junctionOk(which, before) {
+  const { main, branch, split, join } = lanes();
+  if (!branch.length) return false;
+  const [s, j] = which === 'split' ? [before, join] : [split, before];
+  if (s < 0 || j > main.length || s >= j) return false;
+  const map = slotMap();
+  const used = branch.map((n, i) => (map.has(n) ? i : -1)).filter((i) => i >= 0);
+  return !used.length || (used[0] >= s && used[used.length - 1] < j);
+}
+
+function selectJunction(which) {
+  state.junction = which;
+  state.moving = null;
+  renderChain();
+  renderParams();
+}
+
+function moveJunction(delta) {
+  const which = state.junction;
+  const { split, join } = lanes();
+  const before = (which === 'split' ? split : join) + delta;
+  if (!which || !junctionOk(which, before)) return;
+  write(which === 'split' ? 'Moving the split…' : 'Moving the merge…', '/api/routing', { junction: which, before });
+}
+
+/** Tap Move, then an empty cell: the selected block goes there. */
+function toggleMove() {
+  state.moving = state.moving == null && slotMap().has(state.selectedSlot) ? state.selectedSlot : null;
+  renderChain();
+  renderParams();
+}
+
+function moveTo(n) {
+  const b = slotMap().get(state.moving);
+  state.moving = null;
+  if (!b) {
+    renderChain();
+    renderParams();
+    return;
+  }
+  state.selectedSlot = n; // the selection follows the block
+  const body = { to: n + 1 };
+  if (b.model_id != null) body.model = b.model_id;
+  write(`Moving ${b.model} to ${slotLabel(n)}…`, `/api/blocks/${b.position}/move`, body);
+}
+
+/** Start Path B: pick a model for its first cell; it parallels the whole line. */
+function addPathB() {
+  const first = lanes().cells[0];
+  if (first == null) return;
+  state.selectedSlot = first;
+  state.junction = null;
+  openPicker(first);
+}
+
+// ---------- Expression pedals ----------
+// A setting can follow expression pedal 1 or 2 between a heel and a toe end
+// (/api/blocks/{p}/params/{i}/controller). Its EXP tag opens a row: pick the
+// pedal, then set the heel or toe to the slider's current value. The device
+// table also holds footswitch, MIDI and snapshot controllers; their sources
+// are unconfirmed on the HX Effects, so they show as CTL n, read only.
+// Writes are unverified on the HX Effects.
+
+/** A block's assignment for parameter `index`, or for its on/off with null. */
+function assignmentOf(b, index) {
+  return (b?.assignments ?? []).find((a) => (a.param ?? null) === index) ?? null;
+}
+
+function sourceLabel(source) {
+  const m = /^exp(\d)$/.exec(source);
+  return m ? `EXP ${m[1]}` : `CTL ${source.replace(/^ctl/, '')}`;
+}
+
+/** Pedal assignments need the preset document (usb, fake), as moves do. */
+function pedalsEditable() {
+  return state.writes && !!state.chain?.routing;
+}
+
+/** A setting's EXP tag (a button with writes) and, when open, its pedal row. */
+function pedalParts(b, p, c, live) {
+  const a = assignmentOf(b, p.index);
+  if (!a && !pedalsEditable()) return { tag: '', row: '' };
+  const key = `${b.position}/${p.index}`;
+  const open = state.expOpen === key;
+  const label = a ? sourceLabel(a.source) : 'EXP';
+  const tag = pedalsEditable()
+    ? `<button class="exp-tag${a ? ' on' : ''}${open ? ' open' : ''}" type="button" data-exp="${p.index}"` +
+      ` aria-expanded="${open}" aria-label="${esc(p.name)}: expression pedal, ${a ? label : 'none'}">${label}</button>`
+    : `<span class="exp-tag on">${label}</span>`;
+  const travel = a && a.min != null
+    ? `<div class="exp-travel">Heel ${esc(a.min_value ?? a.min)} → Toe ${esc(a.max_value ?? a.max)}</div>`
+    : '';
+  if (!open) return { tag, row: travel };
+  const off = live ? '' : ' disabled';
+  const on = a?.source ?? null;
+  const seg = [0, 1, 2].map((n) => {
+    const active = n ? on === `exp${n}` : on == null;
+    return `<button class="seg-btn${active ? ' active' : ''}" type="button" data-exp-set="${n}" aria-pressed="${active}"${off}>${n ? `EXP ${n}` : 'None'}</button>`;
+  }).join('');
+  const other = on && !/^exp/.test(on) ? `<div class="exp-note">Now on ${sourceLabel(on)} (a footswitch, MIDI or snapshots); picking a pedal replaces it.</div>` : '';
+  // Heel and toe: small sliders on the setting's own grid, sent on release.
+  const travelSlider = (end, native, shown) => {
+    const i = indexOf(c, native);
+    const name = end === 'min' ? 'Heel' : 'Toe';
+    return `<div class="travel"><div class="travel-top"><span class="travel-name">${name}</span>` +
+      `<span class="travel-value">${esc(shown ?? c.labels[i])}</span></div>` +
+      `<div class="slider slider-sm" data-travel="${end}" role="slider" tabindex="${live ? 0 : -1}"` +
+      ` aria-label="${esc(p.name)}, ${name.toLowerCase()} end" aria-valuemin="0" aria-valuemax="${c.steps}"` +
+      ` aria-valuenow="${i}" aria-valuetext="${esc(shown ?? c.labels[i])}" aria-disabled="${!live}"` +
+      ` style="--pos:${(i / c.steps) * 100}%"><div class="track-fill"></div><div class="track-thumb"></div></div></div>`;
+  };
+  const ends = a && a.min != null && c.kind === 'continuous'
+    ? `<div class="travels">${travelSlider('min', a.min, a.min_value)}${travelSlider('max', a.max, a.max_value)}</div>` +
+      `<button class="act exp-end" type="button" data-exp-end="full"${off}>Full range</button>` +
+      '<div class="exp-note">Heel: the pedal pulled back. Toe: pushed down.</div>'
+    : '';
+  return { tag, row: `${travel}<div class="exp-row" data-exp-row="${p.index}"><div class="seg">${seg}</div>${other}${ends}</div>` };
+}
+
+function toggleExp(index) {
+  const b = slotMap().get(state.selectedSlot);
+  if (!b) return;
+  const key = `${b.position}/${index}`;
+  state.expOpen = state.expOpen === key ? null : key;
+  renderParams();
+}
+
+function setPedal(index, pedal) {
+  const b = slotMap().get(state.selectedSlot);
+  const p = b?.params.find((x) => x.index === index);
+  if (!p) return;
+  const body = { pedal: pedal || null };
+  if (b.model_id != null) body.model = b.model_id;
+  write(pedal ? `Putting ${p.name} on EXP ${pedal}…` : `Taking ${p.name} off its pedal…`,
+    `/api/blocks/${b.position}/params/${index}/controller`, body);
+}
+
+/** The selected block's setting `index` and its control, if it has one. */
+function travelTarget(index) {
+  const b = slotMap().get(state.selectedSlot);
+  const p = b?.params.find((x) => x.index === index);
+  const c = p && controlOf(b, p);
+  return c ? { b, p, c } : null;
+}
+
+/** Send a heel (`min`), toe (`max`) or `full` range; `native` for heel or toe. */
+function setTravel(index, end, native) {
+  const t = travelTarget(index);
+  if (!t) return;
+  const { b, p, c } = t;
+  const body = end === 'full' ? { min: c.min, max: c.max } : { [end]: native };
+  if (b.model_id != null) body.model = b.model_id;
+  const what = { min: 'heel', max: 'toe', full: 'travel' }[end];
+  write(`Setting ${p.name}'s ${what}…`, `/api/blocks/${b.position}/params/${index}/controller/range`, body);
+}
+
+// Dragging a heel or toe slider: relative to where the finger lands, as the
+// setting sliders; a vertical swipe still scrolls. One write on release.
+
+function travelDown(e) {
+  const el = e.target.closest('[data-travel]');
+  if (!el || state.travelDrag || state.drag || el.getAttribute('aria-disabled') === 'true') return;
+  const index = Number(el.closest('[data-exp-row]').dataset.expRow);
+  if (!travelTarget(index)) return;
+  const i = Number(el.getAttribute('aria-valuenow'));
+  state.travelDrag = { el, index, end: el.dataset.travel, pointer: e.pointerId, x0: e.clientX, i0: i, i, started: false };
+  try { el.setPointerCapture(e.pointerId); } catch { /* pointer already gone */ }
+}
+
+function paintTravel(el, c, i) {
+  el.style.setProperty('--pos', `${(i / c.steps) * 100}%`);
+  el.setAttribute('aria-valuenow', String(i));
+  el.setAttribute('aria-valuetext', c.labels[i]);
+  const value = el.parentElement.querySelector('.travel-value');
+  if (value) value.textContent = c.labels[i];
+}
+
+function travelMove(e) {
+  const d = state.travelDrag;
+  if (!d || e.pointerId !== d.pointer) return;
+  const t = travelTarget(d.index);
+  if (!t) return;
+  const dx = e.clientX - d.x0;
+  if (!d.started) {
+    if (Math.abs(dx) < DRAG_START_PX) return;
+    d.started = true;
+    d.el.classList.add('dragging');
+  }
+  const width = d.el.clientWidth || 1;
+  const i = Math.max(0, Math.min(t.c.steps, Math.round(d.i0 + (dx / width) * t.c.steps)));
+  if (i === d.i) return;
+  d.i = i;
+  paintTravel(d.el, t.c, i);
+}
+
+function travelUp(e) {
+  const d = state.travelDrag;
+  if (!d || e.pointerId !== d.pointer) return;
+  state.travelDrag = null;
+  d.el.classList.remove('dragging');
+  try { d.el.releasePointerCapture(d.pointer); } catch { /* released already */ }
+  const t = travelTarget(d.index);
+  if (t && d.started && d.i !== d.i0) setTravel(d.index, d.end, nativeAt(t.c, d.i));
+  else renderParams();
+}
+
+function travelKey(e) {
+  const el = e.target.closest('[data-travel]');
+  const step = { ArrowLeft: -1, ArrowDown: -1, ArrowRight: 1, ArrowUp: 1 }[e.key];
+  if (!el || !step || el.getAttribute('aria-disabled') === 'true') return;
+  e.preventDefault();
+  const index = Number(el.closest('[data-exp-row]').dataset.expRow);
+  const t = travelTarget(index);
+  if (!t) return;
+  const i = Math.max(0, Math.min(t.c.steps, Number(el.getAttribute('aria-valuenow')) + step));
+  paintTravel(el, t.c, i);
+  setTravel(index, el.dataset.travel, nativeAt(t.c, i));
 }
 
 // ---------- Parameter controls ----------
@@ -650,7 +1184,7 @@ function selectSnapshot(index) {
   // The server pushes the new chain (blocks on/off, values) over /api/live;
   // without live updates, read it.
   write(`Snapshot ${index + 1}…`, '/api/snapshot', { index },
-    state.live ? () => { state.chain.snapshot = index; } : 'chain');
+    liveOpen() ? () => { state.chain.snapshot = index; } : 'chain');
 }
 
 /** BPM from the taps so far, once there are two; null before. */
@@ -735,11 +1269,20 @@ function slotMap() {
   return map;
 }
 
+/**
+ * Keep the selected slot while the same preset stays loaded, even once it is
+ * empty (a block just removed: offer to add another). Another preset starts
+ * on its first block, or on slot 1 if it has none.
+ */
 function keepSelection() {
   const map = slotMap();
-  if (state.selectedSlot != null && map.has(state.selectedSlot)) return;
+  const label = state.chain?.label ?? null;
+  const samePreset = label === state.selectionLabel;
+  state.selectionLabel = label;
+  const s = state.selectedSlot;
+  if (s != null && (map.has(s) || (samePreset && s >= 1 && s <= SLOTS))) return;
   const first = [...map.keys()].sort((a, b) => a - b)[0];
-  state.selectedSlot = first ?? null;
+  state.selectedSlot = first ?? (state.chain ? 1 : null);
 }
 
 /** Fill fraction for a display value, only where the scale is certain. */
@@ -747,6 +1290,106 @@ function percentOf(value) {
   const m = /^(-?\d+(?:\.\d+)?)\s*%$/.exec(value.trim());
   if (!m) return null;
   return Math.max(0, Math.min(100, Number(m[1])));
+}
+
+// ---------- Motion ----------
+// Springs from Motion (web/lib/motion-*.js, motion.dev, MIT). Each render
+// rebuilds its elements, so CSS transitions never see a change; the renders
+// call these when they see one. Without Motion, or with Reduce Motion on, the
+// UI is the same, only still.
+
+const M = window.Motion ?? null;
+const calm = window.matchMedia('(prefers-reduced-motion: reduce)');
+const SPRING = { type: 'spring', bounce: 0.3, visualDuration: 0.35 };
+const FADE = { duration: 0.2, ease: 'easeOut' };
+const RISE = { duration: 0.28, ease: [0.2, 0.8, 0.2, 1] };
+
+/** Animate `els`, then hand transform and opacity back to the stylesheet. */
+function fx(els, keyframes, options) {
+  const list = els instanceof Element ? [els] : [...(els || [])];
+  if (!M || calm.matches || !list.length) return Promise.resolve();
+  return M.animate(list, keyframes, options).then(() => {
+    for (const el of list) {
+      el.style.removeProperty('transform');
+      el.style.removeProperty('opacity');
+    }
+  });
+}
+
+const stagger = (s) => (M ? M.stagger(s) : 0);
+
+function showSheet(el) {
+  el.hidden = false;
+  fx(el, { opacity: [0, 1], y: [28, 0] }, { ...SPRING, opacity: FADE });
+}
+
+/** Slide a sheet away; `stillClosed` guards against a reopen mid-way. */
+function hideSheet(el, stillClosed) {
+  if (!M || calm.matches) {
+    el.hidden = true;
+    return;
+  }
+  M.animate(el, { opacity: 0, y: 20 }, { duration: 0.16, ease: 'easeIn' }).then(() => {
+    el.style.removeProperty('transform');
+    el.style.removeProperty('opacity');
+    if (stillClosed()) el.hidden = true;
+  });
+}
+
+// What the last render showed, to animate only what changed.
+const seen = { label: undefined, slot: null, blocks: new Map(), params: null, barLabel: undefined, snap: null, banner: false };
+
+/** Chain: a new preset deals its blocks in; an added, removed or switched block pops. */
+function chainFx(map) {
+  const label = state.chain ? state.chain.label : null;
+  const blocks = new Map([...map].map(([n, b]) => [n, `${b.model}/${b.enabled}`]));
+  const before = { ...seen };
+  seen.label = label;
+  seen.slot = state.selectedSlot;
+  seen.blocks = blocks;
+  if (label == null) return;
+  const chain = $('chain');
+  if (label !== before.label) {
+    fx(chain.querySelectorAll('.slot'), { opacity: [0, 1], y: [14, 0], scale: [0.86, 1] },
+      { ...SPRING, opacity: FADE, delay: stagger(0.03) });
+    return;
+  }
+  const at = (n) => chain.querySelector(`.slot[data-slot="${n}"]`);
+  let moved = false;
+  for (const n of new Set([...before.blocks.keys(), ...blocks.keys()])) {
+    const was = before.blocks.get(n);
+    const now = blocks.get(n);
+    if (was === now) continue;
+    moved ||= n === state.selectedSlot;
+    if (now && !was) fx(at(n), { scale: [0.5, 1], opacity: [0, 1] }, { ...SPRING, bounce: 0.45, opacity: FADE });
+    else if (now) fx(at(n), { scale: [0.88, 1.06, 1] }, { duration: 0.35, ease: 'easeOut' });
+    else fx(at(n), { opacity: [0, 1], scale: [0.7, 1] }, SPRING);
+  }
+  if (!moved && state.selectedSlot !== before.slot) {
+    fx(at(state.selectedSlot), { scale: [0.9, 1] }, { ...SPRING, bounce: 0.5 });
+  }
+}
+
+/** Parameters: another block (or preset) rises in, row by row. */
+function paramsFx(el, key) {
+  if (key === seen.params) return;
+  seen.params = key;
+  if (key == null) return;
+  fx(el.querySelectorAll('.params-head, .fs-row, .param, .params-empty'), { opacity: [0, 1], y: [10, 0] },
+    { ...RISE, delay: stagger(0.012) });
+}
+
+/** Preset bar: a new name slides in; a new snapshot springs. */
+function presetBarFx(label, snap) {
+  const before = { label: seen.barLabel, snap: seen.snap };
+  seen.barLabel = label;
+  seen.snap = snap;
+  if (label == null) return;
+  if (label !== before.label) {
+    fx([$('nb-label'), $('nb-name')], { opacity: [0, 1], x: [-10, 0] }, { ...RISE, delay: stagger(0.04) });
+  } else if (snap !== before.snap && snap != null) {
+    fx(document.querySelectorAll('.snap.active'), { scale: [0.86, 1] }, { ...SPRING, bounce: 0.5 });
+  }
 }
 
 // ---------- Rendering ----------
@@ -764,12 +1407,12 @@ function render() {
   renderBanner();
   renderChain();
   renderParams();
-  renderBank();
   renderPresetList();
   renderStatusLine();
   renderBlocker();
   renderControls();
   if (state.browser.open) renderBrowser();
+  if (state.picker.open) renderPicker();
 }
 
 const WRITES_OFF = 'Writes are off: set HELIX_TOKEN on the server';
@@ -853,45 +1496,186 @@ function renderPresetBar() {
   const tempo = state.tempoPending ?? state.chain?.tempo;
   $('tempo').textContent = tempo == null ? '–' : (Number.isInteger(tempo) ? String(tempo) : tempo.toFixed(1));
   $('tempo-btn').classList.toggle('pending', state.tempoPending != null);
+  presetBarFx(state.chain?.label ?? null, active ?? null);
 }
 
 function renderBanner() {
   const b = state.banner;
-  $('banner').hidden = !b || !!state.blocked;
+  const shown = !!b && !state.blocked;
+  $('banner').hidden = !shown;
+  if (shown && !seen.banner) fx($('banner'), { opacity: [0, 1], y: [-10, 0] }, { ...SPRING, opacity: FADE });
+  seen.banner = shown;
   if (!b) return;
   $('banner-msg').textContent = b.message;
   $('banner-msg').title = b.message;
   $('banner-ctx').textContent = b.context;
 }
 
+/**
+ * Path A and Path B from /api/chain .routing, as slot numbers (position - 1).
+ * `branch` lists Path B only while it is in use (a block on it, the split and
+ * merge attached); `cells` lists Path B's cells always. `split` and `join`
+ * are cells of Path A the fork and the merge sit just before. Without routing
+ * (`cli`), one row of SLOTS and no Path B.
+ */
+function lanes() {
+  const r = state.chain?.routing;
+  const main = r?.main?.length ? r.main.map((p) => p - 1) : Array.from({ length: SLOTS }, (_, i) => i + 1);
+  const cells = (r?.branch ?? []).map((p) => p - 1);
+  const split = r?.split?.before;
+  const join = r?.join?.before;
+  const divides = cells.length > 0 && split != null && join != null && split < join;
+  return { main, cells, branch: divides ? cells : [], split, join };
+}
+
+/**
+ * A block drawn as a pedal: an expression pedal for wahs and volume, else a
+ * stompbox. Its colour is the category's (--c on the slot).
+ */
+function pedal(cat) {
+  const plate = `<span class="plate">${esc(cat.short)}</span>`;
+  if (/^(wah|volume)/i.test(cat.name)) {
+    return `<div class="node treadle"><span class="led"></span><span class="tread"></span>${plate}</div>`;
+  }
+  // An FX loop: a jack box with two plugs in its top edge, Send and Return,
+  // their cables running straight up out of it.
+  if (/^send/i.test(cat.name)) {
+    return '<div class="node loop"><svg class="cables" viewBox="0 0 74 30" aria-hidden="true">' +
+      '<path class="cable" d="M22 15V-2"/><path class="cable" d="M52 15V-2"/>' +
+      '<rect class="plug" x="18.5" y="14" width="7" height="11" rx="1.5"/>' +
+      '<rect class="plug" x="48.5" y="14" width="7" height="11" rx="1.5"/></svg>' +
+      '<span class="led"></span><span class="jacks"><span>SEND</span><span>RTN</span></span>' +
+      `${plate}</div>`;
+  }
+  return `<div class="node"><span class="led"></span>${plate}</div>`;
+}
+
+/** A slot as the UI names it: 1-9 on Path A, B1-B9 on Path B. */
+function slotLabel(n) {
+  const i = lanes().cells.indexOf(n);
+  return i >= 0 ? `B${i + 1}` : String(n);
+}
+
+/**
+ * Empty cells a block may move into (server/src/routing.rs): Path A's, and
+ * Path B's under the split and merge, or all of Path B's while it is empty
+ * (the first block there claims the whole line).
+ */
+function moveTargets() {
+  const { main, cells, branch, split, join } = lanes();
+  const map = slotMap();
+  const onB = branch.length ? cells.filter((_, i) => i >= split && i < join) : cells;
+  return new Set([...main, ...onB].filter((n) => !map.has(n)));
+}
+
 function renderChain() {
   const skeleton = !state.chain;
   const map = slotMap();
-  let html = '<div class="io"><div class="io-bar"></div>In</div><div class="slots">';
-  for (let n = 1; n <= SLOTS; n++) {
+  const { main, cells, branch, split, join } = lanes();
+  const moving = state.moving != null && map.has(state.moving) ? state.moving : null;
+  const targets = moving == null ? null : moveTargets();
+  const cell = (n, label) => {
     if (skeleton) {
-      html += '<div class="slot"><div class="slot-num"></div><div class="node-skel"></div><div class="slot-name"></div></div>';
-      continue;
+      return '<div class="slot"><div class="slot-num"></div><div class="node-skel"></div><div class="slot-name"></div></div>';
     }
     const b = map.get(n);
+    const sel = n === state.selectedSlot && !state.junction;
     if (!b) {
-      html += `<div class="slot"><div class="slot-num">${n}</div><div class="node-empty"></div><div class="slot-name"></div></div>`;
-      continue;
+      if (targets?.has(n)) {
+        return `<button class="slot empty target" type="button" data-move-to="${n}" aria-label="Move ${esc(map.get(moving).model)} to slot ${label}">` +
+          `<div class="slot-num">${label}</div><div class="node-empty"></div><div class="slot-name"></div></button>`;
+      }
+      return `<button class="slot empty${sel ? ' selected' : ''}" type="button" data-slot="${n}" aria-pressed="${sel}"` +
+        ` aria-label="Slot ${label}: empty${state.writes ? '. Tap to add a block' : ''}">` +
+        `<div class="slot-num">${label}</div><div class="node-empty"></div><div class="slot-name"></div></button>`;
     }
     const cat = blockCategory(b);
-    const cls = ['slot', b.enabled ? 'on' : '', n === state.selectedSlot ? 'selected' : ''].join(' ');
-    html += `<button class="${cls}" type="button" data-slot="${n}" style="--c:${cat.colour}"` +
-      ` aria-pressed="${n === state.selectedSlot}" aria-label="Slot ${n}: ${esc(b.model)}, ${esc(cat.name)}${b.based_on ? `, based on ${esc(b.based_on)}` : ''}${b.enabled ? '' : ', bypassed'}"${b.based_on ? ` title="${esc(b.model)}: ${esc(b.based_on)}"` : ''}>` +
-      `<div class="slot-num">${n}</div><div class="node"><div class="node-code">${esc(cat.short)}</div><div class="node-band"></div></div>` +
+    const cls = ['slot', b.enabled ? 'on' : '', sel ? 'selected' : '', n === moving ? 'moving' : ''].join(' ');
+    const exp = [...new Set((b.assignments ?? []).map((a) => sourceLabel(a.source).replace(' ', '')))];
+    const fs = (b.footswitch ? ` · <span class="slot-fs">FS${b.footswitch}</span>` : '') +
+      exp.map((e) => ` · <span class="slot-fs slot-exp">${e}</span>`).join('');
+    return `<button class="${cls}" type="button" data-slot="${n}" style="--c:${cat.colour}"` +
+      ` aria-pressed="${sel}" aria-label="Slot ${label}: ${esc(b.model)}, ${esc(cat.name)}${b.based_on ? `, based on ${esc(b.based_on)}` : ''}${b.enabled ? '' : ', bypassed'}${b.footswitch ? `, on footswitch ${b.footswitch}` : ''}"${b.based_on ? ` title="${esc(b.model)}: ${esc(b.based_on)}"` : ''}>` +
+      `<div class="slot-num">${label}${fs}</div>${pedal(cat)}` +
       `<div class="slot-name">${esc(b.model)}</div></button>`;
+  };
+  // While a block moves and Path B is empty, Path B shows as a drop row.
+  const ghost = !branch.length && moving != null && cells.length > 0;
+  const rowB = branch.length ? branch : ghost ? cells : [];
+  let html = '<div class="io"><div class="io-bar"></div>In</div>';
+  if (rowB.length) {
+    // Two rows on one grid: Path B's cell k under Path A's cell k, as HX Edit
+    // draws it. The bracket runs from the split down to Path B and back up to
+    // the merge; Path B's cells outside it carry no signal and stay blank.
+    const [from, to] = ghost ? [0, main.length] : [split, join];
+    const junction = (which, at) => {
+      const name = which === 'split' ? 'Split' : 'Merge';
+      const sel = state.junction === which;
+      return `<button class="junction${sel ? ' selected' : ''}" type="button" data-junction="${which}" style="--at:${at}"` +
+        ` aria-pressed="${sel}" aria-label="${name}, before cell ${at + 1}"></button>`;
+    };
+    html += `<div class="slots two-rows" style="--cols:${main.length};--from:${from};--to:${to}">` +
+      `<div class="lane-b${ghost ? ' ghost' : ''}" aria-hidden="true"><span class="lane-tag">B</span></div>` +
+      main.map((n) => cell(n, String(n))).join('') +
+      rowB.map((n, i) => (i < from || i >= to) && !map.has(n)
+        ? '<div class="slot off" aria-hidden="true"></div>'
+        : cell(n, `B${i + 1}`)).join('') +
+      (ghost ? '' : junction('split', split) + junction('join', join)) +
+      '</div>';
+  } else {
+    html += `<div class="slots">${main.map((n) => cell(n, String(n))).join('')}</div>`;
   }
-  html += '</div><div class="io">Out</div>';
-  $('chain').innerHTML = html;
+  html += '<div class="io">Out</div>';
+  // Path B empty and writes on: a way to start it.
+  if (!skeleton && cells.length && !rowB.length && state.writes) {
+    html += `<button class="add-b" type="button" data-add-b${canWrite() ? '' : ' disabled'}>+ Path B</button>`;
+  }
+  const chain = $('chain');
+  chain.classList.toggle('split', rowB.length > 0);
+  chain.classList.toggle('has-add-b', html.includes('data-add-b'));
+  chain.innerHTML = html;
+  chainFx(map);
 }
 
 function renderParams() {
-  if (state.drag) return; // never rebuild a slider under the finger; sliderUp renders
+  // Never rebuild a slider under the finger; sliderUp / travelUp render.
+  if (state.drag || state.travelDrag) return;
+  paintParams();
+  const b = state.chain && slotMap().get(state.selectedSlot);
+  const shown = state.junction ?? `${state.selectedSlot}/${b?.model ?? ''}`;
+  paramsFx($('params'), state.chain ? `${state.chain.label}/${shown}` : null);
+}
+
+/** The split or merge in the panel: where it sits, and buttons to move it. */
+function paintJunction(el) {
+  const which = state.junction;
+  const { main, split, join } = lanes();
+  const at = which === 'split' ? split : join;
+  const name = which === 'split' ? 'Split' : 'Merge';
+  const live = canWrite();
+  const step = (d, label) => state.writes
+    ? `<button class="act ph-toggle" type="button" data-junction-step="${d}"${live && junctionOk(which, at + d) ? '' : ' disabled'}>${label}</button>`
+    : `<button class="later ph-toggle" type="button" disabled title="${esc(WRITES_OFF)}">${label}</button>`;
+  el.style.setProperty('--c', 'var(--line-strong)');
+  el.innerHTML =
+    `<div class="params-head"><div class="ph-code">${which === 'split' ? 'Split' : 'Merge'}</div>` +
+    `<div class="ph-title"><div class="ph-model">${name}</div>` +
+    `<div class="ph-based">before ${at >= main.length ? 'the output' : `cell ${at + 1}`}</div></div>` +
+    `<div class="ph-meta">Path B runs under cells ${split + 1} to ${join}</div><div class="spacer"></div>` +
+    `${step(-1, '‹ Earlier')}${step(1, 'Later ›')}</div>` +
+    '<div class="params-empty">Blocks on Path A before the split and after the merge carry the whole signal; ' +
+    'between them Path A and Path B run side by side. Path B’s blocks stay between the two.<br>' +
+    'Moving the split or merge rewrites the whole preset on the pedal (edit buffer, unsaved until you save). ' +
+    'Split type and merge levels are not editable here yet.</div>';
+}
+
+function paintParams() {
   const el = $('params');
+  if (state.chain && state.junction && lanes().branch.length) {
+    paintJunction(el);
+    return;
+  }
+  state.junction = null;
   if (!state.chain) {
     const cells = Array.from({ length: 6 }, () => '<div class="param"><div class="skel-line"></div><div class="track"></div></div>').join('');
     el.style.removeProperty('--c');
@@ -899,17 +1683,32 @@ function renderParams() {
     return;
   }
   const b = slotMap().get(state.selectedSlot);
+  const live = canWrite();
   if (!b) {
-    el.innerHTML = '<div class="params-empty">No blocks in this preset.</div>';
+    const slot = state.selectedSlot;
+    el.style.removeProperty('--c');
+    if (slot == null) {
+      el.innerHTML = '<div class="params-empty">No blocks in this preset.</div>';
+      return;
+    }
+    const add = state.writes
+      ? `<button class="act ph-toggle" type="button" data-add${live ? '' : ' disabled'}>Add block</button>`
+      : `<button class="later ph-toggle" type="button" disabled title="${esc(WRITES_OFF)}">Add block</button>`;
+    el.innerHTML =
+      `<div class="params-head"><div class="ph-code">+</div>` +
+      `<div class="ph-title"><div class="ph-model">Empty slot</div></div>` +
+      `<div class="ph-meta">slot ${slotLabel(slot)}</div><div class="spacer"></div>${add}</div>` +
+      `<div class="params-empty">${state.writes ? `Add an effect here: tap Add block, pick a model.<br>${esc(footswitches() ? PICK_FOOTSWITCH : NO_FOOTSWITCH)}` : 'Nothing in this slot.'}</div>`;
     return;
   }
   const cat = blockCategory(b);
   el.style.setProperty('--c', cat.colour);
   const kind = cat.subcategory ? `${cat.name} · ${cat.subcategory}` : cat.name;
-  const meta = `${kind} · slot ${state.selectedSlot} · ${b.enabled ? 'on' : 'bypassed'}`;
+  const onOff = assignmentOf(b, null);
+  const meta = `${kind} · slot ${slotLabel(state.selectedSlot)} · ${b.enabled ? 'on' : 'bypassed'}` +
+    (onOff ? ` · ${sourceLabel(onOff.source)} switches it` : '');
   // The real gear behind the model, from the Pilot's Guide (server: vendor/based-on.json).
   const based = b.based_on ? `<div class="ph-based">Based on ${esc(b.based_on)}</div>` : '';
-  const live = canWrite();
   const params = b.params.map((p) => {
     const c = controlOf(b, p);
     if (c) return controlHtml(b, p, c, live);
@@ -925,11 +1724,21 @@ function renderParams() {
   const toggle = state.writes
     ? `<button class="act ph-toggle" type="button" data-toggle${live ? '' : ' disabled'}>${b.enabled ? 'Turn off' : 'Turn on'}</button>`
     : `<button class="later ph-toggle" type="button" disabled title="${esc(WRITES_OFF)}">${b.enabled ? 'Turn off' : 'Turn on'}</button>`;
+  const remove = state.writes
+    ? `<button class="act ph-toggle ph-remove" type="button" data-remove${live ? '' : ' disabled'} aria-label="Remove ${esc(b.model)}">Remove</button>`
+    : '';
+  // Moving needs the preset document (routing): usb and fake.
+  const moving = state.moving === state.selectedSlot;
+  const move = state.writes && state.chain.routing
+    ? `<button class="act ph-toggle${moving ? ' hot' : ''}" type="button" data-move${live ? '' : ' disabled'}` +
+      ` aria-pressed="${moving}">${moving ? 'Cancel move' : 'Move'}</button>`
+    : '';
   el.innerHTML =
     `<div class="params-head"><div class="ph-code">${esc(cat.short)}</div>` +
     `<div class="ph-title"><div class="ph-model">${esc(b.model)}</div>${based}</div>` +
-    `<div class="ph-meta">${esc(meta)}</div><div class="spacer"></div>` +
-    `${toggle}</div>` +
+    `<div class="ph-meta">${esc(moving ? 'Tap an empty cell to move it there' : meta)}</div><div class="spacer"></div>` +
+    `${move}${remove}${toggle}</div>` +
+    footswitchRow(b, live) +
     `<div class="params-grid">${params}</div>`;
 }
 
@@ -938,17 +1747,18 @@ function controlHtml(b, p, c, live) {
   const { native, label } = shownValue(b, p);
   const i = indexOf(c, native);
   const off = live ? '' : ' disabled';
-  const name = `<span class="param-name">${esc(p.name)}</span>`;
+  const pedal = pedalParts(b, p, c, live);
+  const name = `<span class="param-label"><span class="param-name">${esc(p.name)}</span>${pedal.tag}</span>`;
   if (c.kind === 'menu') {
     const options = c.labels.map((l, n) => `<option value="${n}"${n === i ? ' selected' : ''}>${esc(l)}</option>`).join('');
     return `<div class="param ctl"><div class="param-top">${name}</div>` +
-      `<select class="menu" data-ctl="${p.index}" data-menu aria-label="${esc(p.name)}"${off}>${options}</select></div>`;
+      `<select class="menu" data-ctl="${p.index}" data-menu aria-label="${esc(p.name)}"${off}>${options}</select>${pedal.row}</div>`;
   }
   if (c.kind === 'switch') {
     const on = i === 1;
     return `<div class="param ctl"><div class="param-top">${name}</div>` +
       `<button class="switch" type="button" data-ctl="${p.index}" data-switch aria-pressed="${on}" aria-label="${esc(p.name)}"${off}>` +
-      `<span class="switch-knob"></span><span class="switch-label">${esc(c.labels[i])}</span></button></div>`;
+      `<span class="switch-knob"></span><span class="switch-label">${esc(c.labels[i])}</span></button>${pedal.row}</div>`;
   }
   const value = state.writes
     ? `<button class="param-value typed" type="button" data-param="${p.index}"${off} aria-label="${esc(p.name)}: ${esc(label)}. Tap to type a value">${esc(label)}</button>`
@@ -957,26 +1767,7 @@ function controlHtml(b, p, c, live) {
     `<div class="slider" data-ctl="${p.index}" data-slider role="slider" tabindex="${live ? 0 : -1}" aria-label="${esc(p.name)}"` +
     ` aria-valuemin="0" aria-valuemax="${c.steps}" aria-valuenow="${i}" aria-valuetext="${esc(label)}"` +
     ` aria-disabled="${!live}" style="--pos:${(i / c.steps) * 100}%">` +
-    '<div class="track-fill"></div><div class="track-thumb"></div></div></div>';
-}
-
-function renderBank() {
-  const loaded = loadedPreset();
-  if (!loaded) {
-    $('bank').innerHTML = '<div class="tile skel"></div>'.repeat(4);
-    return;
-  }
-  const bank = bankOf(loaded.label);
-  const tiles = state.presets.filter((p) => bankOf(p.label) === bank);
-  const live = canWrite();
-  $('bank').innerHTML = tiles.map((p) => {
-    const inner = `<div class="tile-top"><span class="tile-tag">${p.loaded ? 'LOADED' : ''}</span>` +
-      `<span class="tile-label"><span>${esc(bank)}</span>${esc(p.label.slice(-1))}</span></div>` +
-      `<div class="tile-name">${esc(p.name)}</div>`;
-    return state.writes && !p.loaded
-      ? `<button class="tile" type="button" data-load="${p.index}"${live ? '' : ' disabled'} aria-label="Load ${esc(p.label)} ${esc(p.name)}">${inner}</button>`
-      : `<div class="tile${p.loaded ? ' loaded' : ''}">${inner}</div>`;
-  }).join('');
+    `<div class="track-fill"></div><div class="track-thumb"></div></div>${pedal.row}</div>`;
 }
 
 let listKey = '';
@@ -1080,11 +1871,108 @@ function updateActiveJump() {
   }
 }
 
+function renderPicker() {
+  const p = state.picker;
+  const slot = p.slot;
+  $('picker-title').textContent = `Add to slot ${slotLabel(slot)}`;
+  $('pf-slot').textContent = slot == null ? '' : String(slot);
+  const add = $('add-btn');
+  const cats = $('cats');
+  const models = $('models');
+
+  if (!Array.isArray(state.catalog)) {
+    cats.innerHTML = '';
+    models.innerHTML = `<div class="no-results">${esc(state.catalog?.error ?? 'Loading models…')}</div>`;
+    $('pf-name').textContent = '';
+    $('pf-note').textContent = '';
+    setControl(add, false);
+    return;
+  }
+
+  const q = p.filter.trim().toLowerCase();
+  const groups = modelGroups();
+  const recentIds = storedRecent();
+  const recent = recentIds.map((id) => groups.find((g) => g.variants.some((v) => v.id === id))).filter(Boolean)
+    .filter((g, i, list) => list.indexOf(g) === i);
+  if (p.category === RECENT && !recent.length) p.category = 0;
+  const catBtn = (i, name, colour, extra = '') =>
+    `<button class="cat${!q && i === p.category ? ' active' : ''}${extra}" type="button" data-cat="${i}" style="--c:${esc(colour)}"` +
+    ` aria-pressed="${!q && i === p.category}"><span class="cat-sw"></span><span class="cat-name">${esc(name)}</span></button>`;
+  cats.innerHTML = (recent.length ? catBtn(RECENT, 'Recent', 'var(--ink)', ' cat-recent') : '') +
+    state.catalog.map((c, i) => catBtn(i, c.name, c.colour)).join('');
+
+  // A badge only where it tells something: Legacy, or a model with one version.
+  const badge = (g) => g.legacy ? LEGACY : g.variants.length === 1 && g.variants[0].shelf ? g.variants[0].shelf : '';
+  const tile = (g) => {
+    const sel = g.key === p.selected;
+    const b = badge(g);
+    return `<button class="mtile${sel ? ' selected' : ''}" type="button" data-group="${esc(g.key)}"` +
+      ` style="--c:${esc(g.category.colour)}" aria-pressed="${sel}"` +
+      ` aria-label="${esc(g.name)}${b ? `, ${esc(b)} only` : ''}${g.based_on ? `, based on ${esc(g.based_on)}` : ''}">` +
+      `<span class="mtile-top"><span class="mtile-name">${esc(g.name)}</span>${b ? `<span class="mtile-shelf">${esc(b)}</span>` : ''}</span>` +
+      `<span class="mtile-based">${esc(g.based_on ?? '')}</span></button>`;
+  };
+  const grid = (gs) => `<div class="shelf">${gs.map(tile).join('')}</div>`;
+  const head = (name, colour) => `<div class="group-name"${colour ? ` style="--c:${esc(colour)}"` : ''}>${esc(name)}</div>`;
+
+  let body;
+  let bar = '';
+  if (q) {
+    // Across every category, Legacy included: a search means a specific model.
+    const hits = groups.filter((g) => g.name.toLowerCase().includes(q) ||
+      (g.based_on ?? '').toLowerCase().includes(q) || (g.type ?? '').toLowerCase().includes(q));
+    body = hits.length
+      ? state.catalog.map((c, ci) => sections(c, hits.filter((g) => g.ci === ci)).map(([name, gs]) =>
+        head(`${c.name}${name ? ` · ${name}` : ''}`, c.colour) + grid(gs)).join('')).join('')
+      : `<div class="no-results">No model matches “${esc(p.filter)}”.</div>`;
+  } else if (p.category === RECENT) {
+    body = head('Added last') + grid(recent);
+  } else {
+    const c = state.catalog[p.category];
+    const mine = groups.filter((g) => g.ci === p.category);
+    const legacyCount = mine.filter((g) => g.legacy).length;
+    const pool = mine.filter((g) => p.legacy || !g.legacy);
+    const secs = sections(c, pool);
+    if (!secs.some(([name]) => name === p.type)) p.type = TYPE_ALL;
+    // Type chips filter: one type at a time, or all of them in sections.
+    const chip = (name, n) => `<button class="tchip${name === p.type ? ' active' : ''}" type="button" data-type="${esc(name)}"` +
+      ` aria-pressed="${name === p.type}">${esc(name)}<span class="tchip-n">${n}</span></button>`;
+    const chips = c.types?.length && secs.length > 1
+      ? `<div class="tjumps" role="group" aria-label="Type">${chip(TYPE_ALL, pool.length)}${secs.map(([name, gs]) => chip(name, gs.length)).join('')}</div>`
+      : '<div class="spacer"></div>';
+    const legacy = legacyCount
+      ? `<button class="tchip legacy-toggle${p.legacy ? ' active' : ''}" type="button" data-legacy aria-pressed="${p.legacy}"` +
+        ` title="HX Edit's older (HD-era) models">Legacy<span class="tchip-n">${legacyCount}</span></button>`
+      : '';
+    bar = (chips + legacy) === '<div class="spacer"></div>' ? '' : `<div class="mbar">${chips}${legacy}</div>`;
+    const shown = p.type === TYPE_ALL ? secs : secs.filter(([name]) => name === p.type);
+    body = shown.length
+      ? shown.map(([name, gs]) => (name && shown.length > 1 ? head(name) : '') + grid(gs)).join('')
+      : `<div class="no-results">No models in ${esc(c.name)}.</div>`;
+  }
+  models.innerHTML = bar + body;
+
+  const g = selectedGroup();
+  const v = g && variantOf(g);
+  $('pf-name').textContent = g?.name ?? 'Pick a model';
+  $('pf-note').textContent = g
+    ? [g.category.name, g.type, g.legacy && LEGACY, g.based_on && `based on ${g.based_on}`].filter(Boolean).join(' · ')
+    : footswitches() ? PICK_FOOTSWITCH : NO_FOOTSWITCH;
+  // Mono or Stereo, for a model that has both.
+  const variants = $('pf-variant');
+  variants.hidden = !g || g.variants.length < 2;
+  variants.innerHTML = variants.hidden ? '' : g.variants.map((x) =>
+    `<button class="seg-btn${x === v ? ' active' : ''}" type="button" data-variant="${esc(x.shelf)}" aria-pressed="${x === v}">${esc(x.shelf)}</button>`).join('');
+  renderAddFootswitch();
+  add.textContent = g ? `Add to slot ${slotLabel(slot)}` : 'Add';
+  setControl(add, canWrite() && !!g && !slotMap().has(slot));
+}
+
 function openBrowser() {
   state.browser.open = true;
   state.browser.selected = state.browser.selected ?? loadedPreset()?.index ?? null;
   state.connOpen = false;
-  $('browser').hidden = false;
+  showSheet($('browser'));
   renderConnection();
   renderBrowser();
   const sel = $('banks').querySelector('.selected') || $('banks').querySelector('.loaded');
@@ -1094,10 +1982,32 @@ function openBrowser() {
 
 function closeBrowser() {
   state.browser.open = false;
-  $('browser').hidden = true;
+  hideSheet($('browser'), () => !state.browser.open);
 }
 
 // ---------- Events ----------
+
+// ---------- Preset list (desktop sidebar) ----------
+// Shown or hidden from the top bar, kept in this browser. Hidden, the Presets
+// button opens the full sheet instead.
+
+const SIDEBAR_KEY = 'helix-bridge-sidebar';
+
+function setSidebar(open, animate) {
+  $('app').classList.toggle('no-sidebar', !open);
+  const btn = document.querySelector('[data-sidebar]');
+  btn.setAttribute('aria-pressed', String(open));
+  btn.title = open ? 'Hide the preset list' : 'Show the preset list';
+  if (!open || !animate) return;
+  fx($('sidebar'), { opacity: [0, 1], x: [-24, 0] }, { ...SPRING, opacity: FADE });
+  $('preset-list').querySelector('.loaded')?.scrollIntoView({ block: 'center' });
+}
+
+function toggleSidebar() {
+  const open = $('app').classList.contains('no-sidebar');
+  store(SIDEBAR_KEY, open ? '' : 'hidden');
+  setSidebar(open, true);
+}
 
 document.addEventListener('click', (e) => {
   const t = e.target.closest('button, [data-conn]');
@@ -1106,9 +2016,12 @@ document.addEventListener('click', (e) => {
     renderConnection();
   }
   if (!t) return;
-  if (t.matches('[data-conn]')) {
+  if (t.matches('[data-sidebar]')) {
+    toggleSidebar();
+  } else if (t.matches('[data-conn]')) {
     state.connOpen = !state.connOpen;
     renderConnection();
+    if (state.connOpen) fx($('conn-popover'), { opacity: [0, 1], scale: [0.94, 1], y: [-8, 0] }, { ...SPRING, opacity: FADE });
   } else if (t.matches('[data-retry]')) {
     state.connOpen = false;
     state.banner = null;
@@ -1116,10 +2029,52 @@ document.addEventListener('click', (e) => {
   } else if (t.id === 'banner-close') {
     state.banner = null;
     renderBanner();
+  } else if (t.matches('[data-move-to]')) {
+    moveTo(Number(t.dataset.moveTo));
   } else if (t.matches('[data-slot]')) {
-    state.selectedSlot = Number(t.dataset.slot);
-    renderChain();
-    renderParams();
+    selectSlot(Number(t.dataset.slot));
+  } else if (t.matches('[data-exp]')) {
+    toggleExp(Number(t.dataset.exp));
+  } else if (t.matches('[data-exp-set]')) {
+    setPedal(Number(t.closest('[data-exp-row]').dataset.expRow), Number(t.dataset.expSet));
+  } else if (t.matches('[data-exp-end]')) {
+    setTravel(Number(t.closest('[data-exp-row]').dataset.expRow), 'full');
+  } else if (t.matches('[data-move]')) {
+    toggleMove();
+  } else if (t.matches('[data-junction]')) {
+    selectJunction(t.dataset.junction);
+  } else if (t.matches('[data-junction-step]')) {
+    moveJunction(Number(t.dataset.junctionStep));
+  } else if (t.matches('[data-add-b]')) {
+    addPathB();
+  } else if (t.matches('[data-add]')) {
+    if (state.selectedSlot != null) openPicker(state.selectedSlot);
+  } else if (t.matches('[data-remove]')) {
+    removeBlock();
+  } else if (t.matches('[data-close-picker]')) {
+    closePicker();
+  } else if (t.matches('[data-cat]')) {
+    Object.assign(state.picker, { category: Number(t.dataset.cat), type: TYPE_ALL, filter: '' });
+    $('model-filter').value = '';
+    showModels();
+  } else if (t.matches('[data-type]')) {
+    state.picker.type = t.dataset.type;
+    showModels();
+  } else if (t.matches('[data-legacy]')) {
+    state.picker.legacy = !state.picker.legacy;
+    store(LEGACY_KEY, state.picker.legacy ? '1' : '');
+    showModels();
+  } else if (t.matches('[data-group]')) {
+    // A second tap on the picked model adds it.
+    const key = t.dataset.group;
+    if (state.picker.selected === key) addBlock();
+    else { state.picker.selected = key; renderPicker(); }
+  } else if (t.matches('[data-variant]')) {
+    state.picker.variant = t.dataset.variant;
+    store(VARIANT_KEY, state.picker.variant);
+    renderPicker();
+  } else if (t.id === 'add-btn') {
+    addBlock();
   } else if (t.matches('[data-open-browser]')) {
     openBrowser();
   } else if (t.matches('[data-close-browser]')) {
@@ -1129,14 +2084,14 @@ document.addEventListener('click', (e) => {
     renderBrowser();
   } else if (t.matches('[data-step]')) {
     stepPreset(Number(t.dataset.step));
-  } else if (t.matches('[data-load]')) {
-    loadPreset(Number(t.dataset.load));
   } else if (t.id === 'load-btn') {
     const index = state.browser.selected;
     closeBrowser();
     loadPreset(index);
   } else if (t.matches('[data-toggle]')) {
     toggleBlock();
+  } else if (t.matches('[data-fs]')) {
+    setFootswitch(Number(t.dataset.fs) || null);
   } else if (t.matches('[data-param]')) {
     editParam(Number(t.dataset.param));
   } else if (t.matches('[data-switch]')) {
@@ -1163,6 +2118,12 @@ paramsEl.addEventListener('pointerup', sliderUp);
 paramsEl.addEventListener('pointercancel', sliderUp);
 paramsEl.addEventListener('lostpointercapture', sliderUp);
 paramsEl.addEventListener('keydown', sliderKey);
+paramsEl.addEventListener('pointerdown', travelDown);
+paramsEl.addEventListener('pointermove', travelMove);
+paramsEl.addEventListener('pointerup', travelUp);
+paramsEl.addEventListener('pointercancel', travelUp);
+paramsEl.addEventListener('lostpointercapture', travelUp);
+paramsEl.addEventListener('keydown', travelKey);
 paramsEl.addEventListener('change', menuChange);
 
 // Taps count on touch-down, not on release: closer to the beat.
@@ -1177,20 +2138,37 @@ $('filter').addEventListener('input', (e) => {
   renderBrowser();
 });
 
-$('banks').addEventListener('scroll', updateActiveJump, { passive: true });
+$('model-filter').addEventListener('input', (e) => {
+  state.picker.filter = e.target.value;
+  renderPicker();
+});
+$('pf-fs').addEventListener('change', (e) => {
+  state.picker.fs = e.target.value;
+  storeAddFs(e.target.value);
+});
+
+// At most once a frame: each update measures every bank row.
+let jumpFrame = 0;
+$('banks').addEventListener('scroll', () => {
+  if (!jumpFrame) jumpFrame = requestAnimationFrame(() => { jumpFrame = 0; updateActiveJump(); });
+}, { passive: true });
 
 document.addEventListener('keydown', (e) => {
   if (e.key !== 'Escape') return;
-  if (state.connOpen) { state.connOpen = false; renderConnection(); } else if (state.browser.open) closeBrowser();
+  if (state.connOpen) { state.connOpen = false; renderConnection(); } else if (state.picker.open) closePicker();
+  else if (state.moving != null) toggleMove();
+  else if (state.browser.open) closeBrowser();
 });
 
 // Re-read when the iPad comes back to the page (screen lock, app switch).
-// No polling: each read is a USB session on the pedal.
+// No polling with `cli`: each read is a USB session on the pedal (checkChain
+// runs only with live updates).
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState !== 'visible') return;
   if (Date.now() - lastRefresh > RETRY_MS) refresh({ full: false });
   connectLive();
 });
 
+setSidebar(stored(SIDEBAR_KEY, '') !== 'hidden', false);
 render();
 refresh();

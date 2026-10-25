@@ -12,14 +12,15 @@ use std::time::{Duration, Instant};
 use tokio::process::Command as Process;
 use tokio::sync::{broadcast, Mutex};
 
-pub use crate::controls::{CategoryInfo, ModelInfo};
+pub use crate::controls::{CategoryInfo, ModelGroup, ModelInfo};
 pub use crate::fake::FakeDevice;
 
 /// The `tonepush` commands the bridge may run, and [`Command::SetNative`].
 ///
 /// Writes are limited to what phase 6 needs and TonePush has used on hardware:
-/// load, bypass, parameter, rename, save. `move` (reorder) is left out: TonePush
-/// marks it untested against hardware (AGENTS.md 6, unverified operations).
+/// load, bypass, parameter, rename, save, snapshot, tempo, and adding or
+/// removing a block. `move` (reorder) is left out: TonePush marks it untested
+/// against hardware (AGENTS.md 6, unverified operations).
 #[derive(Debug, Clone, PartialEq)]
 pub enum Command {
     List,
@@ -73,6 +74,74 @@ pub enum Command {
     /// TonePush writes the whole preset document for it (no tempo opcode).
     Tempo {
         bpm: f32,
+    },
+    /// Put a model into an empty block slot: op78 (select) then op40 (set
+    /// model), as HX Edit does. Adds, never replaces: an occupied slot is
+    /// refused with [`DeviceError::Stale`] (`usb`, `fake`; `cli` cannot check).
+    /// Edit buffer only.
+    AddBlock {
+        block: u32,
+        model: u32,
+    },
+    /// Remove a block: op78 (select) then op28 (clear). `model`, if given, is
+    /// the model the client saw there; another one answers
+    /// [`DeviceError::Stale`] (`usb`, `fake`; `cli` cannot check). Edit
+    /// buffer only.
+    RemoveBlock {
+        block: u32,
+        model: Option<u32>,
+    },
+    /// Put a block's bypass on footswitch `switch` (one-based, as printed on
+    /// the pedal), or take it off every footswitch with `None`. Opcode 56
+    /// (assign) and 57 (unassign), zero-based on the wire. A block on another
+    /// switch is taken off it first. `model` as in [`Command::RemoveBlock`].
+    /// Edit buffer only. `cli` can only assign (`tonepush switch-assign`).
+    Footswitch {
+        block: u32,
+        switch: Option<u8>,
+        model: Option<u32>,
+    },
+    /// Move a block into an empty cell of Path A or Path B
+    /// ([`crate::routing::check_cell`]); the first block onto an empty Path B
+    /// also attaches the split and merge around the whole line. `model` as in
+    /// [`Command::RemoveBlock`]. A preset document write (op21), as TonePush's
+    /// GUI moves blocks; unverified on the HX Effects. Edit buffer only.
+    /// `usb` and `fake` only.
+    MoveBlock {
+        block: u32,
+        to: u32,
+        model: Option<u32>,
+    },
+    /// Attach the split or the merge before cell `before` (zero-based) of
+    /// Path A ([`crate::routing::check_junction`]). A preset document write
+    /// (op21); unverified on the HX Effects. Edit buffer only. `usb` and
+    /// `fake` only.
+    Junction {
+        which: crate::routing::Junction,
+        before: u32,
+    },
+    /// Put parameter `param` of the block at `block` under expression pedal
+    /// `pedal` (1 or 2), or take it off whatever controls it with `None`.
+    /// Opcode 37, as HX Edit's Controller Assign page; the device starts the
+    /// travel at the parameter's full range. `model` as in
+    /// [`Command::RemoveBlock`]. Unverified on the HX Effects. Edit buffer
+    /// only. `usb` and `fake` only.
+    Controller {
+        block: u32,
+        param: u32,
+        pedal: Option<u8>,
+        model: Option<u32>,
+    },
+    /// Move the heel (`min`) and/or toe (`max`) end of a parameter's pedal
+    /// travel, as native values. Opcodes 65 and 66, which take a fraction of
+    /// the parameter's range. The parameter must be under a controller.
+    /// Unverified on the HX Effects. Edit buffer only. `usb` and `fake` only.
+    ControllerRange {
+        block: u32,
+        param: u32,
+        min: Option<f32>,
+        max: Option<f32>,
+        model: Option<u32>,
     },
 }
 
@@ -130,7 +199,33 @@ impl Command {
                 vec!["snapshot".into(), "--".into(), (index + 1).to_string()]
             }
             Command::Tempo { bpm } => vec!["tempo".into(), "--".into(), format!("{bpm:.1}")],
-            Command::SetNative { .. } => return None,
+            Command::AddBlock { block, model } => vec![
+                "model".into(),
+                "--".into(),
+                block.to_string(),
+                model.to_string(),
+            ],
+            Command::RemoveBlock { block, .. } => {
+                vec!["clear".into(), "--".into(), block.to_string()]
+            }
+            Command::Footswitch {
+                block,
+                switch: Some(switch),
+                ..
+            } => vec![
+                "switch-assign".into(),
+                "--".into(),
+                block.to_string(),
+                switch.to_string(),
+            ],
+            // Taking it off needs the switch it is on, which `tonepush` does
+            // not print.
+            Command::SetNative { .. }
+            | Command::Footswitch { switch: None, .. }
+            | Command::MoveBlock { .. }
+            | Command::Junction { .. }
+            | Command::Controller { .. }
+            | Command::ControllerRange { .. } => return None,
         })
     }
 
@@ -146,6 +241,13 @@ impl Command {
                 | Command::Save
                 | Command::Snapshot { .. }
                 | Command::Tempo { .. }
+                | Command::AddBlock { .. }
+                | Command::RemoveBlock { .. }
+                | Command::Footswitch { .. }
+                | Command::MoveBlock { .. }
+                | Command::Junction { .. }
+                | Command::Controller { .. }
+                | Command::ControllerRange { .. }
         )
     }
 }
@@ -221,6 +323,12 @@ pub trait Device: Send + Sync + 'static {
     fn category(&self, _model_id: Option<u32>, _name: &str) -> Option<CategoryInfo> {
         None
     }
+
+    /// The models a block can be added with, by category (`/api/catalog`).
+    /// `None` without HX Edit's catalog.
+    fn catalog(&self) -> Option<Vec<ModelGroup>> {
+        None
+    }
 }
 
 /// What a backend knows about the loaded preset beyond `chain` text.
@@ -230,6 +338,15 @@ pub struct ChainExtra {
     pub natives: Option<Natives>,
     /// Active snapshot, zero-based.
     pub snapshot: Option<u32>,
+    /// Every footswitch and the blocks whose bypass it carries (opcode 33).
+    /// `None` when the backend cannot read them or the read failed.
+    pub footswitches: Option<Vec<crate::parse::Footswitch>>,
+    /// Path A, Path B, split and merge. `None` when the backend does not
+    /// read the preset document (`cli`).
+    pub routing: Option<crate::parse::Routing>,
+    /// Controller assignments by block position. `None` when the backend
+    /// does not read the preset document (`cli`).
+    pub assignments: Option<Vec<(u32, crate::parse::Assignment)>>,
 }
 
 /// Native parameter values of the loaded preset, per block.
@@ -340,9 +457,12 @@ impl CliDevice {
 
     async fn run_once(&self, cmd: &Command) -> Result<String> {
         let args = cmd.args().ok_or_else(|| {
-            DeviceError::Invalid(
-                "setting a parameter by native value needs HELIX_BACKEND=usb".into(),
-            )
+            DeviceError::Invalid(match cmd {
+                Command::Footswitch { .. } => {
+                    "taking a block off its footswitch needs HELIX_BACKEND=usb".into()
+                }
+                _ => "setting a parameter by native value needs HELIX_BACKEND=usb".into(),
+            })
         })?;
         let child = Process::new(&self.program)
             .args(args)
@@ -453,6 +573,29 @@ mod tests {
         let tempo = Command::Tempo { bpm: 96.04 };
         assert_eq!(tempo.args().unwrap(), ["tempo", "--", "96.0"]);
         assert!(snap.is_write() && tempo.is_write());
+        let add = Command::AddBlock {
+            block: 4,
+            model: 388,
+        };
+        assert_eq!(add.args().unwrap(), ["model", "--", "4", "388"]);
+        let remove = Command::RemoveBlock {
+            block: 4,
+            model: Some(388),
+        };
+        assert_eq!(remove.args().unwrap(), ["clear", "--", "4"]);
+        assert!(add.is_write() && remove.is_write());
+        let on = Command::Footswitch {
+            block: 4,
+            switch: Some(3),
+            model: None,
+        };
+        assert_eq!(on.args().unwrap(), ["switch-assign", "--", "4", "3"]);
+        let off = Command::Footswitch {
+            block: 4,
+            switch: None,
+            model: None,
+        };
+        assert!(on.is_write() && off.is_write() && off.args().is_none());
         assert!(!Command::Chain.is_write());
     }
 

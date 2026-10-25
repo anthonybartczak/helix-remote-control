@@ -151,6 +151,60 @@ pub struct Chain {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub snapshot: Option<u32>,
     pub blocks: Vec<Block>,
+    /// Every footswitch and what it carries. Only from backends that read
+    /// them (`usb`, `fake`); absent means unknown, not "none".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub footswitches: Option<Vec<Footswitch>>,
+    /// How the blocks are wired: Path A's row, Path B's row and where the
+    /// split and merge sit. Only from backends that read the preset document
+    /// (`usb`, `fake`); absent means one straight row, as before.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub routing: Option<Routing>,
+}
+
+/// A path's two rows, by block position (as in `blocks`).
+///
+/// The device keeps a path as one slot array: input, Path A's cells, output,
+/// split, Path B's cells, join (TonePush PROTOCOL.md, "The slot array is a
+/// topology"). The split and the merge each attach before one of Path A's
+/// cells: Path A's blocks before the split and after the merge carry the
+/// whole signal; between them Path A and Path B run side by side. Path B's
+/// cell `n` is drawn under Path A's cell `n`, as HX Edit draws it.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Routing {
+    /// Path A's cells, left to right, occupied or not.
+    pub main: Vec<u32>,
+    /// Path B's cells, left to right, occupied or not. Empty when the preset
+    /// has no split.
+    pub branch: Vec<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub split: Option<Junction>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub join: Option<Junction>,
+}
+
+/// The split or the merge.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Junction {
+    /// Its own position in the slot array (where its parameters live).
+    pub position: u32,
+    /// The cell of `main` (zero-based) it sits just before; `main.len()` is
+    /// "before the output". `None` while Path B is empty: the device keeps an
+    /// empty branch's attach points at zero.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub before: Option<u32>,
+}
+
+/// One footswitch, as opcode 33 reports it.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Footswitch {
+    /// One-based, as printed on the pedal.
+    pub switch: u8,
+    /// A name typed for the switch, if any.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// Positions (as in `blocks`) of the blocks whose bypass it switches.
+    pub blocks: Vec<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -172,10 +226,52 @@ pub struct Block {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub based_on: Option<String>,
     pub enabled: bool,
+    /// The footswitch that turns this block on and off, one-based. Absent
+    /// when it has none, or when the chain has no `footswitches`. A block on
+    /// a footswitch shows in the HX Effects' Stomp view; one without, only in
+    /// Signal Flow.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub footswitch: Option<u8>,
     pub params: Vec<Param>,
     /// Second model of an Amp+Cab block. Never present on HX Effects.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cab: Option<Cab>,
+    /// What expression pedals and other controllers move on this block.
+    /// Only from backends that read the preset document (`usb`, `fake`).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub assignments: Vec<Assignment>,
+}
+
+/// A controller moving a block's parameter or its on/off, from the preset's
+/// controller table (TonePush `Preset::assignments`).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Assignment {
+    /// Parameter index; absent when the controller switches the block on/off.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub param: Option<u32>,
+    /// `exp1` or `exp2` for the expression pedals (confirmed on the HX
+    /// Effects), else `ctlN` with the device's source ordinal N
+    /// (footswitches, MIDI, snapshots: unconfirmed on the HX Effects).
+    pub source: String,
+    /// Heel and toe ends of the travel, native values (as `params[].native`).
+    /// Absent for on/off.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub min: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max: Option<f32>,
+    /// The ends as the device shows them (`0 %`, `2.2 kHz`), with the catalog.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub min_value: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_value: Option<String>,
+}
+
+/// The API name of a controller source ordinal.
+pub fn source_name(ordinal: i64) -> String {
+    match ordinal {
+        1 | 2 => format!("exp{ordinal}"),
+        n => format!("ctl{n}"),
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -254,6 +350,8 @@ pub fn chain(out: &str) -> Result<Chain> {
         snapshots: Vec::new(),
         snapshot: None,
         blocks: Vec::new(),
+        footswitches: None,
+        routing: None,
     };
 
     // Header: label + name and/or tempo; either half may be missing.
@@ -320,8 +418,10 @@ pub fn chain(out: &str) -> Result<Chain> {
                 category: None,
                 based_on: None,
                 enabled,
+                footswitch: None,
                 params: Vec::new(),
                 cab: None,
+                assignments: Vec::new(),
             });
         }
     }
@@ -336,6 +436,31 @@ pub fn add_extra(chain: &mut Chain, extra: &crate::device::ChainExtra) {
     if let Some(natives) = &extra.natives {
         add_natives(chain, natives);
     }
+    if let Some(switches) = &extra.footswitches {
+        add_footswitches(chain, switches);
+    }
+    chain.routing.clone_from(&extra.routing);
+    if let Some(assignments) = &extra.assignments {
+        for block in &mut chain.blocks {
+            block.assignments = assignments
+                .iter()
+                .filter(|(position, _)| *position == block.position)
+                .map(|(_, a)| a.clone())
+                .collect();
+        }
+    }
+}
+
+/// Say which footswitch each block is on. A block listed on several (the
+/// pedal keeps one per block) shows the first.
+pub fn add_footswitches(chain: &mut Chain, switches: &[Footswitch]) {
+    for block in &mut chain.blocks {
+        block.footswitch = switches
+            .iter()
+            .find(|s| s.blocks.contains(&block.position))
+            .map(|s| s.switch);
+    }
+    chain.footswitches = Some(switches.to_vec());
 }
 
 /// Add model numbers and native values to a parsed chain, matching blocks by

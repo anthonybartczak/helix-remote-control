@@ -79,6 +79,34 @@ async fn main() {
         }
         return;
     }
+    // Diagnostics for adding a block on the HX Effects (usb::probe_slot,
+    // usb::probe_add): `helix-bridge probe-slot POSITION`,
+    // `helix-bridge probe-add POSITION MODEL`; and for footswitches,
+    // `helix-bridge probe-switches`. Stop the service first.
+    let number = |i: usize| args.get(i).and_then(|s| s.parse::<u32>().ok());
+    let probe = match args.get(1).map(String::as_str) {
+        Some("probe-slot") => Some(
+            number(2)
+                .ok_or_else(|| "usage: helix-bridge probe-slot POSITION".to_owned())
+                .and_then(|p| helix_bridge::usb::probe_slot(p as usize)),
+        ),
+        Some("probe-add") => Some(match (number(2), number(3)) {
+            (Some(p), Some(m)) => helix_bridge::usb::probe_add(p as usize, m),
+            _ => Err("usage: helix-bridge probe-add POSITION MODEL".to_owned()),
+        }),
+        // Read-only: what each footswitch carries (usb::probe_switches).
+        Some("probe-switches") => Some(helix_bridge::usb::probe_switches()),
+        // Read-only: edit buffer against the stored preset (usb::probe_unsaved).
+        Some("probe-unsaved") => Some(helix_bridge::usb::probe_unsaved()),
+        _ => None,
+    };
+    if let Some(result) = probe {
+        if let Err(e) = result {
+            eprintln!("probe failed: {e}");
+            std::process::exit(1);
+        }
+        return;
+    }
 
     let config = match Config::from_env() {
         Ok(c) => c,
@@ -105,10 +133,14 @@ async fn main() {
             result
         }
         "fake" => {
-            let fake = match &config.fixtures {
+            let mut fake = match &config.fixtures {
                 Some(dir) => FakeDevice::new(dir),
                 None => FakeDevice::bundled(),
             };
+            // Synthetic Path B for UI work (FakeDevice::with_split_demo).
+            if env_or("HELIX_FAKE_SPLIT", "") == "1" {
+                fake = fake.with_split_demo();
+            }
             serve(
                 fake.with_delay(config.fake_delay),
                 config.bind,

@@ -22,10 +22,30 @@
 //! else a byte at a time until the stream makes sense again. The cost of a
 //! slip is the one notification it cut through.
 
-/// Largest notification taken as genuine. Real ones are tens of bytes; this
-/// leaves room for any not captured yet while rejecting a body read as a
-/// length.
-const MAX_MESSAGE: usize = 64 * 1024;
+/// Largest notification taken as genuine. Real ones are tens of bytes; the
+/// device never has more than 4 KB unacknowledged on this channel (PATCHES.md
+/// 1), so 4 KB leaves room for any not captured yet. A false header with a
+/// length under this makes the stream wait for that many bytes before it is
+/// rejected, so it is kept small (it was 64 KB, minutes of notifications).
+const MAX_MESSAGE: usize = 4 * 1024;
+
+/// Whether a whole candidate message's body is what the device sends here:
+/// for service 4 an RPC message, for service 0 (the service-open reply) any
+/// MessagePack value.
+///
+/// Stepping over an out-of-order frame a byte at a time can land on bytes
+/// inside a notification that pass the header check: a parameter
+/// notification carries floats, and `ca 00 00 00 00` (0.0) followed by a
+/// small number reads as a header for service 0 with a modest length. The
+/// stream reader then fails on the body ("not MessagePack"), which ends the
+/// session. HX Effects 3.80, Pi 4, 2026-10-15, after front-panel knob turns.
+fn plausible(service: u16, body: &[u8]) -> bool {
+    match hx_proto::msgpack::Decoder::new(body).value() {
+        Ok(value) if service == 4 => hx_proto::rpc::Message::try_from_value(value).is_ok(),
+        Ok(_) => true,
+        Err(_) => false,
+    }
+}
 
 #[derive(Default)]
 pub(crate) struct Realign {
@@ -53,6 +73,11 @@ impl Realign {
             let end = pos + 8 + len;
             if self.buf.len() < end {
                 break;
+            }
+            if !plausible(service, &self.buf[pos + 8..end]) {
+                pos += 1;
+                self.skipped += 1;
+                continue;
             }
             out.extend_from_slice(&self.buf[pos..end]);
             pos = end;
@@ -145,6 +170,32 @@ mod tests {
         let reply = [0, 0, 0, 0, 1, 0, 0, 0, 4];
         let mut realign = Realign::default();
         assert_eq!(realign.push(&reply), reply.to_vec());
+    }
+
+    #[test]
+    fn a_header_over_a_body_that_is_not_a_message_is_stepped_over() {
+        // Plausible headers with small lengths, over bodies the stream reader
+        // would refuse: not MessagePack at all (0xc1 is never used), and a
+        // map with a string key, which is MessagePack but not an RPC message
+        // ("map key was neither integer nor string" / "unexpected end of
+        // buffer" ended the session on the HX Effects).
+        let not_msgpack = [
+            0x00, 0x00, 0x04, 0x00, 0x03, 0x00, 0x00, 0x00, 0xc1, 0xc1, 0xc1,
+        ];
+        let not_rpc = [
+            0x00, 0x00, 0x04, 0x00, 0x04, 0x00, 0x00, 0x00, 0x81, 0xa1, 0x78, 0x01,
+        ];
+        // `ca 00 00 00 00 05 00 00 00`: a float 0.0, then a key, read as
+        // a service-0 header of length 5 over a truncated body.
+        let float_zero = [
+            0xca, 0x00, 0x00, 0x00, 0x00, 0x05, 0x00, 0x00, 0x00, 0xdc, 0xff,
+        ];
+        for garbage in [&not_msgpack[..], &not_rpc[..], &float_zero[..]] {
+            let mut realign = Realign::default();
+            let pushes = [ticks(1), garbage.to_vec(), ticks(2)];
+            assert_eq!(messages(&mut realign, &pushes), 3, "{garbage:02x?}");
+            assert_eq!(realign.skipped(), garbage.len() as u64, "{garbage:02x?}");
+        }
     }
 
     #[test]

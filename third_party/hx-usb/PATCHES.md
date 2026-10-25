@@ -10,7 +10,7 @@ the Pi bundle is still built from upstream and does **not** have these patches.
 Drop this folder once upstream has an equivalent fix. Upstream pull request:
 https://github.com/crmne/tonepush/pull/25, **merged 2026-10-14 as `76f3bc9`**. Its
 `hx-usb` code is identical to section 1 here. Not in a release yet (latest: `v0.9.1`,
-without it). Section 2 is not upstream at all yet. When a release includes both:
+without it). Sections 2 and 3 are not upstream at all yet. When a release includes all three:
 move the TonePush pin to that tag (AGENTS.md 3, with a note in the commit), delete
 this folder and the `[patch]` section in `server/Cargo.toml`. The bundled `tonepush` CLI gets the fix with the same bump. The patch prepared for
 upstream, against TonePush `main` (53a6a65), and its pull request text are in
@@ -113,3 +113,37 @@ answers handshakes, and can be told not to on the events channel),
 the realigner caught an out-of-order frame every 2-5 s (none in a 30 s `watch`,
 which ACKs once per 700 ms) while 119-145 notifications per 10 s kept arriving.
 2b: the 20 s settle is not verified yet.
+
+## 3. Check a realigned message's body (2026-10-15)
+
+Not upstream. Follows 2a.
+
+**Symptom.** HX Effects 3.80, Pi 4, helix-bridge: turning knobs on the pedal
+ended the session within a minute or so, every time, with "stream message is
+not MessagePack: unexpected end of buffer" or "… map key was neither integer
+nor string". Out-of-order frames came every 2-5 s meanwhile.
+
+**Cause.** Stepping over an out-of-order frame a byte at a time can stop on
+bytes inside a notification that pass 2a's header check. Parameter
+notifications carry floats: `ca 00 00 00 00` (0.0) and the next key read as
+originator 0, service 0, a small length. The realigner passed that slice on,
+the stream reader failed on its body, and every hx-usb error but a refusal
+ends the session.
+
+**Change.** `realign.rs`: a candidate passes only if its body decodes, and on
+service 4 (notifications) only if it decodes as an RPC message; else it is
+stepped over like any other misaligned byte. `MAX_MESSAGE` drops from 64 KB to
+4 KB (the device never has more than 4 KB unacknowledged here, section 1), so
+a false header with a modest length stalls the stream for less. Any real
+notification this rejects would already have ended the session in
+`poll_notifications`, which decodes it the same way.
+
+**Tests.** `realign::tests::a_header_over_a_body_that_is_not_a_message_is_stepped_over`
+(not MessagePack, MessagePack but not RPC, the float-zero case). All hx-usb
+tests and the replay test pass.
+
+**On hardware: verified** 2026-10-15, HX Effects 3.80, Pi 4: knob turns on several
+blocks for about 1.5 minutes, 39 out-of-order frames stepped over (7-56 bytes each,
+under a second apart at times), no session lost. Unpatched, the same use ended the
+session within about a minute, twice. Each slip still costs the notification it cut
+through, so a knob value can lag until its next change.
