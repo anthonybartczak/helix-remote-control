@@ -25,9 +25,12 @@ Phase 6 (write operations) done and verified 2026-10-14 on the HX Effects (firmw
 3.80) via a Raspberry Pi 4 and iPad Safari, behind a shared token (`HELIX_TOKEN`): load
 preset, block on/off, parameter value (shows on the pedal almost at once), save
 (survives reloading the preset) and rename, each first run on a spare slot with the
-user's confirmation. Reordering blocks is left out on purpose: TonePush marks `move`
-untested on hardware (AGENTS.md 6). Phase 7 (move to the Pi 3A+) is deferred: the Pi 4
-is the working target for now.
+user's confirmation. Since then, also verified on the HX Effects 3.80 (Pi 4): add and
+remove blocks (2026-10-15), footswitch assign (2026-10-15), block moves on and between
+paths, split and merge moves, and expression pedal assignments (2026-10-22), and adding
+blocks straight onto Path B (2026-10-25). Moves are the server's own preset writes, not
+`tonepush move` (which TonePush marks untested). Phase 7 (move to the Pi 3A+) is
+deferred: the Pi 4 is the working target for now.
 
 Live sync verified 2026-10-13 on the Pi 4 with the HX Effects 3.80: the `usb` backend
 holds one USB session and pushes pedal changes (footswitches, knobs, preset switches) to
@@ -118,16 +121,18 @@ in the browser):
   on/off) on that pedal; the panel shows it on the setting with its heel → toe range.
   Tap a setting's **EXP** tag: pick None / EXP 1 / EXP 2, then drag the small **Heel**
   and **Toe** sliders (one write when you let go), or tap **Full range**. Needs HX Edit data on the server
-  (`usb`). **Unverified on the HX Effects**: the first assignment on the pedal needs a
-  go-ahead (AGENTS.md 6). Footswitch/MIDI/snapshot controllers show as `CTL n`, read only.
+  (`usb`). Verified on the HX Effects 3.80 (Pi 4, 2026-10-22): assign, take off and the
+  heel/toe range. Footswitch/MIDI/snapshot controllers show as `CTL n`, read only.
 - **Paths:** a preset with blocks on Path B shows two rows: Path B under Path A, with the
   split and the merge where they attach (`usb`; `cli` shows one row). Path B's slots are
   B1–B9. **+ Path B** (while it is empty) adds its first block, which parallels the whole
   line. Tap an empty Path B cell to add there. **Move**, then an empty cell, moves the
   selected block (either path). Tap the split or merge dot, then ‹ Earlier / Later ›, to
   move it. Path B's blocks always stay between the split and merge. Moves and junctions
-  rewrite the whole preset (op21): **unverified on the HX Effects**, so the first one on
-  the pedal needs a backup and a go-ahead (AGENTS.md 6). No recording with a split yet.
+  rewrite the whole preset (op21). Verified on the HX Effects 3.80 (Pi 4): moves on Path
+  A, onto and off Path B, split and merge moves (2026-10-22), and adding onto Path B, the
+  first block spanning the whole line (2026-10-25). The fixtures have no split; the fake
+  makes one with `HELIX_FAKE_SPLIT=1`.
 - **Load a preset:** ‹ › or Presets → pick → Load. Asks first if there are
   unsaved edits.
 - **Block on/off:** select a block, tap Turn on / Turn off.
@@ -153,7 +158,8 @@ in the browser):
   (`server/src/types.rs`), not Line 6's. The block lands in that
   slot, switched on, with HX Edit's default values. Needs HX Edit data on the server
   (`usb` with `/vendor`; `fake` uses it when the machine has HX Edit, else offers the 4
-  recorded models). Path A slots 1–9 only; a taken slot is refused, never replaced.
+  recorded models). Any empty cell of Path A or Path B; a taken slot is refused, never
+  replaced.
   **A new block gets no footswitch** unless you pick one: the HX Effects home screen
   (Stomp mode) draws only footswitch blocks, so without one it is only in Signal Flow
   view (MENU, then the Signal Flow switch). The Footswitch menu next to Add offers
@@ -168,8 +174,9 @@ in the browser):
   switch means another block is on it too; the line beside says which. A block moves
   off its old switch. Edit buffer only (Save keeps it). Needs `usb` or `fake`; hidden
   with `cli`. Assigning from the iPad worked on the HX Effects 3.80 (Pi 4, iPad Safari,
-  2026-10-15, checked by hand on the pedal). The switch numbering has not been
-  cross-checked with `probe-switches` yet (hardware check below).
+  2026-10-15, checked by hand on the pedal). The numbering agrees with the preset's own
+  footswitch table (2026-10-25: opcode 33 and tone key 3/8 list the same block on each
+  of FS1 and FS3–FS6 of 01A).
 - **Rename / Save:** buttons in the preset bar. Save asks first and overwrites the
   loaded preset. "Unsaved" in the bar means edits are only in the edit buffer.
 
@@ -206,10 +213,10 @@ the preset's blocks and controller table, and which positions the bridge would s
 each switch; `helix-bridge probe-switch-table` (read-only) prints every stored preset's
 footswitch table (tone key 3/8) of the loaded setlist.
 
-Footswitch hardware check (HX Effects, before the first assign from the bridge,
-AGENTS.md 6): on the pedal, put a block on a footswitch by hand and note which; stop the
-service, wait 40 s, run `helix-bridge probe-switches`, and check that block's position
-is listed under that FS number. Only then try an assign from the iPad.
+To recheck footswitch numbering (for example on another HX model): on the pedal, put a
+block on a footswitch by hand and note which; stop the service, wait 40 s, run
+`helix-bridge probe-switches`, and check that block's position is listed under that FS
+number.
 
 Web tests (Node 22; Chromium from Playwright, never `playwright install` in the cloud):
 

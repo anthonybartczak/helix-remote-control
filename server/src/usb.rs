@@ -1207,8 +1207,8 @@ impl Worker {
     }
 
     /// `snapshot`: opcode 88, zero-based. Confirmed on an HX Stomp by
-    /// TonePush; on the HX Effects not yet (AGENTS.md 6: first use needs the
-    /// user's go-ahead). A snapshot the preset lacks is refused (-46).
+    /// TonePush and on the HX Effects 3.80 (2026-10-14). A snapshot the
+    /// preset lacks is refused (-46).
     fn snapshot(&mut self, index: u32) -> Result<String> {
         self.with(|s| s.select_snapshot(i64::from(index)))?;
         Ok(format!("snapshot {}\n", index + 1))
@@ -1335,7 +1335,7 @@ impl Worker {
 
     /// Attach the split or the merge before cell `before` of Path A: a
     /// preset document write (op21), as TonePush's GUI drags a junction.
-    /// Unverified on the HX Effects.
+    /// Verified on the HX Effects 3.80 (2026-10-22).
     fn junction(&mut self, which: routing::Junction, before: u32) -> Result<String> {
         self.read_doc()?;
         let preset = &self.doc.as_ref().expect("just read").preset;
@@ -1372,7 +1372,7 @@ impl Worker {
     /// `pedal`, or take it off any controller: opcode 37, hx-usb's
     /// `assign_parameter`, as HX Edit's Controller Assign page. Then the
     /// document is read again: the controller table is in it. Confirmed on
-    /// an HX Stomp by TonePush; unverified on the HX Effects.
+    /// an HX Stomp by TonePush and on the HX Effects 3.80 (2026-10-22).
     fn controller(
         &mut self,
         block: u32,
@@ -1399,7 +1399,8 @@ impl Worker {
     /// Move the heel and/or toe end of a parameter's controller travel:
     /// opcodes 65 and 66 (hx-usb `set_assign_range`), which take a fraction
     /// of the parameter's range; `min` and `max` are native values. The
-    /// parameter must be under a controller. Unverified on the HX Effects.
+    /// parameter must be under a controller. Verified on the HX Effects
+    /// 3.80 (2026-10-22).
     fn controller_range(
         &mut self,
         block: u32,
@@ -1519,8 +1520,8 @@ impl Worker {
     }
 
     /// Empty the slot at chain position `block`. `model`, if given, must be
-    /// what the slot holds. Confirmed on an HX Stomp by TonePush; on the HX
-    /// Effects not yet.
+    /// what the slot holds. Confirmed on an HX Stomp by TonePush and on the
+    /// HX Effects 3.80 (2026-10-15).
     fn remove_block(&mut self, block: u32, model: Option<u32>) -> Result<String> {
         self.read_doc()?;
         let held = self.block_at(block, model)?;
@@ -1558,7 +1559,8 @@ impl Worker {
     /// switch it is on, then opcode 56, the calls TonePush's GUI makes
     /// (hx-usb converts to the wire's zero-based index). Then the switches
     /// are read back, so the chain shows what the pedal did, not what was
-    /// asked. Confirmed on an HX Stomp by TonePush; on the HX Effects not yet.
+    /// asked. Confirmed on an HX Stomp by TonePush and on the HX Effects
+    /// 3.80 (2026-10-15).
     fn footswitch(&mut self, block: u32, switch: Option<u8>, model: Option<u32>) -> Result<String> {
         let count = self.session.as_ref().expect("connected").profile.switches;
         if let Some(n) = switch.filter(|n| !(1..=count).contains(n)) {
@@ -1800,9 +1802,10 @@ fn probe_open() -> std::result::Result<Session, String> {
 /// of the slot array (`Preset::layout`). The first path only: an HX Effects
 /// has one. Positions count from 1, as `chain` prints them.
 ///
-/// Unconfirmed on the HX Effects: no preset with a split has been recorded
-/// yet. TonePush's HX Stomp capture keeps an empty split and join after the
-/// output, with a branch cell per main-row cell.
+/// Confirmed on the HX Effects 3.80 with `probe-slot` (2026-10-22): split
+/// 12, Path B 13-21, join 22, as in TonePush's HX Stomp capture, which keeps
+/// an empty split and join after the output, with a branch cell per
+/// main-row cell.
 fn routing_of(preset: &hx_proto::Preset) -> Option<parse::Routing> {
     let layout = preset.layout();
     let path = layout.paths.first()?;
