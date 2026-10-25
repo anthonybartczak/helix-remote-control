@@ -27,7 +27,10 @@ and block on/off from its snapshot table), and values under the snapshot control
 the tempo and footswitch lights are left out. Verified on the HX Effects 3.80
 (2026-10-22): a freshly loaded preset stays saved; so does one switched to another
 snapshot; a block turned off on top of that, and a Path B block added on the pedal, are
-found after a restart, and Load asks first. Other backends start saved.
+found after a restart, and Load asks first. Key 10 of a footswitch table entry
+(`3/8/switch/entry/10`) is left out too: opcode 56 sets it to 7 on every assign, presets
+made on the pedal hold 0, and no opcode sets it back, so a block moved to another
+footswitch and back reads saved after a restart. Other backends start saved.
 
 ## Writes (phase 6)
 

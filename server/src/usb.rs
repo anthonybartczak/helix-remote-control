@@ -1906,8 +1906,31 @@ fn unsaved_edits(stored: &hx_proto::Preset, edit: &hx_proto::Preset) -> Vec<Stri
 }
 
 /// [`unsaved_edits`] on the tones: `snapshots` and `snapshot_params`
-/// (block, parameter) are the stored copy's.
+/// (block, parameter) are the stored copy's. Key 10 of a footswitch table
+/// entry (3/8/switch/entry/10) is left out: opcode 56 sets it to 7 on every
+/// assign while presets made on the pedal hold 0, and no opcode sets it back
+/// (58 and 62 tried, HX Effects 2026-10-25), so moving a block to another
+/// switch and back read as an edit after a restart.
 fn recalled_diff(
+    stored: &Value,
+    edit: &Value,
+    snapshots: &[hx_proto::preset::Snapshot],
+    snapshot_params: &[(i64, i64)],
+) -> Vec<String> {
+    let assign_mark = |p: &String| {
+        matches!(
+            p.split('/').collect::<Vec<_>>().as_slice(),
+            ["3", "8", _, _, "10"]
+        )
+    };
+    recalled_tone_diff(stored, edit, snapshots, snapshot_params)
+        .into_iter()
+        .filter(|p| !assign_mark(p))
+        .collect()
+}
+
+/// [`recalled_diff`] before the assign marks are left out.
+fn recalled_tone_diff(
     stored: &Value,
     edit: &Value,
     snapshots: &[hx_proto::preset::Snapshot],
@@ -2749,6 +2772,27 @@ mod tests {
         assert_eq!(diff(&tone(1, false, 0.2, 8_716_032), &[]), ["0/22/1/20/10"]);
         // Same snapshot: everything counts, the light included.
         assert_eq!(diff(&tone(0, true, 0.2, 8_716_032), &[]).len(), 3);
+    }
+
+    /// A block moved to another footswitch and back is no edit, though
+    /// opcode 56 left its mark (key 10: 0 stored, 7 after) on the entry.
+    /// Shaped as 01A on the HX Effects (2026-10-25).
+    #[test]
+    fn a_footswitch_round_trip_is_not_an_edit() {
+        let tone = |mark: i64, on: Option<i64>| {
+            let entry = |block: i64| {
+                msgmap! { 10 => Value::Int(mark), 11 => msgmap! { 5 => Value::Str("Noise Gate".into()), 8 => Value::Int(block) } }
+            };
+            let switches = [Some(1), on]
+                .iter()
+                .map(|b| Value::Array(b.map(entry).into_iter().collect()))
+                .collect();
+            msgmap! { 3 => msgmap! { 8 => Value::Array(switches) } }
+        };
+        let diff = |edit: &Value| recalled_diff(&tone(0, None), edit, &[], &[]);
+        assert!(diff(&tone(7, None)).is_empty());
+        // Also on FS2: an edit, the mark aside.
+        assert_eq!(diff(&tone(7, Some(1))), ["3/8/1"]);
     }
 
     /// A moved block goes back on its switches; one the pedal left on the
