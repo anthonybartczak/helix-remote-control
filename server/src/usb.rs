@@ -1275,16 +1275,22 @@ impl Worker {
             self.read_doc()?;
             self.rewrite(claim_line)?;
         } else if let Some(kept) = kept {
-            self.read_doc()?;
-            let now = attach_points(&self.doc.as_ref().expect("just read").preset);
-            if now != Some(kept) {
-                tracing::info!(
-                    ?kept,
-                    ?now,
-                    "the pedal moved Path B's ends; putting them back"
-                );
-                self.rewrite(|p| reattach(p, kept))?;
+            // The move can land after the model shows: look a few times.
+            for attempt in 0..SLOT_READS {
+                if attempt > 0 {
+                    thread::sleep(SLOT_READ_GAP);
+                }
+                self.read_doc()?;
+                let now = attach_points(&self.doc.as_ref().expect("just read").preset);
+                tracing::info!(attempt, ?kept, ?now, "Path B add: split and merge");
+                if now != Some(kept) {
+                    tracing::info!("the pedal moved Path B's ends; putting them back");
+                    self.rewrite(|p| reattach(p, kept))?;
+                    break;
+                }
             }
+        } else if matches!(place, routing::Place::Branch { .. }) {
+            tracing::info!("Path B add: split and merge not attached before the add");
         }
         Ok(format!(
             "block {block} is now {}\n",
