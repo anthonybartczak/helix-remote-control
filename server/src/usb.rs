@@ -1906,8 +1906,31 @@ fn unsaved_edits(stored: &hx_proto::Preset, edit: &hx_proto::Preset) -> Vec<Stri
 }
 
 /// [`unsaved_edits`] on the tones: `snapshots` and `snapshot_params`
-/// (block, parameter) are the stored copy's.
+/// (block, parameter) are the stored copy's. Key 10 of a footswitch table
+/// entry (3/8/switch/entry/10) is left out: opcode 56 sets it to 7 on every
+/// assign while presets made on the pedal hold 0, and no opcode sets it back
+/// (58 and 62 tried, HX Effects 2026-10-25), so moving a block to another
+/// switch and back read as an edit after a restart.
 fn recalled_diff(
+    stored: &Value,
+    edit: &Value,
+    snapshots: &[hx_proto::preset::Snapshot],
+    snapshot_params: &[(i64, i64)],
+) -> Vec<String> {
+    let assign_mark = |p: &String| {
+        matches!(
+            p.split('/').collect::<Vec<_>>().as_slice(),
+            ["3", "8", _, _, "10"]
+        )
+    };
+    recalled_tone_diff(stored, edit, snapshots, snapshot_params)
+        .into_iter()
+        .filter(|p| !assign_mark(p))
+        .collect()
+}
+
+/// [`recalled_diff`] before the assign marks are left out.
+fn recalled_tone_diff(
     stored: &Value,
     edit: &Value,
     snapshots: &[hx_proto::preset::Snapshot],
@@ -2235,7 +2258,57 @@ pub fn probe_unsaved() -> std::result::Result<(), String> {
         println!("differs at {path}:");
         println!("  stored: {:?}", at(&stored.tone, path));
         println!("  edit:   {:?}", at(&edit.tone, path));
+        if let Some((parent, _)) = path.rsplit_once('/') {
+            println!("  in {parent}, stored: {:?}", at(&stored.tone, parent));
+            println!("  in {parent}, edit:   {:?}", at(&edit.tone, parent));
+        }
     }
+    // Tone key 3 is undecoded (footswitch lights live under it); print it
+    // whole when it differs, to see which switch an index is.
+    if paths.iter().any(|p| p.starts_with("3/")) {
+        println!("tone key 3, stored: {:?}", stored.tone.get(3));
+        println!("tone key 3, edit:   {:?}", edit.tone.get(3));
+    }
+    Ok(())
+}
+
+/// `helix-bridge probe-switch-table`: read-only. For every stored preset of
+/// the loaded setlist (opcode 4, which loads nothing), print what its
+/// footswitch table (tone key 3/8, one entry list per switch) holds: per
+/// entry, key 10 and the target's name. Key 10 is undecoded; this shows
+/// which values the pedal keeps there.
+pub fn probe_switch_table() -> std::result::Result<(), String> {
+    let mut session = probe_open()?;
+    let (setlist, _, _) = session.preset_info().map_err(|e| e.to_string())?;
+    let mut counts: std::collections::BTreeMap<String, u32> = Default::default();
+    for index in 0..128 {
+        let Some(preset) = session
+            .read_preset_at(setlist, index)
+            .map_err(|e| e.to_string())?
+        else {
+            continue;
+        };
+        let Some(Value::Array(switches)) = preset.tone.get(3).and_then(|t| t.get(8)) else {
+            println!("{index:>3}: no switch table: {:?}", preset.tone.get(3));
+            continue;
+        };
+        let mut line = Vec::new();
+        for (n, entries) in switches.iter().enumerate() {
+            let Value::Array(entries) = entries else {
+                continue;
+            };
+            for e in entries {
+                let k10 = format!("{:?}", e.get(10));
+                let name = e.get(11).and_then(|t| t.get(5)).cloned();
+                line.push(format!("FS{} {k10} {name:?}", n + 1));
+                *counts.entry(k10).or_default() += 1;
+            }
+        }
+        if !line.is_empty() {
+            println!("{index:>3}: {}", line.join(" | "));
+        }
+    }
+    println!("key 10 values: {counts:?}");
     Ok(())
 }
 
@@ -2699,6 +2772,27 @@ mod tests {
         assert_eq!(diff(&tone(1, false, 0.2, 8_716_032), &[]), ["0/22/1/20/10"]);
         // Same snapshot: everything counts, the light included.
         assert_eq!(diff(&tone(0, true, 0.2, 8_716_032), &[]).len(), 3);
+    }
+
+    /// A block moved to another footswitch and back is no edit, though
+    /// opcode 56 left its mark (key 10: 0 stored, 7 after) on the entry.
+    /// Shaped as 01A on the HX Effects (2026-10-25).
+    #[test]
+    fn a_footswitch_round_trip_is_not_an_edit() {
+        let tone = |mark: i64, on: Option<i64>| {
+            let entry = |block: i64| {
+                msgmap! { 10 => Value::Int(mark), 11 => msgmap! { 5 => Value::Str("Noise Gate".into()), 8 => Value::Int(block) } }
+            };
+            let switches = [Some(1), on]
+                .iter()
+                .map(|b| Value::Array(b.map(entry).into_iter().collect()))
+                .collect();
+            msgmap! { 3 => msgmap! { 8 => Value::Array(switches) } }
+        };
+        let diff = |edit: &Value| recalled_diff(&tone(0, None), edit, &[], &[]);
+        assert!(diff(&tone(7, None)).is_empty());
+        // Also on FS2: an edit, the mark aside.
+        assert_eq!(diff(&tone(7, Some(1))), ["3/8/1"]);
     }
 
     /// A moved block goes back on its switches; one the pedal left on the

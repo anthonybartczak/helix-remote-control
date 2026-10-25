@@ -203,7 +203,8 @@ differs from the stored preset; `helix-bridge probe-add POSITION MODEL` adds a b
 (op78, op40) and prints every reply, notification and the slot before and after;
 `helix-bridge probe-switches` (read-only) prints each footswitch's raw opcode 33 reply,
 the preset's blocks and controller table, and which positions the bridge would show on
-each switch.
+each switch; `helix-bridge probe-switch-table` (read-only) prints every stored preset's
+footswitch table (tone key 3/8) of the loaded setlist.
 
 Footswitch hardware check (HX Effects, before the first assign from the bridge,
 AGENTS.md 6): on the pedal, put a block on a footswitch by hand and note which; stop the
