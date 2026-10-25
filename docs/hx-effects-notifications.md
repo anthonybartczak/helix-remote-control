@@ -90,9 +90,18 @@ faults (details and fix: `third_party/hx-usb/PATCHES.md` section 2).
    after any of those before opening, the drain waits out a previous session's
    notifications, and a deaf session is noticed and reopened.
 
-Under the server's poll loop the out-of-order frame shows up every 2-5 s (one
-tick lost each time); a 30 s `watch` had none. Fewer ACKs per poll might avoid
-it; not tried yet.
+Under the server's poll loop the out-of-order frame showed up every 2-5 s (one
+tick lost each time) on 2026-10-15, with knobs turning; a 30 s `watch` had none.
+Fewer ACKs per poll might avoid it; not tried.
+
+Measured again on 2026-10-25 (Pi 4, main `b175cc8`, poll loop unchanged: 700 ms,
+drain on): the Pi's journal from 2026-10-22 to 2026-10-25 holds **one**
+out-of-order frame, while the user turned the pedal's knobs. The server's
+once-a-minute check against the pedal (`AUDIT_EVERY`) corrects what a slip loses;
+it caught 2 changes without a notification in the last 24 h. So the opt-in gentle
+polling (`HELIX_POLL_MS`, `HELIX_DRAIN`, a re-read within 3 s of a slip; commit
+`a153cdc`, never tested on hardware) was dropped. If slips come back under heavy
+knob use, A/B test fewer ACKs per poll at the pedal first.
 
 Checked and ruled out the same evening: no USB errors in `dmesg`, `vcgencmd
 get_throttled` = `0x0`, USB autosuspend off for the pedal (`power/control=on`),
