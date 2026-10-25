@@ -1,244 +1,169 @@
 # Helix Bridge
 
-Control a Line 6 HX-family device from an iPad over Wi-Fi, via a Raspberry Pi bridge.
+Edit a Line 6 HX Effects from an iPad (or any browser) over Wi-Fi. A Raspberry Pi sits
+between the pedal and your network: it talks to the pedal over USB and serves a
+touch-friendly web UI.
 
 ```
 [Line 6 HX device] --USB--> [Raspberry Pi] --Wi-Fi/HTTP--> [iPad Safari]
 ```
 
-Built on [TonePush](https://github.com/crmne/tonepush) (MIT), pinned to tag `v0.9.0`.
-See [AGENTS.md](AGENTS.md) for architecture, constraints and phases.
+iPadOS cannot talk to the pedal directly (it uses a vendor USB interface), so all USB
+work happens on the Pi. Built on [TonePush](https://github.com/crmne/tonepush), an
+open-source editor for HX devices.
 
-Device: HX Effects, firmware 3.80.
+Not affiliated with or endorsed by Line 6.
 
-Status: Phase 4 (read-only web UI) done. Verified from iPad Safari over Wi-Fi against
-HX Effects firmware 3.80 (build `d972399`), server on Windows 11 with `tonepush` v0.9.0,
-2026-10-12. Phase 3 endpoints verified on the same setup.
+## What it does
 
-Phase 5 (deploy to Pi 4) verified 2026-10-12: bundle `0.1.0-bfaeb24` installed with
-`install.sh` on a Raspberry Pi 4 (64-bit Raspberry Pi OS Lite), HX Effects firmware 3.80
-over USB, UI opened from iPad Safari at `http://helix-bridge.local` with HX Edit model
-names. Whole Pi: 222 MB RAM used with the service running. Next: Phase 6 (write
-operations) after a full preset backup. Install guide: [docs/deploy.md](docs/deploy.md).
+- Shows the loaded preset's signal chain, Path A and Path B, with HX Edit's model
+  names, categories and colours.
+- Loads, renames and saves presets; switches snapshots; sets the tempo (tap or type).
+- Turns blocks on and off and changes their parameters with sliders, menus and switches.
+- Adds, removes and moves blocks, on either path, and moves the split and merge.
+- Puts blocks on footswitches and parameters on the expression pedals.
+- Follows the pedal live: footswitch presses, knob turns and preset changes show on the
+  iPad within about a second.
 
-Phase 6 (write operations) done and verified 2026-10-14 on the HX Effects (firmware
-3.80) via a Raspberry Pi 4 and iPad Safari, behind a shared token (`HELIX_TOKEN`): load
-preset, block on/off, parameter value (shows on the pedal almost at once), save
-(survives reloading the preset) and rename, each first run on a spare slot with the
-user's confirmation. Since then, also verified on the HX Effects 3.80 (Pi 4): add and
-remove blocks (2026-10-15), footswitch assign (2026-10-15), block moves on and between
-paths, split and merge moves, and expression pedal assignments (2026-10-22), and adding
-blocks straight onto Path B (2026-10-25). Moves are the server's own preset writes, not
-`tonepush move` (which TonePush marks untested). Phase 7 (move to the Pi 3A+) is
-deferred: the Pi 4 is the working target for now.
+## What you need
 
-Live sync verified 2026-10-13 on the Pi 4 with the HX Effects 3.80: the `usb` backend
-holds one USB session and pushes pedal changes (footswitches, knobs, preset switches) to
-the iPad over a WebSocket. It needed a fix to TonePush's `hx-usb`, which stalled the
-pedal's notifications after 195 (A/B tested: upstream 195, patched 1095 in 3 min). The
-patched copy lives in `third_party/hx-usb` ([PATCHES.md](third_party/hx-usb/PATCHES.md)).
-Writes and the updater (`sudo helix-bridge-update`) are verified on the Pi 4 too.
+- **Line 6 HX Effects**, firmware 3.80. This is the only device it has been tested on;
+  other HX-family devices may work but are untested.
+- **Raspberry Pi 4** with 64-bit Raspberry Pi OS Lite, on the same network as the iPad.
+- **HX Edit** installed on a computer, once: the Pi needs a copy of its data folder for
+  model and parameter names. Those files are Line 6's; they are never part of this repo.
+- An iPad with Safari, or any recent browser on the same network.
 
-## Running tonepush on Windows (dev machine)
+## Install
 
-Uses the official TonePush v0.9.0 release binary (building from source needs the
-Windows SDK). Quit HX Edit first.
+Full guide, about 45 minutes: [docs/deploy.md](docs/deploy.md). In short:
 
-1. Download `tonepush-v0.9.0-x86_64-pc-windows-msvc.zip` from
-   https://github.com/crmne/tonepush/releases/tag/v0.9.0 and check its SHA-256 against
-   the release's `checksums.txt`.
-2. Unzip next to this repo, e.g. `..\tonepush-bin\`.
-3. For model and parameter names, point TonePush at HX Edit's data (it does not find the
-   default Windows install on its own):
-   `$env:HX_EDIT_RESOURCES = 'C:\Program Files (x86)\Line6\HX Edit\res'`
-4. Run read-only commands, e.g. `tonepush.exe list`, `info`, `presets`, `chain`.
-5. Leave about 3 seconds between commands, or the next one may fail to claim the device.
+1. Flash 64-bit Raspberry Pi OS Lite and boot the Pi.
+2. Copy the Pi bundle (from this repo's GitHub Actions or releases) to the Pi and unpack it.
+3. Run `sudo ./install.sh --hostname helix-bridge`.
+4. Copy HX Edit's data folder to the Pi (guide step 6) and plug in the pedal.
+5. Open `http://helix-bridge.local` on the iPad. To make changes, set a write token
+   (guide step 9).
 
-Recorded output lives in `server/fixtures/` (see its README).
+Updates: `sudo helix-bridge-update` on the Pi (needs a read-only GitHub token, see
+docs/deploy.md "Updating").
 
-Local vs cloud split: see AGENTS.md section 10.
+Close HX Edit while the bridge runs: only one program can hold the pedal's USB
+connection. To use HX Edit or `tonepush` by hand, stop the service first
+(`sudo systemctl stop helix-bridge`).
 
-## Running the server (`server/`)
+## Using the web UI
 
-HTTP API over the device. Endpoints: [docs/api.md](docs/api.md). Writes need
-`HELIX_TOKEN`; without it the server is read-only.
+Changes go to the pedal's edit buffer, as on the pedal itself; **Save** stores them in
+the preset. "Unsaved" in the preset bar means there are edits not saved yet. Changing
+anything needs the write token: the UI asks for it on the first change and remembers it
+in the browser. Without it, the UI is read-only and its write controls are dashed.
 
-1. Against recorded fixtures (no device needed):
-   `cd server && cargo run` then open http://localhost:8080/api/chain.
-   With writes: `HELIX_TOKEN=dev cargo run`. The fake keeps writes in memory until
-   restart; it has one recorded chain, so every preset shows it.
-2. Against the real device (quit HX Edit first, `tonepush` on `PATH`):
-   - Linux/macOS: `HELIX_BACKEND=cli cargo run`
-   - Windows PowerShell, from the repo root:
-     `$env:HELIX_BACKEND='cli'; $env:HELIX_TONEPUSH=(Resolve-Path ..\tonepush-bin\tonepush.exe).Path; cd server; cargo run`
-   - Building on Windows needs the MSVC linker: install Visual Studio Build Tools with the
-     "Desktop development with C++" workload
-     (`winget install Microsoft.VisualStudio.2022.BuildTools --override "--add Microsoft.VisualStudio.Workload.VCTools --includeRecommended --passive"`).
-     The `windows-gnu` toolchain fails without a separate `dlltool.exe`.
-3. Checks before pushing: `cargo fmt`, `cargo clippy --all-targets -- -D warnings`,
-   `cargo test`, `cargo test -p hx-usb`, `shellcheck deploy/*.sh`, and the web tests below.
+- **Load a preset:** ‹ › or Presets → pick → Load. Asks first if there are unsaved edits.
+  On wide screens (1280 px and up) the button at the top left shows or hides the preset
+  list.
+- **Rename / Save:** buttons in the preset bar. Save asks first and overwrites the
+  loaded preset.
+- **Snapshot:** tap 1–4 in the preset bar. The active one is lit.
+- **Tempo:** tap TAP on the beat; the BPM is sent once you pause for 1.5 s (amber until
+  the pedal has it). Tap the BPM to type a value (40–240).
+- **Block on/off:** select a block, tap Turn on / Turn off.
+- **Parameter:** drag its slider (the value shows under your finger), pick a menu
+  entry, or flip a switch. Tap the value to type an exact one in the shown units (`40`,
+  `2.2 kHz`). Sliders snap to a grid (0.01 on 0..1 knobs, 1 dB on levels); type for
+  finer values.
+- **Add a block:** tap an empty slot on Path A or Path B. Pick a category, then a model;
+  a type chip narrows the list, the filter searches names, types and the gear a model is
+  based on. Mono or Stereo is picked in the footer; legacy models hide behind the Legacy
+  toggle; Recent lists the last 8 models added. The block lands switched on, with HX
+  Edit's default values. A taken slot is never replaced.
+- **Footswitch for a new block:** the menu next to Add offers No footswitch (default),
+  First free (as the pedal does) or FS1–FS6. Without a footswitch, a block does not show
+  on the HX Effects home screen, only in Signal Flow view (MENU, then the Signal Flow
+  switch).
+- **Remove a block:** select it, tap Remove, confirm.
+- **Move a block:** select it, tap **Move**, then an empty cell on either path.
+- **Path B:** a preset with blocks on Path B shows two rows, with the split and merge
+  where they attach. **+ Path B** (while it is empty) adds its first block, which then
+  runs parallel to the whole line. Tap the split or merge dot, then ‹ Earlier / Later ›,
+  to move it. Path B's blocks always stay between the split and merge.
+- **Footswitch:** select a block; the Footswitch row under its name shows its switch
+  (also `· FS3` above it in the chain) and puts it on None or FS1–FS6. A dot on a switch
+  means another block is on it too.
+- **Expression pedals:** a block tagged `EXP1`/`EXP2` has a setting on that pedal. Tap a
+  setting's **EXP** tag, pick None / EXP 1 / EXP 2, then drag the **Heel** and **Toe**
+  sliders or tap **Full range**. Footswitch, MIDI and snapshot controllers show as
+  `CTL n`, read only.
+
+## Settings
+
+Set in `/etc/helix-bridge/helix-bridge.env` on the Pi, then
+`sudo systemctl restart helix-bridge`.
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `HELIX_BACKEND` | `fake` | `usb` = real device, one held USB session, live updates (recommended, the Pi default); `cli` = real device via the `tonepush` binary, one session per call; `fake` = replay `server/fixtures/` |
-| `HELIX_BIND` | `0.0.0.0:8080` | Listen address. LAN only (AGENTS.md 5.7) |
-| `HELIX_TONEPUSH` | `tonepush` | `cli` only: path to the `tonepush` binary |
-| `HELIX_TONEPUSH_TIMEOUT_SECS` | `30` | Kill a `tonepush` call that runs longer |
-| `HELIX_FIXTURES` | bundled `server/fixtures` | Fixture directory for `fake` |
-| `HELIX_SESSION_COOLDOWN_MS` | `3000` | `cli` only: gap between two `tonepush` sessions. 3 s was needed on Windows; try `500` on the Pi |
-| `HELIX_FAKE_DELAY_MS` | `0` | `fake` only: wait before each reply, e.g. `1500` to see loading states |
-| `HELIX_FAKE_SPLIT` | unset | `fake` only: `1` starts the loaded preset with two blocks on Path B (synthetic), to see the two-row chain |
-| `HELIX_TOKEN` | unset | Shared token for writes. Unset or empty = read-only. Keep it in `.env` or the Pi's settings file, never in git |
-| `RUST_LOG` | `info` | Log filter |
+| `HELIX_TOKEN` | unset | Shared token for changes. Unset or empty = read-only. Never commit it |
+| `HELIX_BACKEND` | `fake` (Pi: `usb`) | `usb` = the pedal, one held USB connection, live updates (recommended); `cli` = the pedal via the `tonepush` program, one connection per call, no live updates; `fake` = recorded demo data |
+| `HELIX_BIND` | `0.0.0.0:8080` (Pi: port 80) | Listen address. Keep it on your local network: there is no other protection than the token |
+| `HX_EDIT_RESOURCES` | unset | HX Edit's data folder, for model and parameter names |
+| `HELIX_TONEPUSH` | `tonepush` | `cli` only: path to the `tonepush` program |
+| `HELIX_TONEPUSH_TIMEOUT_SECS` | `30` | `cli` only: stop a `tonepush` call that runs longer |
+| `RUST_LOG` | `info` | Log detail |
 
-`HX_EDIT_RESOURCES` points at HX Edit's data for model names. `usb` reads it in the
-server process; `cli` passes it on to `tonepush`.
+## Known limits
 
-The `usb` backend holds the pedal's USB interface while the server runs, as HX Edit
-does: stop the service before using HX Edit or `tonepush` by hand.
+- **Live updates need the `usb` backend.** With `cli`, the UI reads the pedal when it
+  opens, when the iPad returns to the page, and on "Refresh from device" (tap the
+  connection dots). The active snapshot is not shown with `cli` either.
+- **The bridge connects 20 s after it starts**, after the pedal is plugged in or powered
+  up, and after a connection ends; the UI shows "waiting N s". Connecting sooner can
+  leave the HX Effects without live updates for the whole session.
+- **Names, colours and sliders need HX Edit's data** on the Pi. Without it, block
+  colours are guessed from the model name, unknown models show grey `FX`, and parameter
+  values are typed instead of dragged.
+- **"Based on …" under a model** needs `vendor/based-on.json`, built from HX Edit's
+  Pilot's Guide (docs/deploy.md step 6).
+- **A lost live update** (rare, when knobs turn fast) is corrected by a check against
+  the pedal about once a minute.
+- **Not available:** changing an existing block's model, snapshot rename, impulse
+  responses, device settings, restoring backups.
 
-## Web UI (`web/`)
+## Troubleshooting
 
-Plain HTML, CSS and JS, no build step. The server compiles the files into its binary, so
-rebuild (`cargo run`) after editing them. Design: `docs/design/stage-and-studio-layouts`
-(direction 2A "Rig"); the bank tiles from that design are gone, the Presets sheet loads presets.
-On desktop widths (1280 px and up) the button at the top left shows or hides the preset
-list (remembered in the browser); hidden, the Presets button opens the sheet.
-
-Animation: [Motion](https://motion.dev) 13.4.6 (MIT), vendored as one file in `web/lib/`
-with its license. To bump it, replace the file and change the version in its name in
-`web/index.html` and `server/src/api.rs` (the browser caches it by name). Without it, or
-with Reduce Motion on, the UI works the same, only without animation.
-
-1. Start the server (see above), e.g. `cd server && cargo run`.
-2. Open http://localhost:8080 on the same machine, or `http://<machine-ip>:8080` on the iPad.
-3. To see loading skeletons on the fake backend: `HELIX_FAKE_DELAY_MS=1500 cargo run`.
-
-Writes (server needs `HELIX_TOKEN`; the UI asks for it on the first write and keeps it
-in the browser):
-
-- **Expression pedals:** a pedal tagged `EXP1`/`EXP2` above it has a setting (or its
-  on/off) on that pedal; the panel shows it on the setting with its heel → toe range.
-  Tap a setting's **EXP** tag: pick None / EXP 1 / EXP 2, then drag the small **Heel**
-  and **Toe** sliders (one write when you let go), or tap **Full range**. Needs HX Edit data on the server
-  (`usb`). Verified on the HX Effects 3.80 (Pi 4, 2026-10-22): assign, take off and the
-  heel/toe range. Footswitch/MIDI/snapshot controllers show as `CTL n`, read only.
-- **Paths:** a preset with blocks on Path B shows two rows: Path B under Path A, with the
-  split and the merge where they attach (`usb`; `cli` shows one row). Path B's slots are
-  B1–B9. **+ Path B** (while it is empty) adds its first block, which parallels the whole
-  line. Tap an empty Path B cell to add there. **Move**, then an empty cell, moves the
-  selected block (either path). Tap the split or merge dot, then ‹ Earlier / Later ›, to
-  move it. Path B's blocks always stay between the split and merge. Moves and junctions
-  rewrite the whole preset (op21). Verified on the HX Effects 3.80 (Pi 4): moves on Path
-  A, onto and off Path B, split and merge moves (2026-10-22), and adding onto Path B, the
-  first block spanning the whole line (2026-10-25). The fixtures have no split; the fake
-  makes one with `HELIX_FAKE_SPLIT=1`.
-- **Load a preset:** ‹ › or Presets → pick → Load. Asks first if there are
-  unsaved edits.
-- **Block on/off:** select a block, tap Turn on / Turn off.
-- **Parameter:** drag its slider left or right (the value shows under your finger), pick
-  a menu entry, or flip a switch. Writes go out at most every 100 ms, one at a time.
-  Tap the value to type an exact one in the shown units (`40`, `2.2 kHz`). Sliders need
-  HX Edit data on the server (`usb` with `/vendor`); without it every value is typed.
-  The `fake` backend uses synthetic ranges. Verified 2026-10-14 on the HX Effects 3.80
-  (Pi 4, iPad Safari, build `a04993e`): slider drags, menu, switch, 10 s fast drag with
-  footswitch changes still reaching the iPad live.
-- **Snapshot:** tap 1–4 in the preset bar. The active one is lit (with `usb`; `cli`
-  cannot tell). The chain updates from the pedal.
-- **Tempo:** tap TAP on the beat; the BPM shows as you tap (amber until the pedal has
-  it) and is sent once you pause for 1.5 s. Tap the BPM to type a value (40–240).
-  Snapshot switch, tap and typed tempo verified 2026-10-14 on the HX Effects 3.80 (Pi 4).
-- **Add a block:** tap an empty slot (or select one and tap Add block). Pick a category;
-  each model shows once, sorted by effect type (Distortion: Boost, Overdrive, Distortion,
-  Fuzz, Bass, Lo-fi); a type chip shows only that type. Mono or Stereo is picked in the
-  footer, for models that have both. Legacy models hide behind the Legacy toggle; Recent
-  lists the last 8 models added. Version, Legacy toggle and Recent are remembered in the
-  browser. The filter searches names, types and the gear they are based on, Legacy
-  included. Tap Add, or tap the model a second time. The types are ours
-  (`server/src/types.rs`), not Line 6's. The block lands in that
-  slot, switched on, with HX Edit's default values. Needs HX Edit data on the server
-  (`usb` with `/vendor`; `fake` uses it when the machine has HX Edit, else offers the 4
-  recorded models). Any empty cell of Path A or Path B; a taken slot is refused, never
-  replaced.
-  **A new block gets no footswitch** unless you pick one: the HX Effects home screen
-  (Stomp mode) draws only footswitch blocks, so without one it is only in Signal Flow
-  view (MENU, then the Signal Flow switch). The Footswitch menu next to Add offers
-  No footswitch, First free (as the pedal does for a front-panel add) or FS1–FS6;
-  the choice is remembered in the browser and defaults to No footswitch.
-- **Remove a block:** select it, tap Remove, confirm. The slot stays selected, ready for
-  another block. Add and remove change the edit buffer only (Save keeps them). Both
-  verified 2026-10-15 on the HX Effects 3.80 (Pi 4, iPad Safari, build `d211589`), checked
-  in the pedal's Signal Flow view.
-- **Footswitch:** select a block; the Footswitch row under its name shows the switch it
-  is on (also `· FS3` above it in the chain) and puts it on None or FS1–FS6. A dot on a
-  switch means another block is on it too; the line beside says which. A block moves
-  off its old switch. Edit buffer only (Save keeps it). Needs `usb` or `fake`; hidden
-  with `cli`. Assigning from the iPad worked on the HX Effects 3.80 (Pi 4, iPad Safari,
-  2026-10-15, checked by hand on the pedal). The numbering agrees with the preset's own
-  footswitch table (2026-10-25: opcode 33 and tone key 3/8 list the same block on each
-  of FS1 and FS3–FS6 of 01A).
-- **Rename / Save:** buttons in the preset bar. Save asks first and overwrites the
-  loaded preset. "Unsaved" in the bar means edits are only in the edit buffer.
-
-Without a token, write controls are dashed and inert. Known limits:
-
-- **Live updates need `HELIX_BACKEND=usb`.** Then the server pushes each change over
-  `/api/live` within about 1 s. With `cli`, the UI reads the device on open, when the iPad
-  returns to the page, and on "Refresh from device" (tap the connection dots).
-- **The `usb` backend connects 20 s after start**, after the pedal is plugged in or
-  powered up, and after a session ends. Sooner, the HX Effects may leave live updates
-  off for the whole session (`third_party/hx-usb/PATCHES.md` 2b). The UI shows
-  "waiting N s" meanwhile.
-- **Block colours and labels are HX Edit's** (Dist, Dyn, Mod, Verb, Snd/Rtn) when the server
-  has the HX Edit catalog (`usb` with `/vendor`). Without it they are guessed from the model
-  name (`CATEGORY_RULES` in `app.js`); unknown models show grey `FX`.
-- **"Based on …" under a model** needs `vendor/based-on.json`, built from HX Edit's Pilot's
-  Guide by `tools/based-on` (docs/deploy.md step 6). Never committed: it is Line 6's table.
-- **Active snapshot needs `usb`.** `tonepush chain` does not report it, so `cli` lights none.
-- **Sliders snap to a grid** (0.01 on 0..1 knobs, 1 dB on levels). Type for finer values.
-  Without HX Edit data (`cli`, or no `/vendor`), parameters are typed and only `%`
-  values get a bar.
-- **Unsaved flag:** with `usb`, pedal edits count too, and edits survive a restart (the
-  edit buffer is compared with the stored preset when the session opens); with `cli`,
-  only bridge edits.
+- The UI says "no device": check the USB cable and that the pedal is on; the bridge
+  reconnects by itself about 20 s after the pedal appears.
+- Service log: `journalctl -u helix-bridge -f`. More in
+  [docs/deploy.md](docs/deploy.md) "Troubleshooting".
 
 Diagnostics, run on the Pi with the service stopped (`sudo systemctl stop helix-bridge`,
-then wait 40 s): `helix-bridge watch [SECONDS]` prints the pedal's notifications;
-`helix-bridge probe-slot POSITION` prints the preset's slot row and one raw slot
-(read-only); `helix-bridge probe-unsaved` (read-only) prints where the edit buffer
-differs from the stored preset; `helix-bridge probe-add POSITION MODEL` adds a block the way the bridge does
-(op78, op40) and prints every reply, notification and the slot before and after;
-`helix-bridge probe-switches` (read-only) prints each footswitch's raw opcode 33 reply,
-the preset's blocks and controller table, and which positions the bridge would show on
-each switch; `helix-bridge probe-switch-table` (read-only) prints every stored preset's
-footswitch table (tone key 3/8) of the loaded setlist.
+then wait 40 s); all but `probe-add` only read:
 
-To recheck footswitch numbering (for example on another HX model): on the pedal, put a
-block on a footswitch by hand and note which; stop the service, wait 40 s, run
-`helix-bridge probe-switches`, and check that block's position is listed under that FS
-number.
+| Command | Prints |
+|---|---|
+| `helix-bridge watch [SECONDS]` | The pedal's notifications as you use it |
+| `helix-bridge probe-unsaved` | Where the edit buffer differs from the stored preset |
+| `helix-bridge probe-slot POSITION` | The preset's slot row and one raw slot |
+| `helix-bridge probe-switches` | Each footswitch's raw reply and which blocks the bridge shows on it |
+| `helix-bridge probe-switch-table` | Every stored preset's footswitch table in the loaded setlist |
+| `helix-bridge probe-add POSITION MODEL` | Adds a block as the bridge does (changes the edit buffer) and every reply |
 
-Web tests (Node 22; Chromium from Playwright, never `playwright install` in the cloud):
+To check footswitch numbering on another HX model: put a block on a footswitch on the
+pedal by hand, run `helix-bridge probe-switches`, and check the block is listed under
+that switch.
 
-1. Rate limiter unit tests: `node --test web/tests/latest.test.mjs`
-2. Drag check against the fake backend: `cargo build --manifest-path server/Cargo.toml`,
-   then `NODE_PATH=$(npm root -g) node web/tests/drag.mjs` (needs `playwright` installed
-   globally; about 15 s).
+## Documentation
 
-## Deploying to the Pi (`deploy/`)
+- [docs/deploy.md](docs/deploy.md): install, update, troubleshoot and uninstall on the Pi.
+- [docs/api.md](docs/api.md): the HTTP API behind the UI.
+- [docs/development.md](docs/development.md): running the server locally, tests, builds,
+  and what has been verified on hardware.
+- [docs/hx-effects-notifications.md](docs/hx-effects-notifications.md) and
+  [docs/hx-effects-models.md](docs/hx-effects-models.md): notes on the HX Effects.
 
-GitHub Actions (`.github/workflows/release.yml`) checks the server and, in parallel, cross-compiles
-`helix-bridge` and TonePush's `tonepush` for `aarch64-unknown-linux-gnu` (glibc 2.31,
-`cargo-zigbuild`). Every push uploads a `pi-bundle` workflow artifact; pushing a `v*` tag
-also creates a GitHub release with the tarball.
+## Credits
 
-Install steps, paths and troubleshooting: [docs/deploy.md](docs/deploy.md). In short:
-copy the tarball to the Pi, unpack, `sudo ./install.sh --hostname helix-bridge`, open
-`http://helix-bridge.local`. Later updates: `sudo helix-bridge-update` on the Pi
-(`deploy/update.sh`; needs a read-only GitHub token, see docs/deploy.md "Updating").
-
-Build the bundle locally (Linux or WSL, needs `zig` and `cargo-zigbuild`):
-
-1. `cd server && cargo zigbuild --release --target aarch64-unknown-linux-gnu.2.31`
-2. Same in a TonePush `v0.9.0` checkout: `cargo zigbuild --release -p tonepush-cli --target aarch64-unknown-linux-gnu.2.31`
-3. `deploy/package.sh <version> server/target/aarch64-unknown-linux-gnu/release/helix-bridge <tonepush>/target/aarch64-unknown-linux-gnu/release/tonepush <tonepush> dist`
+- [TonePush](https://github.com/crmne/tonepush) by Carmine Paolino (MIT), pinned to tag
+  `v0.9.0`. A patched copy of its `hx-usb` crate is in `third_party/hx-usb`
+  ([PATCHES.md](third_party/hx-usb/PATCHES.md)), with its license.
+- [Motion](https://motion.dev) 13.4.6 (MIT), vendored in `web/lib/` with its license.
+- HX Edit's data files and model names belong to Line 6 and are not included.

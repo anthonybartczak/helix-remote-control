@@ -6,7 +6,8 @@ use helix_bridge::device::{CliDevice, Device, FakeDevice};
 use helix_bridge::usb::UsbDevice;
 use tracing_subscriber::EnvFilter;
 
-/// Configuration from the environment. See README for the variables.
+/// Configuration from the environment. See README and docs/development.md
+/// for the variables.
 struct Config {
     backend: String,
     bind: SocketAddr,
