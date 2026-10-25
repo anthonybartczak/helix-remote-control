@@ -1485,7 +1485,7 @@ impl Worker {
             thread::sleep(SLOT_READ_GAP);
             self.read_doc()?;
             let now = self.doc.as_ref().and_then(|d| attach_points(&d.preset));
-            tracing::info!(attempt, ?want, ?now, "Path B claim: split and merge");
+            tracing::debug!(attempt, ?want, ?now, "Path B claim: split and merge");
             if now != want {
                 tracing::info!("the pedal moved Path B's ends after the claim; claiming again");
                 self.rewrite(claim_line)?;
