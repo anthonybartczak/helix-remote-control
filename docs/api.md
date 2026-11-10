@@ -283,6 +283,8 @@ Rate limits for native writes:
 ## Model list: `GET /api/catalog`
 
 The models a block can be added with, from HX Edit's catalog. No device call; fetch once.
+The server builds the answer at the first request and keeps it: the catalog and
+`based-on.json` are read at start-up, so new files in `/vendor` need a restart.
 
 ```json
 {
@@ -374,7 +376,11 @@ re-reads).
 ## Web UI
 
 `GET /`, `/app.css`, `/app.js`, `/latest.js` serve the UI from `/web`. The files are compiled into
-the binary (`include_str!`), so edit them and rebuild; sent with `Cache-Control: no-cache`.
+the binary (`include_str!`), so edit them and rebuild; sent with `Cache-Control: no-cache` and an
+`ETag` (a hash of the file). The browser keeps them and asks before each use
+(`If-None-Match`); while the file is the same the answer is `304 Not Modified` with no body, so
+only the first page load after an update downloads the UI. `/lib/motion-13.4.6.js` has its
+version in the path and is kept for a year without asking.
 
 Live state over a WebSocket (`/api/live`, below) needs the `usb` backend, which holds
 one device session; the `cli` backend opens a new one per command.

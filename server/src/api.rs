@@ -1,8 +1,10 @@
 //! HTTP API (see `docs/api.md`) and the web UI from `/web`.
 
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock, OnceLock};
 
+use axum::body::Bytes;
 use axum::extract::ws::{Message, Utf8Bytes, WebSocket, WebSocketUpgrade};
 use axum::extract::{FromRequestParts, Path, Query, Request, State};
 use axum::http::request::Parts;
@@ -35,6 +37,10 @@ pub struct AppState<D> {
     live: broadcast::Sender<Utf8Bytes>,
     /// The real gear behind each model, for `based_on` in `/api/chain`.
     based_on: BasedOn,
+    /// `/api/catalog`'s answer as JSON, built at the first request and kept:
+    /// the model list and `based_on` are both read once, at start-up. `None`
+    /// inside when the backend has no model list.
+    catalog: OnceLock<Option<Bytes>>,
     /// Host names to answer beyond the local ones (`crate::origin`).
     hosts: Vec<String>,
     /// This machine's own names, read when a host name is not otherwise
@@ -52,6 +58,7 @@ impl<D: Device> AppState<D> {
             unsaved: AtomicBool::new(false),
             live: broadcast::channel(16).0,
             based_on: BasedOn::new(),
+            catalog: OnceLock::new(),
             hosts: Vec::new(),
             own: origin::Own::read,
             hotspot: None,
@@ -230,53 +237,109 @@ fn html_escape(text: &str) -> String {
 }
 
 // The UI is compiled into the binary so the Pi gets one file to deploy.
-// `no-cache` makes Safari revalidate after an update instead of running stale JS.
-const NO_CACHE: (header::HeaderName, &str) = (header::CACHE_CONTROL, "no-cache");
 
-async fn index() -> impl IntoResponse {
-    (
-        [(header::CONTENT_TYPE, "text/html; charset=utf-8"), NO_CACHE],
-        include_str!("../../web/index.html"),
-    )
+/// Safari may keep the file but asks before each use, so it never runs
+/// stale JS after an update.
+const REVALIDATE: &str = "no-cache";
+/// Safari may keep the file without asking.
+const FOREVER: &str = "public, max-age=31536000, immutable";
+const NO_CACHE: (header::HeaderName, &str) = (header::CACHE_CONTROL, REVALIDATE);
+
+const HTML: &str = "text/html; charset=utf-8";
+const CSS: &str = "text/css; charset=utf-8";
+const JS: &str = "text/javascript; charset=utf-8";
+
+/// One file of the UI and its `ETag`.
+///
+/// When Safari asks whether its copy is still good (`If-None-Match`), the
+/// `ETag` lets the answer be `304 Not Modified` with no body. Without one
+/// every page load sent all of the UI again, about 180 KB.
+struct Asset {
+    content_type: &'static str,
+    body: &'static str,
+    /// A hash of `body`, in quotes.
+    etag: String,
 }
 
-async fn app_css() -> impl IntoResponse {
-    (
-        [(header::CONTENT_TYPE, "text/css; charset=utf-8"), NO_CACHE],
-        include_str!("../../web/app.css"),
-    )
+impl Asset {
+    fn new(content_type: &'static str, body: &'static str) -> Self {
+        // The same for as long as this binary runs, which is all a validator
+        // needs. Another build may hash the same file differently, and that
+        // costs one download.
+        let mut hasher = DefaultHasher::new();
+        body.hash(&mut hasher);
+        Asset {
+            content_type,
+            body,
+            etag: format!("\"{:016x}\"", hasher.finish()),
+        }
+    }
+
+    /// The file, or `304 Not Modified` when `If-None-Match` names its `ETag`.
+    fn respond(&self, request: &HeaderMap, cache: &'static str) -> Response {
+        let head = [
+            (header::CONTENT_TYPE, self.content_type),
+            (header::CACHE_CONTROL, cache),
+            (header::ETAG, self.etag.as_str()),
+        ];
+        let kept = request
+            .get(header::IF_NONE_MATCH)
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|sent| names_etag(sent, &self.etag));
+        if kept {
+            (StatusCode::NOT_MODIFIED, head).into_response()
+        } else {
+            (head, self.body).into_response()
+        }
+    }
 }
 
-async fn app_js() -> impl IntoResponse {
-    (
-        [
-            (header::CONTENT_TYPE, "text/javascript; charset=utf-8"),
-            NO_CACHE,
-        ],
-        include_str!("../../web/app.js"),
-    )
+/// Whether an `If-None-Match` header names `etag`: one of its entries is
+/// `etag` (with or without a `W/` in front) or `*`.
+fn names_etag(sent: &str, etag: &str) -> bool {
+    sent.split(',').any(|tag| {
+        let tag = tag.trim();
+        tag == "*" || tag.strip_prefix("W/").unwrap_or(tag) == etag
+    })
 }
 
-async fn latest_js() -> impl IntoResponse {
-    (
-        [
-            (header::CONTENT_TYPE, "text/javascript; charset=utf-8"),
-            NO_CACHE,
-        ],
-        include_str!("../../web/latest.js"),
-    )
+/// The UI's files, each hashed once, at its first request.
+struct Ui {
+    index: Asset,
+    css: Asset,
+    app: Asset,
+    latest: Asset,
+    motion: Asset,
+}
+
+static UI: LazyLock<Ui> = LazyLock::new(|| Ui {
+    index: Asset::new(HTML, include_str!("../../web/index.html")),
+    css: Asset::new(CSS, include_str!("../../web/app.css")),
+    app: Asset::new(JS, include_str!("../../web/app.js")),
+    latest: Asset::new(JS, include_str!("../../web/latest.js")),
+    motion: Asset::new(JS, include_str!("../../web/lib/motion-13.4.6.js")),
+});
+
+async fn index(headers: HeaderMap) -> Response {
+    UI.index.respond(&headers, REVALIDATE)
+}
+
+async fn app_css(headers: HeaderMap) -> Response {
+    UI.css.respond(&headers, REVALIDATE)
+}
+
+async fn app_js(headers: HeaderMap) -> Response {
+    UI.app.respond(&headers, REVALIDATE)
+}
+
+async fn latest_js(headers: HeaderMap) -> Response {
+    UI.latest.respond(&headers, REVALIDATE)
 }
 
 /// Motion (motion.dev, MIT, web/lib/motion-LICENSE.md). The version is in the
 /// path, so Safari may keep it; bump the name with the file.
-async fn motion_js() -> impl IntoResponse {
-    (
-        [
-            (header::CONTENT_TYPE, "text/javascript; charset=utf-8"),
-            (header::CACHE_CONTROL, "public, max-age=31536000, immutable"),
-        ],
-        include_str!("../../web/lib/motion-13.4.6.js"),
-    )
+async fn motion_js(headers: HeaderMap) -> Response {
+    UI.motion.respond(&headers, FOREVER)
 }
 
 enum ApiError {
@@ -506,17 +569,24 @@ struct Catalog {
 }
 
 /// `GET /api/catalog`: the models a block can be added with, by category,
-/// with the gear each is based on. Catalog only, no device call.
-async fn catalog<D: Device>(State(app): Shared<D>) -> ApiResult<Catalog> {
-    let mut categories = app.device.catalog().ok_or(ApiError::NoModelList)?;
-    for model in categories
-        .iter_mut()
-        .flat_map(|c| &mut c.shelves)
-        .flat_map(|s| &mut s.models)
-    {
-        model.based_on = app.based_on.get(&model.name).cloned();
-    }
-    Ok(Json(Catalog { categories }))
+/// with the gear each is based on. Catalog only, no device call. The list is
+/// put together and turned into JSON once; later requests get those bytes.
+async fn catalog<D: Device>(State(app): Shared<D>) -> Result<Response, ApiError> {
+    let json = app.catalog.get_or_init(|| {
+        let mut categories = app.device.catalog()?;
+        for model in categories
+            .iter_mut()
+            .flat_map(|c| &mut c.shelves)
+            .flat_map(|s| &mut s.models)
+        {
+            model.based_on = app.based_on.get(&model.name).cloned();
+        }
+        serde_json::to_vec(&Catalog { categories })
+            .ok()
+            .map(Bytes::from)
+    });
+    let json = json.clone().ok_or(ApiError::NoModelList)?;
+    Ok(([(header::CONTENT_TYPE, "application/json")], json).into_response())
 }
 
 // ---------- Writes ----------
@@ -1112,6 +1182,7 @@ mod tests {
     use axum::http::Request;
     use http_body_util::BodyExt;
     use serde_json::Value;
+    use std::sync::atomic::AtomicUsize;
     use tower::ServiceExt;
 
     const TOKEN: &str = "test-token";
@@ -1206,6 +1277,42 @@ mod tests {
             assert_eq!(res.status(), StatusCode::OK, "{uri}");
             let ct = res.headers()[header::CONTENT_TYPE].to_str().unwrap();
             assert!(ct.starts_with(mime), "{uri}: {ct}");
+        }
+    }
+
+    /// A browser whose copy of a UI file is current gets `304` and no body;
+    /// one with another version gets the file.
+    #[tokio::test]
+    async fn ui_files_revalidate_by_etag() {
+        let app = app();
+        for uri in ["/", "/app.js", "/lib/motion-13.4.6.js"] {
+            let get = |tag: Option<&str>| {
+                let mut req = Request::get(uri);
+                if let Some(tag) = tag {
+                    req = req.header(header::IF_NONE_MATCH, tag);
+                }
+                app.clone().oneshot(req.body(Body::empty()).unwrap())
+            };
+            let first = get(None).await.unwrap();
+            assert_eq!(first.status(), StatusCode::OK, "{uri}");
+            assert!(first.headers().contains_key(header::CACHE_CONTROL));
+            let etag = first.headers()[header::ETAG].to_str().unwrap();
+            assert!(etag.starts_with('"') && etag.ends_with('"'), "{etag}");
+
+            let weak = format!("W/{etag}");
+            let listed = format!("\"other\", {etag}");
+            for sent in [etag, weak.as_str(), listed.as_str()] {
+                let res = get(Some(sent)).await.unwrap();
+                assert_eq!(res.status(), StatusCode::NOT_MODIFIED, "{uri}: {sent}");
+                assert_eq!(res.headers()[header::ETAG].to_str().unwrap(), etag);
+                let body = res.into_body().collect().await.unwrap().to_bytes();
+                assert!(body.is_empty(), "{uri}: {sent}");
+            }
+
+            let res = get(Some("\"other\"")).await.unwrap();
+            assert_eq!(res.status(), StatusCode::OK, "{uri}");
+            let body = res.into_body().collect().await.unwrap().to_bytes();
+            assert!(!body.is_empty(), "{uri}");
         }
     }
 
@@ -1476,6 +1583,47 @@ mod tests {
             .as_str()
             .unwrap()
             .starts_with('#'));
+    }
+
+    /// A fake that counts how often its model list is asked for.
+    struct CountingCatalog {
+        inner: FakeDevice,
+        asked: Arc<AtomicUsize>,
+    }
+
+    impl Device for CountingCatalog {
+        fn kind(&self) -> &'static str {
+            self.inner.kind()
+        }
+
+        async fn run(&self, cmd: Command) -> crate::device::Result<String> {
+            self.inner.run(cmd).await
+        }
+
+        fn catalog(&self) -> Option<Vec<crate::controls::ModelGroup>> {
+            self.asked.fetch_add(1, Ordering::Relaxed);
+            self.inner.catalog()
+        }
+    }
+
+    /// The model list is built once, however often it is asked for.
+    #[tokio::test]
+    async fn catalog_is_built_once() {
+        let asked = Arc::new(AtomicUsize::new(0));
+        let device = CountingCatalog {
+            inner: FakeDevice::bundled(),
+            asked: asked.clone(),
+        };
+        let app = router(AppState::new(device, None));
+        let (status, first) = get_with(&app, "/api/catalog", &[]).await;
+        assert_eq!(status, StatusCode::OK, "{first}");
+        assert!(first["categories"].is_array());
+        for _ in 0..3 {
+            let (status, again) = get_with(&app, "/api/catalog", &[]).await;
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(again, first);
+        }
+        assert_eq!(asked.load(Ordering::Relaxed), 1);
     }
 
     #[tokio::test]
