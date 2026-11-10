@@ -1,16 +1,28 @@
 # Checks the server, then cross-compiles the Pi bundle (helix-bridge + tonepush)
 # for aarch64-unknown-linux-gnu. The Pi never compiles (AGENTS.md 5.1).
 #
-# - Every push / PR: checks, then the bundle as a workflow artifact.
+# - Every push, on any branch: checks, then the bundle as a workflow artifact.
 # - Tag v*: the same, plus a GitHub release with the tarball attached.
+#
+# No `pull_request` trigger: every branch lives in this repository, so a pull
+# request's commits are pushes already, and its checks are these runs. With
+# both, each commit of a pull request built twice, and the Pi's updater only
+# ever takes the push runs (deploy/update.sh, `event=push`).
 name: build
 
 on:
   push:
     branches: ["**"]
     tags: ["v*"]
-  pull_request:
   workflow_dispatch:
+
+# A newer push to a branch stops the build of the one before it: the updater
+# wants the newest green build of a branch, never an older one. A tag's build
+# (a release) always runs to the end. Per event, so a manual run and a push
+# of the same branch leave each other alone.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' }}
 
 permissions:
   contents: read

@@ -1102,6 +1102,7 @@ function travelDown(e) {
 }
 
 function paintTravel(el, c, i) {
+  touched($('params'));
   el.style.setProperty('--pos', `${(i / c.steps) * 100}%`);
   el.setAttribute('aria-valuenow', String(i));
   el.setAttribute('aria-valuetext', c.labels[i]);
@@ -1301,6 +1302,7 @@ function sendIndex(ctx, i) {
 
 /** Move a slider's drawing to grid position i without re-rendering. */
 function paintSlider(el, c, i) {
+  touched($('params'));
   el.style.setProperty('--pos', `${(i / c.steps) * 100}%`);
   el.setAttribute('aria-valuenow', String(i));
   el.setAttribute('aria-valuetext', c.labels[i]);
@@ -1371,6 +1373,7 @@ function sliderKey(e) {
 function menuChange(e) {
   const el = e.target.closest('[data-menu]');
   if (!el) return;
+  touched($('params')); // the menu shows the pick now, not what was drawn
   const ctx = controlContext(el);
   if (!ctx || !controlReady()) { renderParams(); return; }
   sendIndex(ctx, Number(el.value));
@@ -1381,6 +1384,7 @@ function switchToggle(el) {
   if (!ctx || !controlReady()) return;
   const on = el.getAttribute('aria-pressed') === 'true';
   const i = on ? 0 : 1;
+  touched($('params'));
   el.setAttribute('aria-pressed', String(!on));
   el.querySelector('.switch-label').textContent = ctx.c.labels[i];
   sendIndex(ctx, i);
@@ -1635,6 +1639,26 @@ function presetBarFx(label, snap) {
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
+// A live update redraws the whole screen, and during a slider drag (here or
+// on another iPad) one arrives with every step, up to ten a second, with one
+// value changed. `setHtml` rewrites an element only when its HTML differs
+// from what it last wrote there, so the rest keeps its nodes: no rebuilt
+// chain, and an open menu or a focused button on another screen stays.
+// Every write to such an element goes through it. Code that changes the
+// nodes inside by hand (a slider under a finger, a picked menu entry) calls
+// `touched`, so the next render writes them again.
+const written = new WeakMap(); // element -> the HTML last set on it
+
+function setHtml(el, html) {
+  if (written.get(el) === html) return;
+  written.set(el, html);
+  el.innerHTML = html;
+}
+
+function touched(el) {
+  written.delete(el);
+}
+
 function render() {
   const app = $('app');
   app.classList.toggle('is-loading', state.loading);
@@ -1690,12 +1714,12 @@ function deviceLabel() {
 function renderConnection() {
   const pill = `<span class="conn-item"><span class="dot ${dotClass('server')}"></span>Server</span>` +
     `<span class="conn-item"><span class="dot ${dotClass('device')}"></span>${esc(deviceLabel())}</span>`;
-  for (const el of document.querySelectorAll('.conn-pill')) el.innerHTML = pill;
+  for (const el of document.querySelectorAll('.conn-pill')) setHtml(el, pill);
   const name = state.info ? deviceName(state.info) : '';
   for (const el of document.querySelectorAll('.conn-dots')) {
-    el.innerHTML = `<span class="dot ${dotClass('server')}"></span><span class="dot ${dotClass('device')}"></span>` +
+    setHtml(el, `<span class="dot ${dotClass('server')}"></span><span class="dot ${dotClass('device')}"></span>` +
       (name ? `<span class="conn-name">${esc(name)}</span>` : '') +
-      '<svg class="conn-gear" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2"><use href="#gear"/></svg>';
+      '<svg class="conn-gear" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2"><use href="#gear"/></svg>');
   }
   $('device-name').textContent = state.info ? `${name} · FW ${state.info.firmware}` : '';
 
@@ -1706,7 +1730,7 @@ function renderConnection() {
     ['Build', state.info?.build ?? '–'],
     ['Presets', state.info?.presets ?? '–'],
   ];
-  $('conn-info').innerHTML = rows.map(([k, v]) => `<div><dt>${esc(k)}</dt><dd>${esc(v)}</dd></div>`).join('');
+  setHtml($('conn-info'), rows.map(([k, v]) => `<div><dt>${esc(k)}</dt><dd>${esc(v)}</dd></div>`).join(''));
   renderSettings();
   $('conn-popover').hidden = !state.connOpen;
 }
@@ -1714,10 +1738,10 @@ function renderConnection() {
 /** The settings in the popover: names, preset list. */
 function renderSettings() {
   const seg = (attr, value, label, on) => `<button class="seg-btn${on ? ' active' : ''}" type="button" ${attr}="${value}" aria-pressed="${on}">${label}</button>`;
-  $('set-names').innerHTML = seg('data-names', 'line6', 'Line 6', state.names !== 'original') +
-    seg('data-names', 'original', 'Original gear', state.names === 'original');
+  setHtml($('set-names'), seg('data-names', 'line6', 'Line 6', state.names !== 'original') +
+    seg('data-names', 'original', 'Original gear', state.names === 'original'));
   const shown = sidebarWanted();
-  $('set-sidebar').innerHTML = seg('data-sidebar-set', 'shown', 'Show', shown) + seg('data-sidebar-set', 'hidden', 'Hide', !shown);
+  setHtml($('set-sidebar'), seg('data-sidebar-set', 'shown', 'Show', shown) + seg('data-sidebar-set', 'hidden', 'Hide', !shown));
   $('set-sidebar-note').textContent = roomy.matches
     ? 'Tap a preset in the list to load it.'
     : 'Needs a wider screen: a tablet in landscape or a computer. Here the Presets button lists them.';
@@ -1759,8 +1783,8 @@ function renderHotspot() {
   const box = $('hotspot');
   box.hidden = !h || !!h.missing;
   if (box.hidden) return;
-  $('set-hotspot').innerHTML = HOTSPOT_MODES.map(([value, label]) =>
-    `<button class="seg-btn${h.mode === value ? ' active' : ''}" type="button" data-hotspot-mode="${value}" aria-pressed="${h.mode === value}">${label}</button>`).join('');
+  setHtml($('set-hotspot'), HOTSPOT_MODES.map(([value, label]) =>
+    `<button class="seg-btn${h.mode === value ? ' active' : ''}" type="button" data-hotspot-mode="${value}" aria-pressed="${h.mode === value}">${label}</button>`).join(''));
   $('hotspot-note').textContent = HOTSPOT_NOTES[h.mode];
   $('hotspot-fields').hidden = h.mode === 'off';
   const save = box.querySelector('[data-hotspot-save]');
@@ -1821,8 +1845,8 @@ function renderPresetBar() {
       ? `<button class="${cls}" type="button" data-snapshot="${i}" aria-pressed="${i === active}" aria-label="Snapshot ${i + 1}: ${esc(n)}" title="${esc(n)}"${live ? '' : ' disabled'}>${inner}</button>`
       : `<div class="${cls}" title="${esc(n)}">${inner}</div>`;
   }).join('');
-  $('snaps-inline').innerHTML = snaps;
-  $('snaps-row').innerHTML = snaps;
+  setHtml($('snaps-inline'), snaps);
+  setHtml($('snaps-row'), snaps);
 
   const tempo = state.tempoPending ?? state.chain?.tempo;
   $('tempo').textContent = tempo == null ? '–' : (Number.isInteger(tempo) ? String(tempo) : tempo.toFixed(1));
@@ -1974,7 +1998,7 @@ function renderChain() {
   const chain = $('chain');
   chain.classList.toggle('split', rowB.length > 0);
   chain.classList.toggle('has-add-b', html.includes('data-add-b'));
-  chain.innerHTML = html;
+  setHtml(chain, html);
   chainFx(map);
 }
 
@@ -2002,7 +2026,7 @@ function paintJunction(el) {
     ? `<button class="act ph-toggle" type="button" data-junction-step="${d}"${live && junctionOk(which, at + d) ? '' : ' disabled'}>${label}</button>`
     : `<button class="later ph-toggle" type="button" disabled title="${esc(WRITES_OFF)}">${label}</button>`;
   el.style.setProperty('--c', 'var(--line-strong)');
-  el.innerHTML =
+  setHtml(el,
     `<div class="params-head">${BACK}<div class="ph-code">${which === 'split' ? 'Split' : 'Merge'}</div>` +
     `<div class="ph-title"><div class="ph-model">${name}</div>` +
     `<div class="ph-based">before ${at >= main.length ? 'the output' : `cell ${at + 1}`}</div></div>` +
@@ -2011,7 +2035,7 @@ function paintJunction(el) {
     '<div class="params-empty">Blocks on Path A before the split and after the merge carry the whole signal; ' +
     'between them Path A and Path B run side by side. Path B’s blocks stay between the two.<br>' +
     'Moving the split or merge rewrites the whole preset on the pedal (edit buffer, unsaved until you save). ' +
-    'Split type and merge levels are not editable here yet.</div>';
+    'Split type and merge levels are not editable here yet.</div>');
 }
 
 function paintParams() {
@@ -2024,7 +2048,7 @@ function paintParams() {
   if (!state.chain) {
     const cells = Array.from({ length: 6 }, () => '<div class="param"><div class="skel-line"></div><div class="track"></div></div>').join('');
     el.style.removeProperty('--c');
-    el.innerHTML = `<div class="params-head"><div class="skel-title"></div></div><div class="params-grid">${cells}</div>`;
+    setHtml(el, `<div class="params-head"><div class="skel-title"></div></div><div class="params-grid">${cells}</div>`);
     return;
   }
   const b = slotMap().get(state.selectedSlot);
@@ -2033,17 +2057,17 @@ function paintParams() {
     const slot = state.selectedSlot;
     el.style.removeProperty('--c');
     if (slot == null) {
-      el.innerHTML = '<div class="params-empty">No blocks in this preset.</div>';
+      setHtml(el, '<div class="params-empty">No blocks in this preset.</div>');
       return;
     }
     const add = state.writes
       ? `<button class="act ph-toggle" type="button" data-add${live ? '' : ' disabled'}>Add block</button>`
       : `<button class="later ph-toggle" type="button" disabled title="${esc(WRITES_OFF)}">Add block</button>`;
-    el.innerHTML =
+    setHtml(el,
       `<div class="params-head">${BACK}<div class="ph-code">+</div>` +
       `<div class="ph-title"><div class="ph-model">Empty slot</div></div>` +
       `<div class="ph-meta">slot ${slotLabel(slot)}</div><div class="spacer"></div>${add}</div>` +
-      `<div class="params-empty">${state.writes ? `Add an effect here: tap Add block, pick a model.<br>${esc(footswitches() ? PICK_FOOTSWITCH : NO_FOOTSWITCH)}` : 'Nothing in this slot.'}</div>`;
+      `<div class="params-empty">${state.writes ? `Add an effect here: tap Add block, pick a model.<br>${esc(footswitches() ? PICK_FOOTSWITCH : NO_FOOTSWITCH)}` : 'Nothing in this slot.'}</div>`);
     return;
   }
   const cat = blockCategory(b);
@@ -2080,13 +2104,13 @@ function paintParams() {
     ? `<button class="act ph-toggle${moving ? ' hot' : ''}" type="button" data-move${live ? '' : ' disabled'}` +
       ` aria-pressed="${moving}">${moving ? 'Cancel move' : 'Move'}</button>`
     : '';
-  el.innerHTML =
+  setHtml(el,
     `<div class="params-head">${BACK}<div class="ph-code">${esc(cat.short)}</div>` +
     `<div class="ph-title"><div class="ph-model">${esc(blockName(b))}</div>${based}</div>` +
     `<div class="ph-meta">${esc(moving ? 'Tap an empty cell to move it there' : meta)}</div><div class="spacer"></div>` +
     `${move}${remove}${toggle}</div>` +
     footswitchRow(b, live) +
-    `<div class="params-grid">${params}</div>`;
+    `<div class="params-grid">${params}</div>`);
 }
 
 /** One parameter as a slider, picker or toggle; the value stays tap-to-type. */
@@ -2135,9 +2159,9 @@ function renderPresetList() {
 
 function renderStatusLine() {
   const i = state.info;
-  $('statusline').innerHTML = i
+  setHtml($('statusline'), i
     ? `<span>${esc(deviceName(i))} · FW ${esc(i.firmware)} · BUILD ${esc(i.build)} · ${esc(i.presets)} PRESETS</span>`
-    : '';
+    : '');
 }
 
 function renderBlocker() {
