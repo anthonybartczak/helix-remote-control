@@ -4,10 +4,10 @@ Vendored from [TonePush](https://github.com/crmne/tonepush) tag `v0.12.1` (commi
 `dcdedcf`), MIT (see `LICENSE`). Only `Cargo.toml`'s workspace keys are made
 explicit; everything else we changed is in `src/`. To see exactly what, diff `src/`
 against `crates/hx-usb/src/` of a TonePush `v0.12.1` checkout: the result is
-sections 2 and 3 below and nothing else. `server/Cargo.toml` swaps this copy in with
+sections 2 to 4 below and nothing else. `server/Cargo.toml` swaps this copy in with
 `[patch."https://github.com/crmne/tonepush"]`. The `tonepush` CLI shipped in the Pi
 bundle is built from upstream: it has section 1 (upstream since `v0.10.0`) but
-**not** sections 2 and 3. `../hx-proto/tests/` holds the two upstream test files
+**not** sections 2 to 4. `../hx-proto/tests/` holds the two upstream test files
 the crate's tests read.
 
 History of the pin: `v0.9.0` (`5e44812`) with sections 1 to 3 as local patches until
@@ -27,13 +27,8 @@ the upstream realigner runs only where `DeviceProfile::realigns_events` is set, 
 HX Effects' profile so far (`PR-2-0004`). Our copy here realigns for every device,
 which is the same thing for us: the bridge only talks to an HX Effects.
 
-Two faults found in upstream review are fixed there and **not in this copy yet**
-(`PR-2-0005`, `PR-2-0006`; neither has run on the pedal):
-- `open_service` clears the realigner after the read that follows the service
-  opening, so a notification whose first four bytes arrive with that read is lost.
-- A false header that declares up to 4 KB makes the realigner wait for that many
-  bytes, about half a minute of ticks, before it steps over it. Upstream steps
-  over it as soon as a whole message has arrived behind it.
+Two faults found in upstream review are fixed there (`PR-2-0005`, `PR-2-0006`) and
+here: section 4.
 crmne/tonepush pull request 100 (open, another contributor) reports fault 2a on a
 Helix Floor (3.80) and may be merged instead of or before ours.
 
@@ -180,3 +175,39 @@ blocks for about 1.5 minutes, 39 out-of-order frames stepped over (7-56 bytes ea
 under a second apart at times), no session lost. Unpatched, the same use ended the
 session within about a minute, twice. Each slip still costs the notification it cut
 through, so a knob value can lag until its next change.
+
+## 4. Two faults found in upstream review (2026-11-11)
+
+Offered upstream with 2a and 3 (pull request 118), not merged. Both were in our
+own code from sections 2a and 3, found by the automated review of that pull
+request. Ported here the same day from `upstream/PR-2-0005` and `PR-2-0006`.
+
+**4a. A notification split across the service opening was dropped.** The device
+splits a notification across two frames after its first four bytes.
+`open_service` cleared the realigner after the read that follows the service
+opening, so a first half that arrived with that read was lost, and the body
+that followed was stepped over: one notification, 17 bytes on the counter.
+
+*Change:* only the clear after the handshake stays. What the channel sent
+before it was for the session before, and the device does not finish a message
+it cut short there: in TonePush's `captures/mac-enums-capture.log` frame seq
+0xd9 ends in a message's first four bytes, HX Edit's handshake follows 4.8 s
+later, and the stream then starts on a fresh header.
+
+**4b. A false header could hold back up to 4 KB.** After a slip, bytes can read
+as a header that declares up to `MAX_MESSAGE`. The realigner waited for that
+many bytes, about half a minute of ticks with nothing delivered, before it
+could reject it.
+
+*Change:* a header whose message is still missing bytes is stepped over once a
+whole message has arrived behind it (the device sends a message's bytes
+together, in two frames at most). With nothing whole behind it, it is still
+waited for, as a message split after its first eight bytes needs.
+
+**Tests.** `commands::pedal_tests::a_notification_split_across_the_service_opening_is_kept`
+(the fake pedal's `events_at_open`), `realign::tests::a_false_header_does_not_hold_back_what_follows`,
+`a_header_split_from_its_body_still_waits`. The first two failed before their
+change (checked in the upstream clone, same code). All 70 507 events messages
+in TonePush's HX Edit captures pass through the changed realigner as before.
+
+**On hardware:** not run yet.
