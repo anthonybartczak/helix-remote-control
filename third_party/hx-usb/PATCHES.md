@@ -18,7 +18,8 @@ section 1 and ours had touched the same lines). Not run on the pedal since.
 Drop this folder once upstream has an equivalent of sections 2 and 3: move the
 TonePush pin to that tag (AGENTS.md 3, with a note in the commit), delete this
 folder and the `[patch]` section in `server/Cargo.toml`. They have not been offered
-upstream yet.
+upstream yet. A pull request is prepared and not sent: `upstream/PR-2.md` and the
+three `upstream/PR-2-000*.patch` files, on TonePush `main` at `d4094a3` (2026-11-11).
 
 ## 1. Acknowledge the events channel (2026-10-13)
 
@@ -65,7 +66,8 @@ A/B the same evening, power cycle before each run, hands off: upstream
 ## 2. Survive the events channel going wrong (2026-10-14)
 
 Not upstream yet. Two device faults, both found in `HX_DEBUG=1` captures on the
-HX Effects 3.80 (Pi 4), and both also in TonePush's own material.
+HX Effects 3.80 (Pi 4). The second is also in TonePush's own material; the first
+is not (see the correction in 2a).
 
 **2a. A frame sent out of order.** Now and then the device sends one
 notification with its first four bytes moved behind the rest:
@@ -78,9 +80,15 @@ received  0d 00 00 00 <13-byte tick body> | 00 00 04 00 | 00 00 04 00 0d ...
 The byte count is right, so acknowledgements stay right, but the stream reader
 reads a body as a length: "stream message declares 1779853698 bytes" ends the
 session, or a 262144-byte length makes it wait while every later notification
-piles up behind it. HX Edit's capture of an HX Stomp
-(`captures/mac-enums-capture.log`) holds the same frame twice in ~3500
-notifications, so the device does it with HX Edit too.
+piles up behind it.
+
+*Correction 2026-11-11.* This section said HX Edit's capture of an HX Stomp
+(`captures/mac-enums-capture.log`) holds the same frame twice, so the device does
+it with HX Edit too. A re-check for the upstream pull request did not find it: all
+17 of TonePush's capture logs read in order (70 507 messages on the events
+channel). The one frame of this shape in `mac-enums-capture.log` is the first
+frame of the capture, the rest of a message the device split across two frames,
+which is in order. So the fault is confirmed on the HX Effects only.
 
 *Change:* `realign.rs`. On the events channel only, bytes pass to the stream
 reader as whole messages that start `00 00 04 00` (or service 0, as the

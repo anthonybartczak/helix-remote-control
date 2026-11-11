@@ -12,8 +12,8 @@
 //! stream reader then takes a body as a length: either "1779853698 bytes",
 //! which loses the session, or 262144 bytes, which it waits for while every
 //! later notification piles up behind it. Seen on an HX Effects (3.80) under
-//! helix-bridge, and twice in TonePush's own HX Edit capture of an HX Stomp
-//! (`captures/mac-enums-capture.log`), so it is the device, not the host.
+//! helix-bridge. TonePush's HX Edit captures of an HX Stomp do not show it
+//! (PATCHES.md 2a), so it is confirmed on the HX Effects only.
 //!
 //! Every notification in those captures (about 70 000) starts `00 00 04 00`
 //! (from the device, events service) and is at most 36 bytes; the reply that

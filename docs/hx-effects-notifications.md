@@ -81,8 +81,9 @@ faults (details and fix: `third_party/hx-usb/PATCHES.md` section 2).
 
 1. **Out-of-order frame.** One events frame carried a tick with its first 4 bytes
    moved behind its body. The stream reader lost step, and the session ended with
-   "stream message declares 1779853698 bytes". HX Edit's own HX Stomp capture has
-   the same frame. Fixed: the events stream re-aligns and loses one notification.
+   "stream message declares 1779853698 bytes". TonePush's HX Edit captures of an
+   HX Stomp do not show it (checked 2026-11-11; this said they did). Fixed: the
+   events stream re-aligns and loses one notification.
 2. **Deaf events channel.** A session opened 0-4 s after another one ended (a
    service restart, a reconnect after a lost session) or right after the pedal
    powered up got no answer to its events handshake, and then no notification
