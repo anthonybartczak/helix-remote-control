@@ -1,18 +1,19 @@
 # Helix Bridge
 
-Edit a Line 6 HX Effects from an iPad (or any browser) over Wi-Fi. A Raspberry Pi sits
-between the pedal and your network: it talks to the pedal over USB and serves a
-touch-friendly web UI.
+Edit a Line 6 HX Effects over Wi-Fi from a browser on a tablet, phone or computer. A
+Raspberry Pi sits between the pedal and your network: it talks to the pedal over USB and
+serves a touch-friendly web UI.
 
-![Helix Bridge on an iPad: the preset list, the signal chain with Path A and Path B, and the selected reverb's settings](docs/screenshots/ipad-landscape.png)
+![Helix Bridge on a tablet in landscape: the preset list, the signal chain with Path A and Path B, and the selected reverb's settings](docs/screenshots/tablet-landscape.png)
 
 ```
-[Line 6 HX device] --USB--> [Raspberry Pi] --Wi-Fi/HTTP--> [iPad Safari]
+[Line 6 HX device] --USB--> [Raspberry Pi] --Wi-Fi/HTTP--> [browser: tablet, phone, computer]
 ```
 
-iPadOS cannot talk to the pedal directly (it uses a vendor USB interface), so all USB
-work happens on the Pi. Built on [TonePush](https://github.com/crmne/tonepush), an
-open-source editor for HX devices.
+All USB work happens on the Pi, so the device you edit from needs only a browser, with
+nothing to install. (The pedal uses a vendor USB interface that iPads and iPhones cannot
+drive.) Built on [TonePush](https://github.com/crmne/tonepush), an open-source editor for
+HX devices.
 
 Not affiliated with or endorsed by Line 6.
 
@@ -24,8 +25,8 @@ Not affiliated with or endorsed by Line 6.
 - Turns blocks on and off and changes their parameters with sliders, menus and switches.
 - Adds, removes and moves blocks, on either path, and moves the split and merge.
 - Puts blocks on footswitches and parameters on the expression pedals.
-- Follows the pedal live: footswitch presses, knob turns and preset changes show on the
-  iPad within about a second.
+- Follows the pedal live: footswitch presses, knob turns and preset changes show in
+  the browser within about a second.
 
 ## Screenshots
 
@@ -47,10 +48,11 @@ The screenshots show the demo data of the `fake` backend (see [Settings](#settin
 
 - **Line 6 HX Effects**, firmware 3.80. This is the only device it has been tested on;
   other HX-family devices may work but are untested.
-- **Raspberry Pi 4** with 64-bit Raspberry Pi OS Lite, on the same network as the iPad.
+- **Raspberry Pi 4** with 64-bit Raspberry Pi OS Lite, on the same network as the device
+  you edit from.
 - **HX Edit** installed on a computer, once: the Pi needs a copy of its data folder for
   model and parameter names. Those files are Line 6's; they are never part of this repo.
-- An iPad with Safari, or any recent browser on the same network.
+- A tablet, phone or computer with a recent browser, on the same network.
 
 ## Install
 
@@ -60,8 +62,8 @@ Full guide, about 45 minutes: [docs/deploy.md](docs/deploy.md). In short:
 2. Copy the Pi bundle (from this repo's GitHub Actions or releases) to the Pi and unpack it.
 3. Run `sudo ./install.sh --hostname helix-bridge`.
 4. Copy HX Edit's data folder to the Pi (guide step 6) and plug in the pedal.
-5. Open `http://helix-bridge.local` on the iPad. To make changes, set a write token
-   (guide step 9).
+5. Open `http://helix-bridge.local` in a browser on the same network. To make changes,
+   set a write token (guide step 9).
 
 Updates: `sudo helix-bridge-update` on the Pi (needs a read-only GitHub token, see
 docs/deploy.md "Updating").
@@ -85,8 +87,8 @@ in the browser. Without it, the UI is read-only and its write controls are dashe
   Line 6 calls them or as the gear they are based on, and the preset list. Kept in this
   browser.
 - **Own Wi-Fi for gigs** (Settings, on the Pi only): so nobody on a venue's Wi-Fi can
-  see the bridge, the Pi makes its own password-protected Wi-Fi that only your iPad
-  joins. **Off** (the default) never does; **Away** joins your saved Wi-Fi when it is in
+  see the bridge, the Pi makes its own password-protected Wi-Fi that only your devices
+  join. **Off** (the default) never does; **Away** joins your saved Wi-Fi when it is in
   range and makes its own anywhere else; **Always** makes its own even at home. Saving
   needs the write token and applies the next time the Pi is switched on. See
   docs/deploy.md, "Own Wi-Fi for gigs".
@@ -145,7 +147,7 @@ Set in `/etc/helix-bridge/helix-bridge.env` on the Pi, then
 ## Known limits
 
 - **Live updates need the `usb` backend.** With `cli`, the UI reads the pedal when it
-  opens, when the iPad returns to the page, and on "Refresh from device" (tap the
+  opens, when you return to the page, and on "Refresh from device" (tap the
   connection dots). The active snapshot is not shown with `cli` either.
 - **The bridge connects 20 s after it starts**, after the pedal is plugged in or powered
   up, and after a connection ends; the UI shows "waiting N s". Connecting sooner can
