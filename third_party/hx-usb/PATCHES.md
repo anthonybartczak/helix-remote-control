@@ -17,11 +17,13 @@ section 1 and ours had touched the same lines). Not run on the pedal since.
 
 Drop this folder once upstream has an equivalent of sections 2 and 3: move the
 TonePush pin to that tag (AGENTS.md 3, with a note in the commit), delete this
-folder and the `[patch]` section in `server/Cargo.toml`. They have not been offered
-upstream yet. A pull request is prepared and not sent: `upstream/PR-2.md` and the
-three `upstream/PR-2-000*.patch` files, on TonePush `main` at `d4094a3` (2026-11-11).
-The text covers the first two patches; the third (the 30 s drain) is held back.
-crmne/tonepush pull request 100 (open) reports fault 2a on a Helix Floor (3.80).
+folder and the `[patch]` section in `server/Cargo.toml`. Offered upstream on
+2026-11-11 as https://github.com/crmne/tonepush/pull/118 (open): the realigner
+(2a and 3) and `events_answered` (2b), on TonePush `main` at `d4094a3`. The text and
+patches as sent are `upstream/PR-2.md`, `PR-2-0001` and `PR-2-0002`. Held back:
+`PR-2-0003`, the 30 s drain, and the server's 20 s settle, which is ours anyway.
+crmne/tonepush pull request 100 (open, another contributor) reports fault 2a on a
+Helix Floor (3.80) and may be merged instead of or before ours.
 
 ## 1. Acknowledge the events channel (2026-10-13)
 
@@ -67,7 +69,7 @@ A/B the same evening, power cycle before each run, hands off: upstream
 
 ## 2. Survive the events channel going wrong (2026-10-14)
 
-Not upstream yet. Two device faults, both found in `HX_DEBUG=1` captures on the
+Offered upstream 2026-11-11 (pull request 118), not merged. Two device faults, both found in `HX_DEBUG=1` captures on the
 HX Effects 3.80 (Pi 4). The second is also in TonePush's own material; the first
 is not (see the correction in 2a).
 
@@ -135,7 +137,7 @@ which ACKs once per 700 ms) while 119-145 notifications per 10 s kept arriving.
 
 ## 3. Check a realigned message's body (2026-10-15)
 
-Not upstream. Follows 2a.
+Offered upstream 2026-11-11 with 2a (pull request 118), not merged. Follows 2a.
 
 **Symptom.** HX Effects 3.80, Pi 4, helix-bridge: turning knobs on the pedal
 ended the session within a minute or so, every time, with "stream message is

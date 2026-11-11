@@ -1,5 +1,7 @@
 <!--
-Not part of the pull request text (GitHub hides this comment). Notes for sending:
+Not part of the pull request text. Sent 2026-11-11 as
+https://github.com/crmne/tonepush/pull/118 from the fork branch
+hx-usb-events-realign (commits e6ae27f and 85d801a). Notes:
 - Title: Survive an out-of-order events frame on an HX Effects, and say when the events channel did not answer
 - Base: crmne/tonepush main at d4094a3 (v0.12.1 plus 10 commits), 2026-11-11.
 - This text covers the first two patches only: git am PR-2-0001-*.patch PR-2-0002-*.patch
@@ -10,7 +12,6 @@ Not part of the pull request text (GitHub hides this comment). Notes for sending
 - Upstream wants review evidence attached to the pull request, not committed:
   attach the `tonepush watch` output with the error and the 180 s watch log
   if you still have them, and say so under "Testing".
-- Not sent yet as of 2026-11-11.
 -->
 
 No user-visible UI change. On an HX Effects, `tonepush watch` keeps running where it now ends after a few seconds.
