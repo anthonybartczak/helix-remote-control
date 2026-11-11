@@ -4,6 +4,8 @@ Edit a Line 6 HX Effects from an iPad (or any browser) over Wi-Fi. A Raspberry P
 between the pedal and your network: it talks to the pedal over USB and serves a
 touch-friendly web UI.
 
+![Helix Bridge on an iPad: the preset list, the signal chain with Path A and Path B, and the selected reverb's settings](docs/screenshots/ipad-landscape.png)
+
 ```
 [Line 6 HX device] --USB--> [Raspberry Pi] --Wi-Fi/HTTP--> [iPad Safari]
 ```
@@ -24,6 +26,22 @@ Not affiliated with or endorsed by Line 6.
 - Puts blocks on footswitches and parameters on the expression pedals.
 - Follows the pedal live: footswitch presses, knob turns and preset changes show on the
   iPad within about a second.
+
+## Screenshots
+
+Adding a block: pick a category, narrow it by type, and see the gear each model is
+based on.
+
+![The Add block sheet: categories on the left, Delay models grouped by type, Mono or Stereo and a footswitch in the footer](docs/screenshots/add-block.png)
+
+On a phone the chain fills the screen; tap a block to open its settings.
+
+<p align="center">
+  <img src="docs/screenshots/phone-chain.png" width="300" alt="The signal chain on a phone, one block per row, Path B in a second column">
+  <img src="docs/screenshots/phone-block.png" width="300" alt="A delay block's settings on a phone: footswitch and parameter sliders">
+</p>
+
+The screenshots show the demo data of the `fake` backend (see [Settings](#settings)).
 
 ## What you need
 
