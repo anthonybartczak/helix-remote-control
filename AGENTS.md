@@ -35,7 +35,7 @@ so all USB work happens on the Pi.
 Upstream: https://github.com/crmne/tonepush
 
 - Open-source editor for Line 6 HX-family devices, written in Rust.
-- **Pinned to tag `v0.9.0`** (commit `5e44812`). Never track `main` blindly. Bump only on
+- **Pinned to tag `v0.12.1`** (commit `dcdedcf`). Never track `main` blindly. Bump only on
   purpose, with a note in the commit message.
 - **License: MIT.** Linking, modifying and redistributing are allowed; keep the copyright and
   license notice with any shipped TonePush code.
@@ -189,7 +189,7 @@ verifies on hardware. Every cloud session starts with `git pull`; ends with a pu
 
 **In cloud sessions:**
 - The device is not reachable. Use `FakeDevice`. Never claim hardware was tested.
-- `../tonepush` does not exist. Depend on TonePush via its git URL at tag `v0.9.0`, or fetch
+- `../tonepush` does not exist. Depend on TonePush via its git URL at tag `v0.12.1`, or fetch
   it to read docs.
 - Report which parts still need local verification, as a numbered list.
 

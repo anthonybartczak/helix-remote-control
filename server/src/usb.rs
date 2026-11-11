@@ -431,9 +431,10 @@ impl Worker {
                 return Ok(None);
             };
             let stored = self.with(|s| s.read_preset_at(setlist, index))?;
+            let controls = self.controls();
             let edit = &self.doc.as_ref().expect("just read").preset;
             Ok(Some(match stored {
-                Some(stored) => unsaved_edits(&stored, edit),
+                Some(stored) => unsaved_edits(&stored, edit, controls),
                 None => vec!["(the slot is empty)".to_owned()],
             }))
         })();
@@ -705,6 +706,15 @@ impl Worker {
         self.publish(text, cause);
     }
 
+    /// How the connected pedal numbers its controller sources (TonePush
+    /// `ControlLayout`, per device since v0.10.0). An HX Effects uses the HX
+    /// Stomp's numbering, which is also the answer with no session open.
+    fn controls(&self) -> hx_proto::rpc::ControlLayout {
+        self.session
+            .as_ref()
+            .map_or(hx_proto::rpc::ControlLayout::Stomp, |s| s.profile.controls)
+    }
+
     /// Native values of the cached document, when the catalog can describe
     /// them (no catalog, no sliders: the UI types values instead).
     fn natives(&self) -> Option<Natives> {
@@ -732,7 +742,7 @@ impl Worker {
             assignments: self
                 .doc
                 .as_ref()
-                .map(|d| assignments_of(&d.preset, self.catalog.as_deref())),
+                .map(|d| assignments_of(&d.preset, self.controls(), self.catalog.as_deref())),
         }
     }
 
@@ -1412,11 +1422,12 @@ impl Worker {
         use hx_proto::preset::Target;
         let name = self.param_name(block, param, model)?;
         let slot = i64::from(block) - 1;
+        let controls = self.controls();
         let doc = self.doc.as_ref().expect("read by param_name");
         let held = self.block_at(block, model)?;
         let assigned = doc
             .preset
-            .assignments()
+            .assignments(controls)
             .iter()
             .any(|a| a.block == slot && a.target == Target::Param(i64::from(param)));
         if !assigned {
@@ -1841,11 +1852,12 @@ fn routing_of(preset: &hx_proto::Preset) -> Option<parse::Routing> {
 /// formatted as the device shows them.
 fn assignments_of(
     preset: &hx_proto::Preset,
+    controls: hx_proto::rpc::ControlLayout,
     catalog: Option<&hx_catalog::Catalog>,
 ) -> Vec<(u32, parse::Assignment)> {
     use hx_proto::preset::Target;
     preset
-        .assignments()
+        .assignments(controls)
         .into_iter()
         .filter_map(|a| {
             let position = u32::try_from(a.block).ok()? + 1;
@@ -1853,6 +1865,10 @@ fn assignments_of(
             let param = match a.target {
                 Target::Bypass => None,
                 Target::Param(i) => Some(u32::try_from(i).ok()?),
+                // A cab's Mic is a model setting, not a parameter the API
+                // can name by index (TonePush listed it as parameter 0, the
+                // cab's Distance, before v0.10.0). Left out.
+                Target::Mic => return None,
             };
             let shown = |v: f32| {
                 let c = catalog?;
@@ -1863,7 +1879,7 @@ fn assignments_of(
                 position,
                 parse::Assignment {
                     param,
-                    source: parse::source_name(a.source.ordinal()),
+                    source: parse::source_name(controls.ordinal(a.source)?),
                     min: ends.map(|e| e.0),
                     max: ends.map(|e| e.1),
                     min_value: ends.and_then(|e| shown(e.0)),
@@ -1919,14 +1935,18 @@ fn stored_cause(edits: &[String]) -> Cause {
 /// (10/6), a block's on/off (0/22/1/20/10), and a footswitch's light (two
 /// leaves under 3). So when the snapshots differ, the stored copy is
 /// compared as that snapshot would recall it.
-fn unsaved_edits(stored: &hx_proto::Preset, edit: &hx_proto::Preset) -> Vec<String> {
+fn unsaved_edits(
+    stored: &hx_proto::Preset,
+    edit: &hx_proto::Preset,
+    controls: hx_proto::rpc::ControlLayout,
+) -> Vec<String> {
     let snapshot_params: Vec<(i64, i64)> = stored
-        .assignments()
+        .assignments(controls)
         .iter()
         .filter(|a| a.source == hx_proto::rpc::Source::Snapshots)
         .filter_map(|a| match a.target {
             hx_proto::preset::Target::Param(p) => Some((a.block, p)),
-            hx_proto::preset::Target::Bypass => None,
+            hx_proto::preset::Target::Bypass | hx_proto::preset::Target::Mic => None,
         })
         .collect();
     recalled_diff(
@@ -2272,7 +2292,7 @@ pub fn probe_unsaved() -> std::result::Result<(), String> {
         println!("the stored slot is empty: the server would mark the preset unsaved");
         return Ok(());
     };
-    match unsaved_edits(&stored, &edit).as_slice() {
+    match unsaved_edits(&stored, &edit, session.profile.controls).as_slice() {
         [] => println!("the server would leave it saved"),
         edits => println!("the server would mark it unsaved: {}", edits.join(", ")),
     }
@@ -2785,6 +2805,7 @@ mod tests {
             valid: true,
             named: false,
             enabled: vec![None, Some(gate), Some(true)],
+            colour: None,
         };
         let snapshots = [snapshot(false), snapshot(true)];
         let stored = tone(0, false, 0.2, 527_360);

@@ -67,21 +67,26 @@ pub enum Error {
     Claim(String),
     #[error("usb error: {0}")]
     Usb(String),
-    #[error("the device refused: error {0}")]
+    #[error("{}", refusal(*.0))]
     Device(i64),
     #[error("protocol error: {0}")]
     Protocol(String),
     #[error("timed out waiting for a reply to transaction {0}")]
     Timeout(i64),
+    /// The caller asked for the work to stop, between two requests: the
+    /// session is aligned and can go on being used.
+    #[error("stopped before it finished")]
+    Cancelled,
 }
 
 impl Error {
     /// Whether continuing on this open session risks speaking on a transport
     /// whose sequence/transaction state is no longer known. A device refusal
-    /// is a complete, aligned reply and is therefore the sole recoverable
-    /// command error; transport silence and malformed protocol are not.
+    /// is a complete, aligned reply, and a cancellation stops between two
+    /// requests, so those two are recoverable; transport silence and
+    /// malformed protocol are not.
     pub fn loses_session(&self) -> bool {
-        !matches!(self, Self::Device(_))
+        !matches!(self, Self::Device(_) | Self::Cancelled)
     }
 }
 
@@ -92,6 +97,16 @@ fn retry_device_refusal<T>(result: Result<T>) -> Result<Option<T>> {
         Ok(value) => Ok(Some(value)),
         Err(Error::Device(_)) => Ok(None),
         Err(error) => Err(error),
+    }
+}
+
+/// What a refusal says, in words where its code is known well enough.
+fn refusal(code: i64) -> String {
+    match code {
+        -306 => {
+            format!("the device refused: that path has no DSP left for this block (error {code})")
+        }
+        _ => format!("the device refused: error {code}"),
     }
 }
 
@@ -1147,7 +1162,7 @@ impl Session {
             .encode_into(&mut payload);
             self.write(&Frame::new(id.device, id.host, payload))?;
             // The device does not pace its events channel by a keep-alive's
-            // acknowledgement (PATCHES.md), so that channel stays owed an ACK.
+            // acknowledgement (PROTOCOL.md), so that channel stays owed an ACK.
             if id != ChannelId::EVENTS {
                 self.mark_acknowledged(id);
             }
@@ -1534,6 +1549,18 @@ mod tests {
             retry_device_refusal::<()>(Err(Error::Protocol("bad reply".into()))),
             Err(Error::Protocol(_))
         ));
+    }
+
+    #[test]
+    fn a_path_out_of_dsp_is_said_in_words() {
+        assert_eq!(
+            Error::Device(-306).to_string(),
+            "the device refused: that path has no DSP left for this block (error -306)"
+        );
+        assert_eq!(
+            Error::Device(-3).to_string(),
+            "the device refused: error -3"
+        );
     }
 
     #[test]

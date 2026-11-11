@@ -33,11 +33,11 @@ Development-only settings, next to the ones in the README:
 
 ## Running `tonepush` on Windows
 
-Uses the official TonePush v0.9.0 release binary (building from source needs the
+Uses the official TonePush v0.12.1 release binary (building from source needs the
 Windows SDK). Quit HX Edit first.
 
-1. Download `tonepush-v0.9.0-x86_64-pc-windows-msvc.zip` from
-   https://github.com/crmne/tonepush/releases/tag/v0.9.0 and check its SHA-256 against
+1. Download `tonepush-v0.12.1-x86_64-pc-windows-msvc.zip` from
+   https://github.com/crmne/tonepush/releases/tag/v0.12.1 and check its SHA-256 against
    the release's `checksums.txt`.
 2. Unzip next to this repo, e.g. `..\tonepush-bin\`.
 3. For model and parameter names, point TonePush at HX Edit's data (it does not find the
@@ -79,7 +79,7 @@ installs the newest green build of the branch it follows
 Build the bundle locally (Linux or WSL, needs `zig` and `cargo-zigbuild`):
 
 1. `cd server && cargo zigbuild --release --target aarch64-unknown-linux-gnu.2.31`
-2. Same in a TonePush `v0.9.0` checkout: `cargo zigbuild --release -p tonepush-cli --target aarch64-unknown-linux-gnu.2.31`
+2. Same in a TonePush `v0.12.1` checkout: `cargo zigbuild --release -p tonepush-cli --target aarch64-unknown-linux-gnu.2.31`
 3. `deploy/package.sh <version> server/target/aarch64-unknown-linux-gnu/release/helix-bridge <tonepush>/target/aarch64-unknown-linux-gnu/release/tonepush <tonepush> dist`
 
 ## Patched `hx-usb`

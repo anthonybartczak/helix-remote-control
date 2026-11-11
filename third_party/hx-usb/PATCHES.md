@@ -1,22 +1,31 @@
 # Patches to TonePush hx-usb
 
-Vendored from [TonePush](https://github.com/crmne/tonepush) tag `v0.9.0` (commit
-`5e44812`), MIT (see `LICENSE`). The first commit adding this folder is the
-unchanged upstream copy (only `Cargo.toml`'s workspace keys made explicit), so
-`git diff` against it shows exactly what we changed. `server/Cargo.toml` swaps it
-in with `[patch."https://github.com/crmne/tonepush"]`. The `tonepush` CLI shipped in
-the Pi bundle is still built from upstream and does **not** have these patches.
+Vendored from [TonePush](https://github.com/crmne/tonepush) tag `v0.12.1` (commit
+`dcdedcf`), MIT (see `LICENSE`). Only `Cargo.toml`'s workspace keys are made
+explicit; everything else we changed is in `src/`. To see exactly what, diff `src/`
+against `crates/hx-usb/src/` of a TonePush `v0.12.1` checkout: the result is
+sections 2 and 3 below and nothing else. `server/Cargo.toml` swaps this copy in with
+`[patch."https://github.com/crmne/tonepush"]`. The `tonepush` CLI shipped in the Pi
+bundle is built from upstream: it has section 1 (upstream since `v0.10.0`) but
+**not** sections 2 and 3. `../hx-proto/tests/` holds the two upstream test files
+the crate's tests read.
 
-Drop this folder once upstream has an equivalent fix. Upstream pull request:
-https://github.com/crmne/tonepush/pull/25, **merged 2026-10-14 as `76f3bc9`**. Its
-`hx-usb` code is identical to section 1 here. Not in a release yet (latest: `v0.9.1`,
-without it). Sections 2 and 3 are not upstream at all yet. When a release includes all three:
-move the TonePush pin to that tag (AGENTS.md 3, with a note in the commit), delete
-this folder and the `[patch]` section in `server/Cargo.toml`. The bundled `tonepush` CLI gets the fix with the same bump. The patch prepared for
-upstream, against TonePush `main` (53a6a65), and its pull request text are in
-`upstream/`.
+History of the pin: `v0.9.0` (`5e44812`) with sections 1 to 3 as local patches until
+2026-11-11, then `v0.12.1` with section 1 taken from upstream and sections 2 and 3
+merged onto it by hand (three-way, nine conflicts, all where upstream's copy of
+section 1 and ours had touched the same lines). Not run on the pedal since.
+
+Drop this folder once upstream has an equivalent of sections 2 and 3: move the
+TonePush pin to that tag (AGENTS.md 3, with a note in the commit), delete this
+folder and the `[patch]` section in `server/Cargo.toml`. They have not been offered
+upstream yet.
 
 ## 1. Acknowledge the events channel (2026-10-13)
+
+**Upstream now, no longer a local patch.** Pull request
+https://github.com/crmne/tonepush/pull/25, merged 2026-10-14 as `76f3bc9`, released
+in `v0.10.0` (2026-10-26). The patch and pull request text as sent are in
+`upstream/`. What follows is the record of the fault and the fix.
 
 **Symptom.** On an HX Effects (firmware 3.80) the pedal stops sending
 notifications after 195 of them and stays silent, across new sessions, until its

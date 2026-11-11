@@ -5,6 +5,10 @@ against TonePush `main` at `76f3bc9` (newest tag `v0.9.1`; the bridge stays pinn
 `v0.9.0`, which has the same HX feature set: 0.9.1 only changes the Windows installer, and `main`
 adds only the events-channel ACK fix already in `third_party/hx-usb`).
 
+Since 2026-11-11 the bridge is pinned to `v0.12.1`. This comparison has not been redone
+against it; new there for an HX device: the `batch` command, backups that skip unchanged
+impulse responses, and per-device controller numbering.
+
 Sources: TonePush `README.md`, `docs/_guide/*.md`, `packaging/release-notes/*.md`, the CLI
 (`crates/tonepush-cli/src/main.rs`), the GUI (`crates/tonepush-gui/src/`), `PROTOCOL.md`
 and `docs/_reference/opcodes.md`. Bridge side: `docs/api.md`, `web/app.js`,
