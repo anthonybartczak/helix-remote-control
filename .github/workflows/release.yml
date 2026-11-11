@@ -18,8 +18,8 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   # TonePush pin (AGENTS.md 3). Bump both together, on purpose.
-  TONEPUSH_TAG: v0.9.0
-  TONEPUSH_COMMIT: 5e44812c53afddf36b2bc38d2355e75341049659
+  TONEPUSH_TAG: v0.12.1
+  TONEPUSH_COMMIT: dcdedcf1e45c5855e984e0ca552621e5463d5201
   # glibc 2.31 floor: runs on Raspberry Pi OS 64-bit Bullseye, Bookworm and Trixie.
   TARGET: aarch64-unknown-linux-gnu
   GLIBC: "2.31"

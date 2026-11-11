@@ -177,7 +177,7 @@ that switch.
 ## Credits
 
 - [TonePush](https://github.com/crmne/tonepush) by Carmine Paolino (MIT), pinned to tag
-  `v0.9.0`. A patched copy of its `hx-usb` crate is in `third_party/hx-usb`
+  `v0.12.1`. A patched copy of its `hx-usb` crate is in `third_party/hx-usb`
   ([PATCHES.md](third_party/hx-usb/PATCHES.md)), with its license.
 - [Motion](https://motion.dev) 13.4.6 (MIT), vendored in `web/lib/` with its license.
 - HX Edit's data files and model names belong to Line 6 and are not included.

@@ -249,8 +249,8 @@ checksum = "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a"
 
 [[package]]
 name = "hx-catalog"
-version = "0.9.0"
-source = "git+https://github.com/crmne/tonepush?tag=v0.9.0#5e44812c53afddf36b2bc38d2355e75341049659"
+version = "0.12.1"
+source = "git+https://github.com/crmne/tonepush?tag=v0.12.1#dcdedcf1e45c5855e984e0ca552621e5463d5201"
 dependencies = [
  "flate2",
  "hx-proto",
@@ -261,8 +261,8 @@ dependencies = [
 
 [[package]]
 name = "hx-proto"
-version = "0.9.0"
-source = "git+https://github.com/crmne/tonepush?tag=v0.9.0#5e44812c53afddf36b2bc38d2355e75341049659"
+version = "0.12.1"
+source = "git+https://github.com/crmne/tonepush?tag=v0.12.1#dcdedcf1e45c5855e984e0ca552621e5463d5201"
 
 [[package]]
 name = "indexmap"

@@ -1,16 +1,16 @@
 [package]
 name = "hx-usb"
 description = "Connect to a Line 6 Helix or HX guitar pedal over USB and edit what it is playing"
-# Vendored from TonePush v0.9.0 (commit 5e44812) with the patches listed in
+# Vendored from TonePush v0.12.1 (commit dcdedcf) with the patches listed in
 # PATCHES.md. Upstream: https://github.com/crmne/tonepush (MIT, see LICENSE).
-version = "0.9.0"
+version = "0.12.1"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/crmne/tonepush"
 rust-version = "1.87"
 
 [dependencies]
-hx-proto = { git = "https://github.com/crmne/tonepush", tag = "v0.9.0" }
+hx-proto = { git = "https://github.com/crmne/tonepush", tag = "v0.12.1" }
 # nusb is pure Rust, so there is no libusb to cross-compile. It also exposes
 # Device::from_fd, which is the only way in on Android: the Java USB Host API
 # hands the app a file descriptor and nothing else.

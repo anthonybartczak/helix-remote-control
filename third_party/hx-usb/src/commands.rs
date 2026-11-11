@@ -18,7 +18,7 @@ use crate::{
     Session,
 };
 
-fn assignment_source(reply: &Value) -> Result<Option<rpc::Source>> {
+fn assignment_source(layout: rpc::ControlLayout, reply: &Value) -> Result<Option<rpc::Source>> {
     if matches!(reply, Value::Nil) {
         return Ok(None);
     }
@@ -34,7 +34,8 @@ fn assignment_source(reply: &Value) -> Result<Option<rpc::Source>> {
     if ordinal == rpc::Source::NONE {
         return Ok(None);
     }
-    rpc::Source::from_ordinal(ordinal)
+    layout
+        .source(ordinal)
         .map(Some)
         .ok_or_else(|| Error::Protocol(format!("the assignment has unknown source {ordinal}")))
 }
@@ -305,20 +306,39 @@ impl Session {
     /// [`crate::ir::prepare`] performs it before an ordinary WAV is uploaded.
     /// `None` is an empty slot.
     pub fn read_ir(&mut self, slot: i64) -> Result<Option<(String, Vec<f32>)>> {
+        let Some((name, _)) = self.ir_descriptor(slot)? else {
+            return Ok(None);
+        };
+        Ok(Some((name, self.read_ir_samples(slot)?)))
+    }
+
+    /// An impulse response slot's name and the checksum its upload declared,
+    /// without its samples: one small reply, against the samples' 8 KB. `None`
+    /// is an empty slot; the checksum is `None` when the device leaves it out.
+    pub fn ir_descriptor(&mut self, slot: i64) -> Result<Option<(String, Option<u64>)>> {
         non_negative(slot, "impulse response slot")?;
-        self.bootstrap()?;
-        let descriptor = self.request(
-            ChannelId::CONTROL,
+        let descriptor = self.read_ir_part(
             rpc::op::IR_DESCRIPTOR,
             hx_proto::msgmap! { rpc::key::IR_SLOT => Value::Int(slot) },
         )?;
         let Some(name) = descriptor.get(rpc::key::NAME).and_then(Value::as_str) else {
             return Ok(None);
         };
-        let name = name.to_owned();
+        let checksum = descriptor
+            .get(rpc::key::IR_CHECKSUM)
+            .and_then(|value| match value {
+                Value::UInt(u) | Value::Wide(u, _) => Some(*u),
+                Value::Int(i) | Value::WideInt(i, _) => u64::try_from(*i).ok(),
+                _ => None,
+            });
+        Ok(Some((name.to_owned(), checksum)))
+    }
 
-        let samples = self.request(
-            ChannelId::CONTROL,
+    /// An impulse response slot's samples, as [`read_ir`](Self::read_ir)
+    /// returns them.
+    pub fn read_ir_samples(&mut self, slot: i64) -> Result<Vec<f32>> {
+        non_negative(slot, "impulse response slot")?;
+        let samples = self.read_ir_part(
             rpc::op::IR_SAMPLES,
             hx_proto::msgmap! {
                 rpc::key::IR_SLOT => Value::Int(slot),
@@ -330,7 +350,17 @@ impl Session {
                 "the device returned invalid impulse response samples".into(),
             ));
         };
-        Ok(Some((name, decode_ir_samples(bytes)?)))
+        decode_ir_samples(bytes)
+    }
+
+    /// One read of an IR slot, closed with END where the profile says so.
+    fn read_ir_part(&mut self, opcode: i64, args: Value) -> Result<Value> {
+        self.bootstrap()?;
+        let reply = self.request(ChannelId::CONTROL, opcode, args)?;
+        if self.profile.closes_ir_reads {
+            self.command(ChannelId::CONTROL, rpc::op::END, hx_proto::msgmap! {})?;
+        }
+        Ok(reply)
     }
 
     /// Rename an impulse response slot, leaving its samples alone.
@@ -651,12 +681,15 @@ impl Session {
         let active = active_snapshot(preset);
         let want = Landed::of(preset, active);
         let deadline = Instant::now() + Duration::from_secs(4);
+        let mut seen = None;
         loop {
             match retry_device_refusal(self.read_preset()) {
                 Ok(Some(back)) => {
-                    if Landed::of(&back, active) == want {
+                    let landed = Landed::of(&back, active);
+                    if landed == want {
                         return Ok(());
                     }
+                    seen = Some(landed);
                 }
                 Ok(None) => {}
                 Err(error) => {
@@ -667,9 +700,13 @@ impl Session {
                 }
             }
             if Instant::now() >= deadline {
-                return Err(Error::Protocol(
-                    "the device accepted a document and never showed it back".into(),
-                ));
+                return Err(Error::Protocol(match seen {
+                    Some(seen) => format!(
+                        "the device accepted a document and never showed it back: {}",
+                        want.difference(&seen)
+                    ),
+                    None => "the device accepted a document and never showed it back".into(),
+                }));
             }
             std::thread::sleep(Duration::from_millis(250));
         }
@@ -940,8 +977,15 @@ impl Session {
         source: Option<rpc::Source>,
     ) -> Result<()> {
         block_param(block, param)?;
+        // A source the device does not have is refused rather than sent as
+        // the nearest one it does: clamping once turned EXP 3 into EXP 2.
         let (flags, kind) = match source {
-            Some(source) => (source.ordinal(), 4),
+            Some(source) => {
+                let ordinal = self.profile.controls.ordinal(source).ok_or_else(|| {
+                    Error::Protocol(format!("{} has no {}", self.profile.name, source.label()))
+                })?;
+                (ordinal, 4)
+            }
             None => (rpc::Source::NONE, 0),
         };
         self.command(
@@ -1029,7 +1073,8 @@ impl Session {
         // every parameter came back unassigned, which is why an assignment that
         // the pedal had certainly made showed nothing at all in the editor.
         //
-        assignment_source(&reply).map(|source| source.map(|source| Assignment { source }))
+        assignment_source(self.profile.controls, &reply)
+            .map(|source| source.map(|source| Assignment { source }))
     }
 
     /// Make a footswitch toggle a block in and out.
@@ -1268,8 +1313,9 @@ impl Session {
     /// unacknowledged bytes, as HX Edit does after almost every notification.
     /// The device sends at most 4 KB of notifications unacknowledged and does
     /// not count a keep-alive's acknowledgement; without this an HX Effects
-    /// went silent after 195 notifications until power-cycled (helix-bridge
-    /// PATCHES.md). No host transaction ever runs on the events channel, so
+    /// went silent after 195 notifications until power-cycled (PROTOCOL.md,
+    /// "The events channel needs ACK frames"). No host transaction ever runs on
+    /// the events channel, so
     /// this cannot land mid-transaction.
     pub fn poll_notifications(&mut self) -> Result<Vec<(i64, Value)>> {
         self.read_available(Duration::from_millis(20))?;
@@ -1302,29 +1348,76 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_write_that_did_not_land_says_which_field_differs() {
+        let slot = |value: u32| LandedSlot {
+            kind: hx_proto::preset::Kind::Block,
+            model: Some(1),
+            paired: None,
+            enabled: true,
+            values: vec![value],
+            paired_values: Vec::new(),
+        };
+        let landed = |value, tempo: u32, name: &str| Landed {
+            slots: vec![slot(1), slot(value)],
+            tempo: Some(tempo),
+            snapshots: vec![(name.to_owned(), None)],
+        };
+        let wrote = landed(2, 120, "ONE");
+
+        let slot_differs = wrote.difference(&landed(3, 120, "ONE"));
+        assert!(slot_differs.starts_with("slot 1 wrote"), "{slot_differs}");
+        let tempo = wrote.difference(&landed(2, 90, "ONE"));
+        assert!(tempo.starts_with("tempo wrote"), "{tempo}");
+        let snapshot = wrote.difference(&landed(2, 120, "TWO"));
+        assert!(snapshot.starts_with("snapshot 0 wrote"), "{snapshot}");
+    }
+
+    #[test]
     fn assignment_replies_distinguish_none_from_malformed() {
-        assert_eq!(assignment_source(&Value::Nil).unwrap(), None);
         assert_eq!(
-            assignment_source(&hx_proto::msgmap! {
-                rpc::key::ASSIGN_SOURCE => Value::Int(0),
-            })
+            assignment_source(rpc::ControlLayout::Stomp, &Value::Nil).unwrap(),
+            None
+        );
+        assert_eq!(
+            assignment_source(
+                rpc::ControlLayout::Stomp,
+                &hx_proto::msgmap! {
+                    rpc::key::ASSIGN_SOURCE => Value::Int(0),
+                }
+            )
             .unwrap(),
             None
         );
         assert_eq!(
-            assignment_source(&hx_proto::msgmap! {
-                rpc::key::ASSIGN_SOURCE => Value::Int(1),
-            })
+            assignment_source(
+                rpc::ControlLayout::Stomp,
+                &hx_proto::msgmap! {
+                    rpc::key::ASSIGN_SOURCE => Value::Int(1),
+                }
+            )
             .unwrap(),
             Some(rpc::Source::Expression(1))
         );
 
-        assert!(assignment_source(&Value::Map(Vec::new())).is_err());
-        assert!(assignment_source(&hx_proto::msgmap! {
-            rpc::key::ASSIGN_SOURCE => Value::Int(99),
-        })
+        assert!(assignment_source(rpc::ControlLayout::Stomp, &Value::Map(Vec::new())).is_err());
+        assert!(assignment_source(
+            rpc::ControlLayout::Stomp,
+            &hx_proto::msgmap! {
+                rpc::key::ASSIGN_SOURCE => Value::Int(99),
+            }
+        )
         .is_err());
-        assert!(assignment_source(&Value::Bool(false)).is_err());
+        assert!(assignment_source(rpc::ControlLayout::Stomp, &Value::Bool(false)).is_err());
+
+        // The same ordinal is another source on a Helix Floor.
+        assert_eq!(
+            assignment_source(
+                rpc::ControlLayout::Helix,
+                &hx_proto::msgmap! { rpc::key::ASSIGN_SOURCE => Value::Int(13) },
+            )
+            .unwrap(),
+            Some(rpc::Source::Footswitch(8))
+        );
     }
 }
 
@@ -1367,19 +1460,46 @@ impl Landed {
     /// `active` is the snapshot whose tempo and bypass states the device
     /// keeps for itself; taken from the document written, so both sides of
     /// the comparison leave out the same one. `None` leaves out all of them.
+    ///
+    /// Two differences between a stored preset and the same preset loaded are
+    /// the pedal's own, so both sides read them the same way. A stored preset
+    /// leaves a snapshot's block state unset where the loaded one says off; and
+    /// it keeps values on the input and output of a path that holds no
+    /// blocks, which the loaded one drops. Seen on a Helix Floor at 3.80, where
+    /// restoring any stored preset failed this check although it landed.
     fn of(preset: &Preset, active: Option<usize>) -> Landed {
         let bits = |values: &[f32]| values.iter().map(|v| v.to_bits()).collect();
+        let idle_ends: BTreeSet<usize> = preset
+            .layout()
+            .paths
+            .iter()
+            .filter(|path| {
+                path.head.is_empty()
+                    && path.tail.is_empty()
+                    && path.lanes.iter().all(|lane| lane.blocks.is_empty())
+            })
+            .flat_map(|path| [path.input, path.output])
+            .flatten()
+            .collect();
         Landed {
             slots: preset
                 .slots
                 .iter()
-                .map(|slot| LandedSlot {
-                    kind: slot.kind,
-                    model: slot.model,
-                    paired: slot.paired,
-                    enabled: slot.enabled,
-                    values: bits(&slot.values),
-                    paired_values: bits(&slot.paired_values),
+                .enumerate()
+                .map(|(position, slot)| {
+                    let idle = idle_ends.contains(&position);
+                    LandedSlot {
+                        kind: slot.kind,
+                        model: slot.model,
+                        paired: slot.paired,
+                        enabled: slot.enabled,
+                        values: if idle { Vec::new() } else { bits(&slot.values) },
+                        paired_values: if idle {
+                            Vec::new()
+                        } else {
+                            bits(&slot.paired_values)
+                        },
+                    }
                 })
                 .collect(),
             tempo: preset.tempo().map(f32::to_bits),
@@ -1388,13 +1508,49 @@ impl Landed {
                 .into_iter()
                 .enumerate()
                 .map(|(index, s)| {
-                    let own = active
-                        .is_some_and(|active| active != index)
-                        .then(|| (s.tempo.map(f32::to_bits), s.enabled));
+                    let own = active.is_some_and(|active| active != index).then(|| {
+                        let enabled = s
+                            .enabled
+                            .iter()
+                            .map(|state| Some(state.unwrap_or(false)))
+                            .collect();
+                        (s.tempo.map(f32::to_bits), enabled)
+                    });
                     (s.name, own)
                 })
                 .collect(),
         }
+    }
+
+    /// The first field that kept a write from counting as landed, for the
+    /// error: a pedal this has not been seen on can only be diagnosed from
+    /// what its owner reads out of that message.
+    fn difference(&self, back: &Landed) -> String {
+        if self.slots.len() != back.slots.len() {
+            return format!(
+                "{} slots written, {} read back",
+                self.slots.len(),
+                back.slots.len()
+            );
+        }
+        for (position, (wrote, read)) in self.slots.iter().zip(&back.slots).enumerate() {
+            if wrote != read {
+                return format!("slot {position} wrote {wrote:?}, read back {read:?}");
+            }
+        }
+        if self.tempo != back.tempo {
+            return format!("tempo wrote {:?}, read back {:?}", self.tempo, back.tempo);
+        }
+        for (index, (wrote, read)) in self.snapshots.iter().zip(&back.snapshots).enumerate() {
+            if wrote != read {
+                return format!("snapshot {index} wrote {wrote:?}, read back {read:?}");
+            }
+        }
+        format!(
+            "{} snapshots written, {} read back",
+            self.snapshots.len(),
+            back.snapshots.len()
+        )
     }
 }
 
@@ -1680,7 +1836,7 @@ mod pedal_tests {
     /// `tonepush watch`'s loop, against a pedal that stops sending once 4 KB
     /// of notifications go unacknowledged: every notification must arrive.
     /// Without an ACK on the events channel this stopped at 195, as the HX
-    /// Effects did (PATCHES.md).
+    /// Effects did (PROTOCOL.md, "The events channel needs ACK frames").
     #[test]
     fn watching_keeps_the_events_channel_flowing() {
         let pedal = Pedal::new();
@@ -1781,6 +1937,39 @@ mod pedal_tests {
                 "returned before the write landed"
             );
             assert_eq!(pedal.irs[&3], ("Cab".into(), sum_of(&SAMPLES)));
+        }
+    }
+
+    /// Reading an IR slot puts "transferring data" on an HX Stomp's screen
+    /// until an END follows: after a backup it still showed it once the
+    /// session had closed. A device whose profile does not say so reads as
+    /// before. An empty slot is a read too.
+    #[test]
+    fn an_ir_read_is_closed_where_the_profile_says_so() {
+        type Read = fn(&mut Session) -> Result<()>;
+        let reads: [(&str, Read); 3] = [
+            ("descriptor", |s| s.ir_descriptor(2).map(drop)),
+            ("samples", |s| s.read_ir_samples(2).map(drop)),
+            ("empty slot", |s| s.ir_descriptor(5).map(drop)),
+        ];
+        for profile in hx_proto::PROFILES {
+            for (what, read) in reads {
+                let pedal = Pedal::new();
+                pedal.lock().unwrap().irs.insert(2, ("Cab".into(), 7));
+                let mut session = fake::session_as(&pedal, *profile);
+
+                read(&mut session).unwrap_or_else(|e| panic!("{} {what}: {e}", profile.name));
+
+                let opcodes = pedal.lock().unwrap().opcodes();
+                let begun = opcodes.iter().rposition(|&o| o == rpc::op::BEGIN);
+                let ended = opcodes.iter().rposition(|&o| o == rpc::op::END);
+                let closed = matches!((begun, ended), (Some(b), Some(e)) if e > b);
+                assert_eq!(
+                    closed, profile.closes_ir_reads,
+                    "{} {what}: {opcodes:?}",
+                    profile.name
+                );
+            }
         }
     }
 
@@ -1890,5 +2079,68 @@ mod pedal_tests {
         assert_eq!(Landed::of(&kept, Some(active)), want);
         let lost = snapshot_tempo(other, 97.0);
         assert_ne!(Landed::of(&lost, Some(active)), want);
+    }
+
+    /// A stored preset leaves a snapshot's block state unset where the same
+    /// preset loaded says off. Restoring one must not read as a write that
+    /// never landed, while a state that really changed still does.
+    #[test]
+    fn an_unset_snapshot_state_reads_as_off() {
+        let written = Preset::parse(include_bytes!("../../hx-proto/tests/preset.bin")).unwrap();
+        let active = active_snapshot(&written).expect("the fixture names its active snapshot");
+        let other = (active + 1) % written.snapshot_details().len();
+        let slot = written.snapshot_details()[other]
+            .enabled
+            .iter()
+            .position(|state| *state == Some(false))
+            .expect("a block that snapshot turns off");
+        let state = |to: Value| {
+            let mut preset = Preset::parse(&written.encode()).unwrap();
+            let snapshots = preset.tone.get_mut(10).and_then(|s| s.get_mut(10)).unwrap();
+            let Value::Array(entries) = snapshots else {
+                panic!("snapshots are an array")
+            };
+            let Some(Value::Array(slots)) = entries[other].get_mut(3) else {
+                panic!("block states are an array")
+            };
+            let Value::Array(fields) = &mut slots[slot] else {
+                panic!("a block state is an array")
+            };
+            fields[1] = to;
+            preset
+        };
+        let stored = state(Value::Nil);
+        assert_eq!(stored.snapshot_details()[other].enabled[slot], None);
+        let want = Landed::of(&stored, Some(active));
+        assert_eq!(Landed::of(&written, Some(active)), want);
+        assert_ne!(Landed::of(&state(Value::Bool(true)), Some(active)), want);
+    }
+
+    /// The input and output of a path with no blocks keep values in a stored
+    /// preset that the loaded one drops; anywhere else, values still count.
+    #[test]
+    fn values_on_the_ends_of_an_empty_path_are_the_pedal_s_own() {
+        let empty = Preset::parse(include_bytes!(
+            "../../hx-proto/tests/fixtures/gen-01-empty.hxpreset"
+        ))
+        .expect("the empty fixture parses");
+        let input = empty.layout().paths[0].input.expect("an input");
+        assert!(
+            !empty.slots[input].values.is_empty(),
+            "the input has values"
+        );
+        let mut dropped = Preset::parse(&empty.encode()).unwrap();
+        dropped.slots[input].values.clear();
+        assert_eq!(Landed::of(&dropped, None), Landed::of(&empty, None));
+
+        let written = Preset::parse(include_bytes!("../../hx-proto/tests/preset.bin")).unwrap();
+        let input = written.layout().paths[0].input.expect("an input");
+        let mut dropped = Preset::parse(&written.encode()).unwrap();
+        dropped.slots[input].values.clear();
+        assert_ne!(
+            Landed::of(&dropped, None),
+            Landed::of(&written, None),
+            "a used path's input values count"
+        );
     }
 }

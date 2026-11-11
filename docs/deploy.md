@@ -10,7 +10,7 @@ Total time: about 45 minutes, most of it flashing the SD card and the first boot
 
 | Path | What |
 |---|---|
-| `/opt/helix-bridge/bin/` | `helix-bridge` (server + web UI) and `tonepush` (TonePush v0.9.0 CLI) |
+| `/opt/helix-bridge/bin/` | `helix-bridge` (server + web UI) and `tonepush` (TonePush v0.12.1 CLI) |
 | `/opt/helix-bridge/fixtures/` | Recorded output, for `HELIX_BACKEND=fake` |
 | `/opt/helix-bridge/vendor/res/` | HX Edit data, copied by you (step 6). Never committed |
 | `/etc/helix-bridge/helix-bridge.env` | Settings, incl. the write token. Mode `600`. Kept on update |

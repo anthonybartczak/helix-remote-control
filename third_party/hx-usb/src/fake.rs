@@ -55,7 +55,7 @@ pub struct Pedal {
     ///
     /// An HX Effects (3.80) stopped after 195 ticks of 21 bytes - 4095 bytes -
     /// whether or not keep-alives were going out, and HX Edit sends an ACK
-    /// frame for almost every notification it receives (PATCHES.md). This
+    /// frame for almost every notification it receives (PROTOCOL.md). This
     /// models that: only ACK and data frames move the window.
     pub events_window: Option<u32>,
     /// Leave the events channel's handshake unanswered, as an HX Effects did
@@ -256,6 +256,27 @@ impl Pedal {
                 ));
                 (1, Value::Nil)
             }
+            op::IR_DESCRIPTOR => match self.irs.get(&number(key::IR_SLOT)) {
+                Some((name, sum)) => (
+                    0,
+                    hx_proto::msgmap! {
+                        key::IR_SLOT => Value::Int(number(key::IR_SLOT)),
+                        key::IR_CHECKSUM => Value::UInt(*sum),
+                        key::NAME => Value::Str(name.clone()),
+                    },
+                ),
+                None => (0, Value::Nil),
+            },
+            op::IR_SAMPLES => {
+                // A recognisable impulse: its checksum as the first sample.
+                let sum = self
+                    .irs
+                    .get(&number(key::IR_SLOT))
+                    .map_or(0, |(_, sum)| *sum);
+                let mut bytes = (sum as f32).to_le_bytes().to_vec();
+                bytes.resize(2048 * 4, 0);
+                (0, Value::Bin(bytes, 2))
+            }
             op::CLEAR_IR => {
                 self.irs.remove(&number(key::IR_SLOT));
                 (0, Value::Nil)
@@ -380,6 +401,10 @@ impl Wire for Cable {
 
 /// A session with `pedal` on the other end of the cable.
 pub fn session(pedal: &Arc<Mutex<Pedal>>) -> Session {
-    Session::replaying(Box::new(Cable(pedal.clone())), hx_proto::HX_STOMP)
-        .expect("the pretend pedal answers")
+    session_as(pedal, hx_proto::HX_STOMP)
+}
+
+/// A session with the pretend pedal answering as another device.
+pub fn session_as(pedal: &Arc<Mutex<Pedal>>, profile: hx_proto::DeviceProfile) -> Session {
+    Session::replaying(Box::new(Cable(pedal.clone())), profile).expect("the pretend pedal answers")
 }
