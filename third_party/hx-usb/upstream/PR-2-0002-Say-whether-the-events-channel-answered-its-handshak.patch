@@ -1,0 +1,223 @@
+From 85d801a22e78ad0cd63c873a02df1c9432b1abc1 Mon Sep 17 00:00:00 2001
+From: anthonybartczak <49080651+anthonybartczak@users.noreply.github.com>
+Date: Wed, 11 Nov 2026 20:11:48 +0100
+Subject: [PATCH 2/3] Say whether the events channel answered its handshake
+
+A session opened a few seconds after another one ended, or after the
+pedal powered up, can get no reply to its HELLO on the events channel.
+Requests work, but no notification arrives for the whole session. Seen
+on an HX Effects (firmware 3.80): every open 0 to 4 s after a session
+ended was like that, and none 15 s or more after. The replay fixture
+records such a session: 42 stale events frames, then the events HELLO
+unanswered and no events frame afterwards.
+
+- `route` notes each channel's HELLO reply, and
+  `Session::events_answered` reports the events channel's. The
+  handshake bytes are unchanged and nothing is retried.
+- The fake pedal answers handshakes, and `deaf_events` makes it leave
+  the events one unanswered.
+
+Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>
+---
+ PROTOCOL.md                   | 14 ++++++++++++
+ crates/hx-usb/src/commands.rs | 10 ++++++++
+ crates/hx-usb/src/fake.rs     | 43 ++++++++++++++++++++++++++++++-----
+ crates/hx-usb/src/lib.rs      | 19 ++++++++++++++++
+ 4 files changed, 80 insertions(+), 6 deletions(-)
+
+diff --git a/PROTOCOL.md b/PROTOCOL.md
+index 9d465f1..b604564 100644
+--- a/PROTOCOL.md
++++ b/PROTOCOL.md
+@@ -171,6 +171,20 @@ bytes. The body check is needed: stepping through a parameter notification,
+ the bytes `ca 00 00 00 00` (a float 0.0) and the key after them pass as a
+ header for service 0 with a small length.
+ 
++**An events handshake can go unanswered. [confirmed on an HX Effects, cause
++inferred]** A session opened within a few seconds of another one ending, or of
++the pedal powering up, can get no reply to its HELLO on `0x1002`. The other
++channels answer and requests work, but no notification arrives for the whole
++session. On an HX Effects (3.80) every open 0 to 4 s after a session ended was
++like that, and every open 15 s or more after was not. A likely cause: the
++device keeps sending notifications to a session that has ended until 4 KB are
++unacknowledged, 15 to 30 s of ticks, and ignores a handshake meanwhile.
++`crates/hx-usb/tests/fixtures/session.transcript` records such a session: 42
++stale events frames before the handshake, the control and data HELLOs
++answered, the events one not, and no events frame afterwards.
++`Session::events_answered` reports it. Nothing is retried: when to open again
++is the caller's decision.
++
+ **Idle channels need keep-alives during long reads. [confirmed]** A Helix Floor
+ (3.80) probes a channel that has carried no traffic with keep-alive frames
+ (type 0x10) at growing intervals. After four that the host leaves unanswered, it
+diff --git a/crates/hx-usb/src/commands.rs b/crates/hx-usb/src/commands.rs
+index 17f48c1..566f210 100644
+--- a/crates/hx-usb/src/commands.rs
++++ b/crates/hx-usb/src/commands.rs
+@@ -1889,6 +1889,16 @@ mod pedal_tests {
+         assert_eq!(session.events_skipped(), 21);
+     }
+ 
++    #[test]
++    fn a_session_says_whether_the_events_channel_answered() {
++        let pedal = Pedal::new();
++        assert!(fake::session(&pedal).events_answered());
++
++        let deaf = Pedal::new();
++        deaf.lock().unwrap().deaf_events = true;
++        assert!(!fake::session(&deaf).events_answered());
++    }
++
+     const SAMPLES: [f32; 4] = [0.5, -0.25, 0.125, 0.0];
+ 
+     fn sum_of(samples: &[f32]) -> u64 {
+diff --git a/crates/hx-usb/src/fake.rs b/crates/hx-usb/src/fake.rs
+index 35c0e46..08b3003 100644
+--- a/crates/hx-usb/src/fake.rs
++++ b/crates/hx-usb/src/fake.rs
+@@ -11,7 +11,7 @@ use std::collections::{BTreeMap, VecDeque};
+ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+ use std::time::Duration;
+ 
+-use hx_proto::frame::{ChannelHeader, MSG_ACK, MSG_DATA, MSG_HELLO};
++use hx_proto::frame::{ChannelHeader, FLAG_HANDSHAKE, MSG_ACK, MSG_DATA, MSG_HELLO};
+ use hx_proto::msgpack::{Encoder, Value};
+ use hx_proto::rpc::{key, op, Message, StreamReader};
+ use hx_proto::{ChannelId, Frame};
+@@ -61,6 +61,10 @@ pub struct Pedal {
+     /// frame for almost every notification it receives (PROTOCOL.md). This
+     /// models that: only ACK and data frames move the window.
+     pub events_window: Option<u32>,
++    /// Leave the events channel's handshake unanswered, as an HX Effects did
++    /// when a session opened while it was still streaming to the previous
++    /// one (PROTOCOL.md).
++    pub deaf_events: bool,
+     /// Data bytes sent on the events channel, after the channel header.
+     events_sent: u32,
+     /// What the host has acknowledged of them through ACK or data frames.
+@@ -89,6 +93,7 @@ impl Pedal {
+             transfers_in: 0,
+             hellos: Vec::new(),
+             events_window: None,
++            deaf_events: false,
+             events_sent: 0,
+             events_acked: 0,
+             events_held: VecDeque::new(),
+@@ -149,6 +154,12 @@ impl Pedal {
+         if header.msg_type == MSG_HELLO && rest.is_empty() {
+             self.hellos.push(frame.dst);
+         }
++        if frame.flags == FLAG_HANDSHAKE && header.msg_type == MSG_HELLO {
++            if !(self.deaf_events && frame.dst == ChannelId::EVENTS.device) {
++                self.answer_hello(frame.dst);
++            }
++            return;
++        }
+         if frame.dst == ChannelId::EVENTS.device
+             && (header.msg_type & MSG_ACK != 0 || header.has_data())
+         {
+@@ -312,6 +323,22 @@ impl Pedal {
+         self.outbox.push_back(frame);
+     }
+ 
++    /// Answer a channel handshake the way the device does: sequence 0, type
++    /// hello, the capability bytes it sends back.
++    fn answer_hello(&mut self, node: u16) {
++        let mut payload = Vec::new();
++        ChannelHeader {
++            seq: 0,
++            msg_type: MSG_HELLO,
++            ack: 0x0100_0100,
++        }
++        .encode_into(&mut payload);
++        payload.extend_from_slice(&[0x00, 0x02, 0x00, 0x00]);
++        let mut frame = Frame::new(host_of(node), node, payload);
++        frame.flags = FLAG_HANDSHAKE;
++        self.outbox.push_back(frame.encode().unwrap());
++    }
++
+     /// Queue one message for the host, on the channel `node` names.
+     fn reply(&mut self, node: u16, message: &Message) {
+         let body = Encoder::encode(&message.to_value());
+@@ -328,11 +355,7 @@ impl Pedal {
+         payload.extend_from_slice(&0u16.to_le_bytes());
+         payload.extend_from_slice(&(body.len() as u32).to_le_bytes());
+         payload.extend_from_slice(&body);
+-        let host = ChannelId::ALL
+-            .iter()
+-            .find(|channel| channel.device == node)
+-            .map_or(0, |channel| channel.host);
+-        let frame = Frame::new(host, node, payload).encode().unwrap();
++        let frame = Frame::new(host_of(node), node, payload).encode().unwrap();
+         if node != ChannelId::EVENTS.device {
+             self.outbox.push_back(frame);
+         } else if self.events_held.is_empty() && self.events_fit(&frame) {
+@@ -343,6 +366,14 @@ impl Pedal {
+     }
+ }
+ 
++/// The host node that talks to device node `node`.
++fn host_of(node: u16) -> u16 {
++    ChannelId::ALL
++        .iter()
++        .find(|channel| channel.device == node)
++        .map_or(0, |channel| channel.host)
++}
++
+ /// The USB cable, as far as the session can tell.
+ pub struct Cable(pub Arc<Mutex<Pedal>>);
+ 
+diff --git a/crates/hx-usb/src/lib.rs b/crates/hx-usb/src/lib.rs
+index 878f476..69de063 100644
+--- a/crates/hx-usb/src/lib.rs
++++ b/crates/hx-usb/src/lib.rs
+@@ -198,6 +198,8 @@ struct Channel {
+     /// Events channel only: what the device sends passes through this before
+     /// `reader`, which cannot recover from a frame sent out of order.
+     realign: Realign,
++    /// Whether the device answered this channel's handshake.
++    answered: bool,
+     txn: i64,
+ }
+ 
+@@ -214,6 +216,7 @@ impl Channel {
+             acked: 0,
+             reader: StreamReader::new(),
+             realign: Realign::default(),
++            answered: false,
+             txn: rpc::FIRST_TXN,
+         }
+     }
+@@ -657,6 +660,9 @@ impl Session {
+         let Some(ch) = self.channels.get_mut(&f.src) else {
+             return;
+         };
++        if hdr.msg_type == MSG_HELLO {
++            ch.answered = true;
++        }
+         if hdr.has_data() && !rest.is_empty() {
+             ch.rx_bytes = ch.rx_bytes.wrapping_add(rest.len() as u32);
+             if f.src == ChannelId::EVENTS.device {
+@@ -674,6 +680,19 @@ impl Session {
+         }
+     }
+ 
++    /// Whether the events channel answered its handshake. When it did not,
++    /// the session works but no notification ever arrives on it. Seen on an
++    /// HX Effects (3.80) when a session opens while the device is still
++    /// streaming notifications to the previous one, which it does for up to
++    /// half a minute after that session ends (PROTOCOL.md, "An events
++    /// handshake can go unanswered"). Nothing is retried here: whether to
++    /// open again, once the device has gone quiet, is the caller's decision.
++    pub fn events_answered(&self) -> bool {
++        self.channels
++            .get(&ChannelId::EVENTS.device)
++            .is_some_and(|c| c.answered)
++    }
++
+     /// Bytes stepped over on the events channel to get back onto a message
+     /// boundary, because the device sent a frame out of order. Each slip
+     /// costs one notification. See `realign`.
+-- 
+2.39.1.windows.1
+

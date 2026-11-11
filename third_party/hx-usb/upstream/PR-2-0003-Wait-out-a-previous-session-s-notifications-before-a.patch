@@ -1,0 +1,152 @@
+From 5f239b918261717a506109ed5dca1bc9cbec9a2e Mon Sep 17 00:00:00 2001
+From: anthonybartczak <49080651+anthonybartczak@users.noreply.github.com>
+Date: Wed, 11 Nov 2026 20:12:04 +0100
+Subject: [PATCH 3/3] Wait out a previous session's notifications before a
+ handshake
+
+The device keeps sending notifications to a session that has ended
+until 4 KB are unacknowledged, 15 to 30 s of ticks on an HX Effects
+(firmware 3.80), and a handshake in that time can leave the new
+session's events channel unanswered. The drain before a handshake gave
+up after 3 s with the pedal still sending.
+
+`drain` now keeps reading while transfers carry events data, for up to
+30 s in all. Acknowledgements and keep-alives, which the device sends
+to old sessions indefinitely, do not extend it, so a quiet pedal is
+drained exactly as before.
+
+Not measured on hardware on its own: the client this was written for
+also waits 20 s before it opens a session.
+
+Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>
+---
+ PROTOCOL.md              |  5 ++--
+ crates/hx-usb/src/lib.rs | 62 +++++++++++++++++++++++++++++++++++++---
+ 2 files changed, 61 insertions(+), 6 deletions(-)
+
+diff --git a/PROTOCOL.md b/PROTOCOL.md
+index b604564..9950032 100644
+--- a/PROTOCOL.md
++++ b/PROTOCOL.md
+@@ -182,8 +182,9 @@ unacknowledged, 15 to 30 s of ticks, and ignores a handshake meanwhile.
+ `crates/hx-usb/tests/fixtures/session.transcript` records such a session: 42
+ stale events frames before the handshake, the control and data HELLOs
+ answered, the events one not, and no events frame afterwards.
+-`Session::events_answered` reports it. Nothing is retried: when to open again
+-is the caller's decision.
++`Session::events_answered` reports it, and the drain before a handshake keeps
++reading while a previous session's notifications still arrive, for up to 30 s
++instead of 3. Nothing is retried: when to open again is the caller's decision.
+ 
+ **Idle channels need keep-alives during long reads. [confirmed]** A Helix Floor
+ (3.80) probes a channel that has carried no traffic with keep-alive frames
+diff --git a/crates/hx-usb/src/lib.rs b/crates/hx-usb/src/lib.rs
+index 69de063..7bb64ec 100644
+--- a/crates/hx-usb/src/lib.rs
++++ b/crates/hx-usb/src/lib.rs
+@@ -583,23 +583,42 @@ impl Session {
+     /// sustained load and coincided with the device locking up hard enough to
+     /// need its power pulled, so a few seconds of clearing is the most we ask
+     /// for before proceeding regardless.
++    ///
++    /// Notifications still arriving for a previous session extend it, up to
++    /// [`STALE_EVENTS_BUDGET`](Self::STALE_EVENTS_BUDGET). An HX Effects keeps
++    /// sending to a session that has ended for up to ~4 KB, 15-30 s, and a
++    /// handshake in that time can leave the new session's events channel
++    /// unanswered (PROTOCOL.md, "An events handshake can go unanswered").
+     fn drain(&mut self) {
+-        let give_up = Instant::now() + Self::DRAIN_BUDGET;
++        let start = Instant::now();
++        let mut give_up = start + Self::DRAIN_BUDGET;
+         let mut quiet = 0;
+         let mut discarded = 0usize;
++        let mut stale_events = 0usize;
+ 
+         while quiet < 3 && Instant::now() < give_up {
+-            match self.read_once(Self::DRAIN_READ) {
+-                Ok(_) => {
++            match self.wire.recv(Self::DRAIN_READ) {
++                Ok(data) => {
+                     quiet = 0;
+                     discarded += 1;
++                    if debug() && !data.is_empty() {
++                        eprintln!("RX {}", hex(&data));
++                    }
++                    if carries_events(&data) {
++                        stale_events += 1;
++                        give_up = (Instant::now() + Self::DRAIN_BUDGET)
++                            .min(start + Self::STALE_EVENTS_BUDGET);
++                    }
+                 }
+                 Err(_) => quiet += 1,
+             }
+         }
+ 
+         if debug() && discarded > 0 {
+-            eprintln!("drained {discarded} stale frames");
++            eprintln!(
++                "drained {discarded} stale frames ({stale_events} with notifications) in {:.1} s",
++                start.elapsed().as_secs_f32()
++            );
+         }
+     }
+ 
+@@ -728,6 +747,8 @@ impl Session {
+     /// Total budget for clearing a backlog. Bounded because an unbounded drain
+     /// kept the endpoint busy and coincided with device lock-ups.
+     const DRAIN_BUDGET: Duration = Duration::from_secs(3);
++    /// Longest drain while a previous session's notifications keep arriving.
++    const STALE_EVENTS_BUDGET: Duration = Duration::from_secs(30);
+     /// How long a single bulk write may take.
+     const WRITE: Duration = Duration::from_secs(2);
+     /// How long to wait for a cancelled write to come back.
+@@ -1408,6 +1429,17 @@ fn completion_matches(args: &Value, txn: i64) -> bool {
+         && args.get(rpc::key::STATUS).and_then(Value::as_i64) == Some(0)
+ }
+ 
++/// Whether a transfer holds stream data on the events channel.
++fn carries_events(transfer: &[u8]) -> bool {
++    Frame::decode_transfer(transfer).is_ok_and(|frames| {
++        frames.iter().any(|f| {
++            f.src == ChannelId::EVENTS.device
++                && ChannelHeader::decode(&f.payload)
++                    .is_some_and(|(hdr, rest)| hdr.has_data() && !rest.is_empty())
++        })
++    })
++}
++
+ fn decode_message(value: Value) -> Result<Message> {
+     Message::try_from_value(value)
+         .map_err(|error| Error::Protocol(format!("malformed RPC message: {error}")))
+@@ -1445,6 +1477,28 @@ fn service(id: ChannelId) -> u16 {
+ mod tests {
+     use super::*;
+ 
++    fn bytes(hex: &str) -> Vec<u8> {
++        hex.split_whitespace()
++            .map(|b| u8::from_str_radix(b, 16).unwrap())
++            .collect()
++    }
++
++    /// Only notifications keep a drain going; the keep-alives the device
++    /// sends to old sessions indefinitely do not. Transfers from an HX
++    /// Effects (3.80) capture.
++    #[test]
++    fn a_drain_waits_on_notifications_only() {
++        let tick = "1d 00 00 18 f0 03 02 10 00 04 00 04 09 02 00 00 00 00 04 00 0d 00 00 00 \
++                    82 69 16 6a 84 52 00 44 0a 79 1b 6a c0 6c cd 00";
++        let events_keepalive = "08 00 00 18 f0 03 02 10 00 69 00 10 09 02 00 00";
++        let control_ack = "08 00 00 18 ef 03 01 10 00 03 00 08 09 02 00 00";
++        assert!(carries_events(&bytes(tick)));
++        assert!(carries_events(&bytes(&format!("{control_ack} {tick}"))));
++        assert!(!carries_events(&bytes(events_keepalive)));
++        assert!(!carries_events(&bytes(control_ack)));
++        assert!(!carries_events(&[]));
++    }
++
+     /// Acknowledgements are a base plus the bytes consumed, not a bare count.
+     /// Sending the count alone makes the device stop answering, so this is the
+     /// arithmetic that matters most in the crate.
+-- 
+2.39.1.windows.1
+
