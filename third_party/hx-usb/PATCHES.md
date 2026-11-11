@@ -20,6 +20,8 @@ TonePush pin to that tag (AGENTS.md 3, with a note in the commit), delete this
 folder and the `[patch]` section in `server/Cargo.toml`. They have not been offered
 upstream yet. A pull request is prepared and not sent: `upstream/PR-2.md` and the
 three `upstream/PR-2-000*.patch` files, on TonePush `main` at `d4094a3` (2026-11-11).
+The text covers the first two patches; the third (the 30 s drain) is held back.
+crmne/tonepush pull request 100 (open) reports fault 2a on a Helix Floor (3.80).
 
 ## 1. Acknowledge the events channel (2026-10-13)
 
