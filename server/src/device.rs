@@ -542,6 +542,13 @@ impl Device for CliDevice {
 mod tests {
     use super::*;
 
+    /// Held for the whole of every test that starts a process. Tests run in
+    /// parallel threads: a fork in one test while another still has its
+    /// stand-in `tonepush` open for writing leaves that file open in the
+    /// forked child until the child execs, and running the stand-in then
+    /// fails on Linux with "Text file busy" (ETXTBSY).
+    static PROCESSES: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
     #[test]
     fn write_args_keep_user_text_after_the_separator() {
         let set = Command::Set {
@@ -615,6 +622,7 @@ mod tests {
     async fn cli_retries_a_busy_interface() {
         use std::os::unix::fs::PermissionsExt;
 
+        let _processes = PROCESSES.lock().await;
         let dir = std::env::temp_dir().join(format!("helix-bridge-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let script = dir.join("tonepush");
@@ -646,6 +654,7 @@ mod tests {
     async fn cli_reports_a_missing_device() {
         use std::os::unix::fs::PermissionsExt;
 
+        let _processes = PROCESSES.lock().await;
         let dir = std::env::temp_dir().join(format!("helix-bridge-nodev-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let script = dir.join("tonepush");
@@ -681,6 +690,8 @@ mod tests {
 
     #[tokio::test]
     async fn cli_reports_a_missing_program() {
+        // Starting a missing program still forks first.
+        let _processes = PROCESSES.lock().await;
         let dev = CliDevice::new("/nonexistent/tonepush", Duration::from_secs(1));
         let err = dev.run(Command::Info).await.unwrap_err();
         assert!(matches!(err, DeviceError::Spawn(_)));
