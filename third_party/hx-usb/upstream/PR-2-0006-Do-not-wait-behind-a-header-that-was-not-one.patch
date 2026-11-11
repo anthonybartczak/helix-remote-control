@@ -1,0 +1,182 @@
+From 51b572d0ef3e93d97897af88d692322b3cd655e2 Mon Sep 17 00:00:00 2001
+From: anthonybartczak <49080651+anthonybartczak@users.noreply.github.com>
+Date: Wed, 11 Nov 2026 20:43:51 +0100
+Subject: [PATCH 6/6] Do not wait behind a header that was not one
+
+After a slip, bytes can read as a header that declares up to 4 KB.
+The realigner waited for that many bytes before it could reject it,
+about half a minute of ticks with nothing delivered.
+
+The device sends a message's bytes together, in two frames at most.
+So once a whole message has arrived behind a header that is still
+missing bytes, that header is stepped over like any other misaligned
+byte. A header with nothing whole behind it is still waited for, as a
+message split after its first eight bytes needs.
+
+The 70 507 messages in the HX Edit captures pass through as before.
+
+Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>
+---
+ PROTOCOL.md                  |   7 +--
+ crates/hx-usb/src/realign.rs | 100 +++++++++++++++++++++++++++--------
+ 2 files changed, 82 insertions(+), 25 deletions(-)
+
+diff --git a/PROTOCOL.md b/PROTOCOL.md
+index 34f1b6a..d0e4086 100644
+--- a/PROTOCOL.md
++++ b/PROTOCOL.md
+@@ -167,9 +167,10 @@ other devices read it as before. `realign` hands on only whole messages that
+ start `00 00 04 00` (or service 0, as one captured service-open
+ reply does), declare at most 4 KB (the device never has more than that
+ unacknowledged, above) and have a body that decodes, as an RPC message on
+-service 4. Anything else is stepped over a byte at a time. The cost is the one
+-notification the slip cut through, and `Session::events_skipped` counts the
+-bytes. The body check is needed: stepping through a parameter notification,
++service 4. Anything else is stepped over a byte at a time, and so is a header
++whose message is still missing bytes once a whole message has arrived behind
++it. The cost is the one notification the slip cut through, and
++`Session::events_skipped` counts the bytes. The body check is needed: stepping through a parameter notification,
+ the bytes `ca 00 00 00 00` (a float 0.0) and the key after them pass as a
+ header for service 0 with a small length.
+ 
+diff --git a/crates/hx-usb/src/realign.rs b/crates/hx-usb/src/realign.rs
+index 0dbdb7e..4c9a2ff 100644
+--- a/crates/hx-usb/src/realign.rs
++++ b/crates/hx-usb/src/realign.rs
+@@ -28,9 +28,9 @@
+ /// Largest notification taken as genuine. Real ones are tens of bytes; the
+ /// device never has more than 4 KB unacknowledged on this channel
+ /// (PROTOCOL.md, "The events channel needs ACK frames"), so 4 KB leaves room
+-/// for any not captured yet. A false header with a length under this makes
+-/// the stream wait for that many bytes before it is rejected, so it is kept
+-/// small: at 64 KB that was minutes of notifications.
++/// for any not captured yet. A false header with a length under this is
++/// waited on until a whole message arrives behind it, so the wait is short
++/// on a channel that keeps sending, and nothing is held back on a quiet one.
+ const MAX_MESSAGE: usize = 4 * 1024;
+ 
+ /// Whether a whole candidate message's body is what the device sends here:
+@@ -51,6 +51,18 @@ fn plausible(service: u16, body: &[u8]) -> bool {
+     }
+ }
+ 
++/// What the buffered bytes hold at one offset.
++enum At {
++    /// Fewer than eight bytes: no header to judge yet.
++    Short,
++    /// Not a message.
++    Not,
++    /// A header whose message has not all arrived.
++    Waiting,
++    /// A whole plausible message, ending at this offset.
++    Whole(usize),
++}
++
+ #[derive(Default)]
+ pub(crate) struct Realign {
+     buf: Vec<u8>,
+@@ -65,31 +77,52 @@ impl Realign {
+         self.buf.extend_from_slice(bytes);
+         let mut out = Vec::new();
+         let mut pos = 0;
+-        while let Some(header) = self.buf.get(pos..pos + 8) {
+-            let originator = u16::from_le_bytes([header[0], header[1]]);
+-            let service = u16::from_le_bytes([header[2], header[3]]);
+-            let len = u32::from_le_bytes([header[4], header[5], header[6], header[7]]) as usize;
+-            if originator != 0 || !matches!(service, 0 | 4) || len > MAX_MESSAGE {
+-                pos += 1;
+-                self.skipped += 1;
+-                continue;
+-            }
+-            let end = pos + 8 + len;
+-            if self.buf.len() < end {
+-                break;
++        loop {
++            match self.at(pos) {
++                At::Whole(end) => {
++                    out.extend_from_slice(&self.buf[pos..end]);
++                    pos = end;
++                }
++                At::Short => break,
++                // The rest may still come. But the device sends a message's
++                // bytes together, in two frames at most, so a whole message
++                // already behind this one means its header was not a header:
++                // waiting on would hold back everything behind it.
++                At::Waiting if !self.whole_message_behind(pos) => break,
++                At::Waiting | At::Not => {
++                    pos += 1;
++                    self.skipped += 1;
++                }
+             }
+-            if !plausible(service, &self.buf[pos + 8..end]) {
+-                pos += 1;
+-                self.skipped += 1;
+-                continue;
+-            }
+-            out.extend_from_slice(&self.buf[pos..end]);
+-            pos = end;
+         }
+         self.buf.drain(..pos);
+         out
+     }
+ 
++    fn at(&self, pos: usize) -> At {
++        let Some(header) = self.buf.get(pos..pos + 8) else {
++            return At::Short;
++        };
++        let originator = u16::from_le_bytes([header[0], header[1]]);
++        let service = u16::from_le_bytes([header[2], header[3]]);
++        let len = u32::from_le_bytes([header[4], header[5], header[6], header[7]]) as usize;
++        if originator != 0 || !matches!(service, 0 | 4) || len > MAX_MESSAGE {
++            return At::Not;
++        }
++        let end = pos + 8 + len;
++        if self.buf.len() < end {
++            At::Waiting
++        } else if plausible(service, &self.buf[pos + 8..end]) {
++            At::Whole(end)
++        } else {
++            At::Not
++        }
++    }
++
++    fn whole_message_behind(&self, pos: usize) -> bool {
++        (pos + 1..self.buf.len()).any(|later| matches!(self.at(later), At::Whole(_)))
++    }
++
+     /// Forget a partial message, as when the channel is opened again.
+     pub(crate) fn clear(&mut self) {
+         self.buf.clear();
+@@ -202,6 +235,29 @@ mod tests {
+         }
+     }
+ 
++    #[test]
++    fn a_false_header_does_not_hold_back_what_follows() {
++        // A plausible header that declares 4096 bytes which never come. The
++        // whole ticks behind it show that it was not a header.
++        let garbage = [0x00, 0x00, 0x04, 0x00, 0x00, 0x10, 0x00, 0x00];
++        let mut realign = Realign::default();
++        assert_eq!(messages(&mut realign, &[garbage.to_vec(), ticks(2)]), 2);
++        assert_eq!(realign.skipped(), 8);
++    }
++
++    #[test]
++    fn a_header_split_from_its_body_still_waits() {
++        // The device also splits after eight bytes: a whole header, and
++        // nothing behind it yet.
++        let mut realign = Realign::default();
++        assert!(realign.push(&TICK[..8]).is_empty());
++        assert_eq!(
++            realign.push(&[&TICK[8..], &ticks(1)[..]].concat()),
++            ticks(2)
++        );
++        assert_eq!(realign.skipped(), 0);
++    }
++
+     #[test]
+     fn a_body_read_as_a_huge_length_is_stepped_over() {
+         let mut realign = Realign::default();
+-- 
+2.39.1.windows.1
+

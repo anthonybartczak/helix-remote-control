@@ -26,6 +26,14 @@ On the maintainer's triage rule (transport changes belong in the device's profil
 the upstream realigner runs only where `DeviceProfile::realigns_events` is set, the
 HX Effects' profile so far (`PR-2-0004`). Our copy here realigns for every device,
 which is the same thing for us: the bridge only talks to an HX Effects.
+
+Two faults found in upstream review are fixed there and **not in this copy yet**
+(`PR-2-0005`, `PR-2-0006`; neither has run on the pedal):
+- `open_service` clears the realigner after the read that follows the service
+  opening, so a notification whose first four bytes arrive with that read is lost.
+- A false header that declares up to 4 KB makes the realigner wait for that many
+  bytes, about half a minute of ticks, before it steps over it. Upstream steps
+  over it as soon as a whole message has arrived behind it.
 crmne/tonepush pull request 100 (open, another contributor) reports fault 2a on a
 Helix Floor (3.80) and may be merged instead of or before ours.
 
