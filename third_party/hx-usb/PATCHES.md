@@ -22,6 +22,10 @@ folder and the `[patch]` section in `server/Cargo.toml`. Offered upstream on
 (2a and 3) and `events_answered` (2b), on TonePush `main` at `d4094a3`. The text and
 patches as sent are `upstream/PR-2.md`, `PR-2-0001` and `PR-2-0002`. Held back:
 `PR-2-0003`, the 30 s drain, and the server's 20 s settle, which is ours anyway.
+On the maintainer's triage rule (transport changes belong in the device's profile)
+the upstream realigner runs only where `DeviceProfile::realigns_events` is set, the
+HX Effects' profile so far (`PR-2-0004`). Our copy here realigns for every device,
+which is the same thing for us: the bridge only talks to an HX Effects.
 crmne/tonepush pull request 100 (open, another contributor) reports fault 2a on a
 Helix Floor (3.80) and may be merged instead of or before ours.
 
