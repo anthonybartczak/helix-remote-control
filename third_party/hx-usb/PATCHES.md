@@ -27,7 +27,7 @@ the upstream realigner runs only where `DeviceProfile::realigns_events` is set, 
 HX Effects' profile so far (`PR-2-0004`). Our copy here realigns for every device,
 which is the same thing for us: the bridge only talks to an HX Effects.
 
-Faults found in upstream review are fixed there (`PR-2-0005` to `PR-2-0010`) and
+Faults found in upstream review are fixed there (`PR-2-0005` to `PR-2-0011`) and
 here: section 4. `PR-2-0008`, a line `tonepush watch` prints when the events
 channel did not answer, is CLI only and has nothing to port.
 crmne/tonepush pull request 100 (open, another contributor) reports fault 2a on a
@@ -238,9 +238,13 @@ declared body, so a notification carrying another one's bytes as data, cut
 after them, lost its own header.
 
 *Change:* two things together show a header was false: it has already waited
-through a whole frame (the device sends a message in two frames at most), and
-a whole notification has arrived behind it. A false header is therefore
-stepped over one frame later than under 4b, and no later.
+through a whole frame (no message has been seen in more than two), and a whole
+notification has arrived behind it. A false header is therefore stepped over
+one frame later than under 4b, and no later. What is left: nothing establishes
+two frames as a limit on the HX Effects, so a notification that took three and
+carried another one's bytes as data would still lose its header. The upstream
+reviewer keeps that open; a fresh `HX_DEBUG` capture counting frames per
+message would settle how real it is.
 
 **Tests for 4c and 4d.** `realign::tests::a_header_over_another_notification_is_not_taken_for_one`,
 `a_split_notification_is_kept_when_its_body_looks_like_a_reply`,

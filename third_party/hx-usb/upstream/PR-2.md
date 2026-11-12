@@ -11,13 +11,15 @@ to 4 KB of notifications). Its second review found three more: 739fad9
 1a1fde5 (PR-2-0008, `watch` says when the events channel did not answer). It
 kept one thread open, closed on 2026-11-12 by 0974c49 (PR-2-0009, an unfinished
 header is abandoned only after one more frame) and 7ab9b7e (PR-2-0010, a
-notification is taken under either service number: a correction to 739fad9).
-Notes:
+notification is taken under either service number: a correction to 739fad9)
+and 5e6b920 (PR-2-0011, wording: the two-frame limit is what was seen, not a
+rule). CodeRabbit keeps one thread open: a notification over three or more
+frames that carries another one's bytes as data. Left to the maintainer. Notes:
 - Title: Survive an out-of-order events frame on an HX Effects, and say when the events channel did not answer
 - Base: crmne/tonepush main at d4094a3 (v0.12.1 plus 10 commits), 2026-11-11.
 - As sent: git am PR-2-0001-*.patch PR-2-0002-*.patch PR-2-0004-*.patch
   PR-2-0005-*.patch PR-2-0006-*.patch PR-2-0007-*.patch PR-2-0008-*.patch
-  PR-2-0009-*.patch PR-2-0010-*.patch
+  PR-2-0009-*.patch PR-2-0010-*.patch PR-2-0011-*.patch
   PR-2-0003 (the 30 s drain) is held back: it changes timing for every device
   and is not measured on hardware on its own.
 - crmne/tonepush pull request 100 (open, by another contributor) reports the same
@@ -50,9 +52,9 @@ Two faults on the events channel (`0x1002`) of an HX Effects (firmware 3.80), bo
 
 ## Change
 
-Nine commits. The last seven came from review: the realigner sits behind the HX Effects profile, a notification split across the service opening is kept, a false header no longer holds back what follows, only a notification or the service-open reply is taken for a message, `watch` says when the events channel did not answer, an unfinished header is abandoned only after one more frame, and a notification is taken under either service number in its header.
+Ten commits. The last eight came from review: the realigner sits behind the HX Effects profile, a notification split across the service opening is kept, a false header no longer holds back what follows, only a notification or the service-open reply is taken for a message, `watch` says when the events channel did not answer, an unfinished header is abandoned only after one more frame, and a notification is taken under either service number in its header.
 
-1. **Keep the events stream on message boundaries.** New `realign.rs`, used on the events channel only, and only where the device's profile says so (`DeviceProfile::realigns_events`, on for the HX Effects alone). Every other device reads the events channel as before. It passes on whole messages that start `00 00 04 00` (or service 0, as one captured service-open reply does), declare at most 4 KB (the device never has more than that unacknowledged, #25) and whose body is exactly one notification, or the bare service number that answers the service opening. Anything else is stepped over a byte at a time until the stream lines up again, and so is a header whose message is still missing bytes a frame later, once a whole notification has arrived behind it (the device sends a message in two frames at most). A slip costs the one notification it cut through. `Session::events_skipped()` counts the bytes, and `HX_DEBUG` prints each slip. The body check is needed: stepping through a parameter notification, `ca 00 00 00 00` (a float 0.0) and the key after it pass as a header, and the reader then failed with "stream message is not MessagePack".
+1. **Keep the events stream on message boundaries.** New `realign.rs`, used on the events channel only, and only where the device's profile says so (`DeviceProfile::realigns_events`, on for the HX Effects alone). Every other device reads the events channel as before. It passes on whole messages that start `00 00 04 00` (or service 0, as one captured service-open reply does), declare at most 4 KB (the device never has more than that unacknowledged, #25) and whose body is exactly one notification, or the bare service number that answers the service opening. Anything else is stepped over a byte at a time until the stream lines up again, and so is a header whose message is still missing bytes a frame later, once a whole notification has arrived behind it (no message has been seen in more than two frames, though nothing establishes that as a limit). A slip costs the one notification it cut through. `Session::events_skipped()` counts the bytes, and `HX_DEBUG` prints each slip. The body check is needed: stepping through a parameter notification, `ca 00 00 00 00` (a float 0.0) and the key after it pass as a header, and the reader then failed with "stream message is not MessagePack".
 2. **Say whether the events channel answered its handshake.** `route` notes each channel's HELLO reply and `Session::events_answered()` reports the events channel's. The handshake bytes are unchanged (the replay test still matches) and nothing is retried: when to open again stays the caller's decision. `tonepush watch` checks it once and says on stderr when the channel did not answer.
 
 `PROTOCOL.md` gets two paragraphs: "The events stream can lose its place" and "An events handshake can go unanswered".
