@@ -27,8 +27,9 @@ the upstream realigner runs only where `DeviceProfile::realigns_events` is set, 
 HX Effects' profile so far (`PR-2-0004`). Our copy here realigns for every device,
 which is the same thing for us: the bridge only talks to an HX Effects.
 
-Two faults found in upstream review are fixed there (`PR-2-0005`, `PR-2-0006`) and
-here: section 4.
+Faults found in upstream review are fixed there (`PR-2-0005` to `PR-2-0010`) and
+here: section 4. `PR-2-0008`, a line `tonepush watch` prints when the events
+channel did not answer, is CLI only and has nothing to port.
 crmne/tonepush pull request 100 (open, another contributor) reports fault 2a on a
 Helix Floor (3.80) and may be merged instead of or before ours.
 
@@ -176,11 +177,14 @@ under a second apart at times), no session lost. Unpatched, the same use ended t
 session within about a minute, twice. Each slip still costs the notification it cut
 through, so a knob value can lag until its next change.
 
-## 4. Two faults found in upstream review (2026-11-11)
+## 4. Faults found in upstream review (2026-11-11 and 2026-11-12)
 
 Offered upstream with 2a and 3 (pull request 118), not merged. Both were in our
 own code from sections 2a and 3, found by the automated review of that pull
-request. Ported here the same day from `upstream/PR-2-0005` and `PR-2-0006`.
+request. 4a and 4b were ported here the same day from `upstream/PR-2-0005` and
+`PR-2-0006`; 4c and 4d on 2026-11-12 from `PR-2-0007`, `PR-2-0009` and
+`PR-2-0010`, by taking
+`realign.rs` as it stands upstream (only comments differ).
 
 **4a. A notification split across the service opening was dropped.** The device
 splits a notification across two frames after its first four bytes.
@@ -210,4 +214,38 @@ waited for, as a message split after its first eight bytes needs.
 change (checked in the upstream clone, same code). All 70 507 events messages
 in TonePush's HX Edit captures pass through the changed realigner as before.
 
-**On hardware:** not run yet.
+**4c. A false header could take a real notification with it.** The realigner
+passed a candidate whose body began with any value that decodes; "as an RPC
+message" in section 3 was weaker than it reads, because TonePush decodes any
+value it does not recognise as `Message::Other`. A false header over a nil and
+a real notification was passed on as one message, and the notification went
+with it, with nothing counted as skipped.
+
+*Change:* a candidate is exactly one notification, or the bare service number
+that answers the service opening, filling its declared body, or it is stepped
+over. TonePush's HX Edit captures hold nothing else on this channel: 70 492
+notifications and 15 service-open replies, none with bytes after its value.
+The header's service number is not held against a notification (`PR-2-0010`):
+the first version of this change required 4 there and so dropped everything
+the fake pedal's `notify` sends, which writes 0. Our own
+`watching_keeps_the_events_channel_flowing` caught that here; upstream no test
+did, because there only the HX Effects profile realigns.
+
+**4d. An unfinished header was abandoned on evidence from inside its own body.**
+After 4b a header still missing bytes was stepped over as soon as a whole
+message lay behind it. What lies behind an unfinished header is inside its
+declared body, so a notification carrying another one's bytes as data, cut
+after them, lost its own header.
+
+*Change:* two things together show a header was false: it has already waited
+through a whole frame (the device sends a message in two frames at most), and
+a whole notification has arrived behind it. A false header is therefore
+stepped over one frame later than under 4b, and no later.
+
+**Tests for 4c and 4d.** `realign::tests::a_header_over_another_notification_is_not_taken_for_one`,
+`a_split_notification_is_kept_when_its_body_looks_like_a_reply`,
+`a_split_notification_is_kept_when_its_body_holds_a_notification`,
+`a_false_header_is_given_one_more_frame`. Each failed before its change
+(checked in the upstream clone). The captures pass as before.
+
+**On hardware:** not run yet, none of 4a to 4d.
