@@ -252,4 +252,30 @@ message would settle how real it is.
 `a_false_header_is_given_one_more_frame`. Each failed before its change
 (checked in the upstream clone). The captures pass as before.
 
-**On hardware:** not run yet, none of 4a to 4d.
+**On hardware: verified** 2026-11-12, HX Effects 3.80, Pi 4, pedal behind the
+4-port USB hub and untouched, build `54cd34c` (4a to 4d) installed with
+`helix-bridge-update --branch`, then rolled back to `fcbd733`.
+
+- As the service, 8 minutes: one USB session, never lost or reopened, 54
+  out-of-order frames stepped over.
+- `helix-bridge watch 180` after a 40 s wait: 1296 notifications, 65 in the
+  first 10 s and 74 to 79 in every 10 s after, no stall; 2835 bytes stepped over.
+- That watch's frame log (`HX_DEBUG=1`, 561 events frames) replayed offline
+  through the realigner: 1368 messages. Counting whole in-order ticks in the
+  same bytes by hand gives 1362 after the handshake, so it passes on all there
+  is to pass on. It never held more than 8 bytes back after a frame.
+- Not accounted for: the watch counted about 65 fewer than the replay. Frames
+  read while the session opens and closes are in the log but not in the count;
+  whether that is all of it was not checked.
+
+What the device sent, from the same log:
+
+- In-order ticks came in one frame (1153) or two (209), never three. The cut is
+  after the first 4 bytes (128) or the first 8 (81).
+- About every 4 s a 4-byte piece of a tick arrived 17 bytes late. 43 times it
+  was the `00 00 04 00`, giving a run of ticks each with its first four bytes
+  behind the rest (2a). 42 times it was the length, giving a tick whose length
+  comes after its body, which 2a does not describe.
+- Each costs the ticks it cuts: about 130 of roughly 1500 in 180 s, 9%. In
+  October, with the pedal on a port of its own, it was one frame in three days.
+  The hub is still the untested guess.
