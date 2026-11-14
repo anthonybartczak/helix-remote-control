@@ -174,7 +174,7 @@ then wait 40 s); all but `probe-add` only read:
 
 | Command | Prints |
 |---|---|
-| `helix-bridge watch [SECONDS]` | The pedal's notifications as you use it |
+| `helix-bridge watch [SECONDS [POLL_MS]]` | The pedal's notifications as you use it |
 | `helix-bridge probe-unsaved` | Where the edit buffer differs from the stored preset |
 | `helix-bridge probe-slot POSITION` | The preset's slot row and one raw slot |
 | `helix-bridge probe-switches` | Each footswitch's raw reply and which blocks the bridge shows on it |

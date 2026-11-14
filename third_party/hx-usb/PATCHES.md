@@ -279,3 +279,49 @@ What the device sent, from the same log:
 - Each costs the ticks it cuts: about 130 of roughly 1500 in 180 s, 9%. In
   October, with the pedal on a port of its own, it was one frame in three days.
   The hub is still the untested guess.
+
+**Again on the merged build**, 2026-11-14, `fd244a0` installed with
+`helix-bridge-update`, same pedal, same hub, untouched. Device, preset and chain
+each read twice through the bridge: all answered, both reads identical.
+`helix-bridge watch 180` after a 40 s wait: 1296 notifications, 64 in the first
+10 s and 74 to 79 in every 10 s after, no stall, 2814 bytes stepped over.
+
+The two frame logs, two days apart, are the same to the byte count (555 events
+frames, 31 530 stream bytes after the handshake), and so is where the damage
+falls. Twice in every 714 bytes of stream (34 ticks, about 4 s) the device
+sends one frame of exactly 277 bytes, 13 ticks and 4 bytes, where its other
+frames hold one tick or part of one. The damaged stretches sit at fixed
+places around those frames: 38 and 76 bytes into one, and 332 and 336 bytes
+after its start. So the scrambling is not random: it follows the device
+batching ticks into a large frame, which follows how often we read and
+acknowledge (poll, sleep 700 ms, keep-alive). That makes the hub a weaker
+guess than a firmware fault that a large frame brings out.
+
+**Reading more often removes it**, same day, same setup, build `6e2f41d`
+(`helix-bridge watch SECONDS POLL_MS`; keep-alives stay 700 ms apart whatever
+the interval, 128 or 129 per channel in each run). Three watches of 90 s, 40 s
+apart:
+
+| Sleep between reads | Notifications | Bytes stepped over | Largest frame | Whole ticks in the bytes | ACKs sent |
+|---|---|---|---|---|---|
+| 700 ms | 635 | 1386 | 277 bytes | 707 | 175 |
+| 350 ms | 1146 | 0 | 105 bytes | 1179 | 273 |
+| 100 ms | 1163 | 0 | 21 bytes | 1180 | 908 |
+
+At 350 ms and 100 ms not one frame was out of order, and every frame held whole
+ticks (one tick was cut 8 + 13 once). The pedal makes about 13 ticks a second.
+Read every 700 ms it delivers about 8 of them and scrambles some of those, so
+the old loop lost nearly half: the pedal drops what it cannot hand over, and
+the realigner drops what arrives damaged.
+
+So the trigger is how seldom we read, not the hub. The realigner stays as the
+safety net. The server's own `POLL` in `server/src/usb.rs` went from 700 ms to
+350 ms on the strength of this, with keep-alives kept 700 ms apart
+(`KEEPALIVE`). `tonepush watch` still sleeps 700 ms.
+
+As the service, same day and setup. Before, `fd244a0` at 700 ms: 1924
+out-of-order warnings in 3 h 51 min, one about every 7 s, one USB session.
+After, `bdea50c` at 350 ms: none in the first 6.5 minutes of its session (about
+54 would have been due), one USB session, device, preset and chain read twice
+each and identical, 0.2% CPU and 9 MB resident. A longer run is still owed:
+6.5 minutes says nothing about hours.
