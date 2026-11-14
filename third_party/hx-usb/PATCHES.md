@@ -318,3 +318,10 @@ So the trigger is how seldom we read, not the hub. The realigner stays as the
 safety net. The server's own `POLL` in `server/src/usb.rs` went from 700 ms to
 350 ms on the strength of this, with keep-alives kept 700 ms apart
 (`KEEPALIVE`). `tonepush watch` still sleeps 700 ms.
+
+As the service, same day and setup. Before, `fd244a0` at 700 ms: 1924
+out-of-order warnings in 3 h 51 min, one about every 7 s, one USB session.
+After, `bdea50c` at 350 ms: none in the first 6.5 minutes of its session (about
+54 would have been due), one USB session, device, preset and chain read twice
+each and identical, 0.2% CPU and 9 MB resident. A longer run is still owed:
+6.5 minutes says nothing about hours.
