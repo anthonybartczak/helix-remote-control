@@ -351,8 +351,8 @@ another site is refused (403 `cross_origin`).
 | `{"type": "chain", "chain": {…same as /api/chain…}}` | The loaded preset's chain changed: footswitch, knob, preset or snapshot switch on the pedal, or any client's write. Carries `model_id`/`native` like `/api/chain` |
 | `{"type": "device", "connected": true\|false}` | The USB session came up or was lost |
 
-How the `usb` backend sees changes: it reads the pedal's notifications every 700 ms
-(TonePush's own pace). Bypass (event 49) and parameter (event 30) notifications carry
+How the `usb` backend sees changes: it reads the pedal's notifications every 350 ms
+(keep-alives go out every 700 ms, TonePush's own pace). Bypass (event 49) and parameter (event 30) notifications carry
 the new value, which is applied to the last-read preset and pushed at once: a re-read
 right after a change can still return the old document. Other events (preset or
 snapshot switch, anything unknown) re-read the chain 250 ms after a burst settles (at

@@ -315,7 +315,6 @@ the old loop lost nearly half: the pedal drops what it cannot hand over, and
 the realigner drops what arrives damaged.
 
 So the trigger is how seldom we read, not the hub. The realigner stays as the
-safety net. What this suggests and has not been done: shorten the server's own
-`POLL` (700 ms in `server/src/usb.rs`), which needs its own check on the pedal
-because the server's loop also serves requests. `tonepush watch` sleeps 700 ms
-as well.
+safety net. The server's own `POLL` in `server/src/usb.rs` went from 700 ms to
+350 ms on the strength of this, with keep-alives kept 700 ms apart
+(`KEEPALIVE`). `tonepush watch` still sleeps 700 ms.
