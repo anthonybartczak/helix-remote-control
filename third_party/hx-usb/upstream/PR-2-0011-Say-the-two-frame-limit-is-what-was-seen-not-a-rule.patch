@@ -1,0 +1,53 @@
+From 5e6b920640da6a0bfd94c0a1c5220f0ffb76a80c Mon Sep 17 00:00:00 2001
+From: anthonybartczak <49080651+anthonybartczak@users.noreply.github.com>
+Date: Thu, 12 Nov 2026 22:01:59 +0100
+Subject: [PATCH] Say the two-frame limit is what was seen, not a rule
+
+No message has been seen in more than two frames, and the realigner
+leans on that to abandon an unfinished header. Nothing establishes it
+as a limit of the device, so the comment and PROTOCOL.md now say so,
+and name the case it leaves open.
+
+Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>
+---
+ PROTOCOL.md                  | 6 ++++--
+ crates/hx-usb/src/realign.rs | 6 +++---
+ 2 files changed, 7 insertions(+), 5 deletions(-)
+
+diff --git a/PROTOCOL.md b/PROTOCOL.md
+index eb436e2..c6e9875 100644
+--- a/PROTOCOL.md
++++ b/PROTOCOL.md
+@@ -169,8 +169,10 @@ declare at most 4 KB (the device never has more than that unacknowledged,
+ above) and whose body is exactly one notification, or the bare service number
+ that answers the service opening. Anything else is stepped over a byte at a
+ time. So is a header whose message is still missing bytes a frame later, once a
+-whole notification has arrived behind it: the device sends a message in two
+-frames at most. The cost is the one notification the slip cut through, and
++whole notification has arrived behind it. No message has been seen in more than
++two frames, but nothing establishes that as a limit, so a notification that
++took three and carried another one's bytes as data would lose its header. The
++cost is the one notification the slip cut through, and
+ `Session::events_skipped` counts the bytes. The body check is needed: stepping
+ through a parameter notification, the bytes `ca 00 00 00 00` (a float 0.0) and
+ the key after them pass as a header for service 0 with a small length.
+diff --git a/crates/hx-usb/src/realign.rs b/crates/hx-usb/src/realign.rs
+index 4eba966..682f06b 100644
+--- a/crates/hx-usb/src/realign.rs
++++ b/crates/hx-usb/src/realign.rs
+@@ -119,9 +119,9 @@ impl Realign {
+                 // The rest may still come, so wait for it. Two things
+                 // together show that it will not, and that this header was
+                 // not a header: it has already waited through a whole frame
+-                // (the device sends a message in two frames at most), and a
+-                // whole notification has arrived behind it. Neither is
+-                // enough alone. A long message may take more frames, and
++                // (no message has been seen in more than two), and a whole
++                // notification has arrived behind it. Neither is enough
++                // alone. A long message may take more frames, and
+                 // what lies behind an unfinished header is inside its
+                 // declared body, where the bytes of a notification can turn
+                 // up as data. Waiting on regardless would hold back
+-- 
+2.39.1.windows.1
+

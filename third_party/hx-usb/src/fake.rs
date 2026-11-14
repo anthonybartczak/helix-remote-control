@@ -68,6 +68,9 @@ pub struct Pedal {
     events_acked: u32,
     /// Notifications waiting for the window to open.
     events_held: VecDeque<Vec<u8>>,
+    /// Stream bytes to send on the events channel, as they are, the moment
+    /// its service is opened: what the device has to say first.
+    pub events_at_open: Option<Vec<u8>>,
     inbox: BTreeMap<u16, StreamReader>,
     seq: BTreeMap<u16, u16>,
 }
@@ -93,6 +96,7 @@ impl Pedal {
             events_sent: 0,
             events_acked: 0,
             events_held: VecDeque::new(),
+            events_at_open: None,
             inbox: BTreeMap::new(),
             seq: BTreeMap::new(),
         }))
@@ -172,6 +176,11 @@ impl Pedal {
             self.failing_reads = Some(why);
         }
         let node = frame.dst;
+        if node == ChannelId::EVENTS.device {
+            if let Some(bytes) = self.events_at_open.take() {
+                self.send_raw_events(&bytes);
+            }
+        }
         let reader = self.inbox.entry(node).or_default();
         reader.push(rest);
         let messages = reader.take_messages().unwrap_or_default();

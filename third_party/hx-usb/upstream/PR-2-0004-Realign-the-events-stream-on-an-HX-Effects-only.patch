@@ -1,0 +1,191 @@
+From 90ca58692cef227e8112cf19996a29884bf92fa7 Mon Sep 17 00:00:00 2001
+From: anthonybartczak <49080651+anthonybartczak@users.noreply.github.com>
+Date: Wed, 11 Nov 2026 20:31:16 +0100
+Subject: [PATCH] Realign the events stream on an HX Effects only
+
+A change to session or transport behaviour belongs in the affected
+device's profile, so the other devices keep theirs. The out-of-order
+events frame was measured on an HX Effects, so only its profile turns
+the realigner on: `DeviceProfile::realigns_events`.
+
+Every other device reads the events channel as before, and a test
+holds an HX Stomp to that.
+
+Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>
+---
+ PROTOCOL.md                   |  6 ++++--
+ crates/hx-proto/src/lib.rs    | 12 ++++++++++++
+ crates/hx-usb/src/commands.rs | 19 ++++++++++++++++++-
+ crates/hx-usb/src/lib.rs      |  8 +++++---
+ crates/hx-usb/src/realign.rs  |  3 +++
+ 5 files changed, 42 insertions(+), 6 deletions(-)
+
+diff --git a/PROTOCOL.md b/PROTOCOL.md
+index b604564..34f1b6a 100644
+--- a/PROTOCOL.md
++++ b/PROTOCOL.md
+@@ -161,8 +161,10 @@ hub. The HX Edit captures here (HX Stomp, about 70 000 notifications) do not
+ show it. There the device only splits a message across two frames, after its
+ first four or eight bytes, which is in order and needs nothing.
+ 
+-`hx-usb` passes this one channel through `realign`, which hands on only whole
+-messages that start `00 00 04 00` (or service 0, as one captured service-open
++Where the device's profile says so (`DeviceProfile::realigns_events`, the HX
++Effects' only so far), `hx-usb` passes this one channel through `realign`. The
++other devices read it as before. `realign` hands on only whole messages that
++start `00 00 04 00` (or service 0, as one captured service-open
+ reply does), declare at most 4 KB (the device never has more than that
+ unacknowledged, above) and have a body that decodes, as an RPC message on
+ service 4. Anything else is stepped over a byte at a time. The cost is the one
+diff --git a/crates/hx-proto/src/lib.rs b/crates/hx-proto/src/lib.rs
+index 061006f..afd3527 100644
+--- a/crates/hx-proto/src/lib.rs
++++ b/crates/hx-proto/src/lib.rs
+@@ -87,6 +87,12 @@ pub struct DeviceProfile {
+     /// once the session has gone, at the next preset switch, until power
+     /// cycled. On an HX Stomp it kept the next session from opening.
+     pub closes_sessions: bool,
++    /// Whether the events channel's stream is put back on message boundaries
++    /// before it is read. An HX Effects (3.80) now and then sends a
++    /// notification with the first four bytes of its header behind its body,
++    /// which ended the session or held up every later notification. The
++    /// other devices' events channels are read as they arrive.
++    pub realigns_events: bool,
+ }
+ 
+ impl DeviceProfile {
+@@ -113,6 +119,7 @@ pub const HX_STOMP: DeviceProfile = DeviceProfile {
+     controls: rpc::ControlLayout::Stomp,
+     closes_ir_reads: true,
+     closes_sessions: false,
++    realigns_events: false,
+ };
+ pub const HX_STOMP_XL: DeviceProfile = DeviceProfile {
+     product_id: 0x4253,
+@@ -126,6 +133,7 @@ pub const HX_STOMP_XL: DeviceProfile = DeviceProfile {
+     controls: rpc::ControlLayout::Stomp,
+     closes_ir_reads: false,
+     closes_sessions: false,
++    realigns_events: false,
+ };
+ pub const HELIX_FLOOR: DeviceProfile = DeviceProfile {
+     product_id: 0x4248,
+@@ -146,6 +154,7 @@ pub const HELIX_FLOOR: DeviceProfile = DeviceProfile {
+     controls: rpc::ControlLayout::Helix,
+     closes_ir_reads: false,
+     closes_sessions: true,
++    realigns_events: false,
+ };
+ pub const HELIX_RACK: DeviceProfile = DeviceProfile {
+     product_id: 0x4249,
+@@ -159,6 +168,7 @@ pub const HELIX_RACK: DeviceProfile = DeviceProfile {
+     controls: rpc::ControlLayout::Stomp,
+     closes_ir_reads: false,
+     closes_sessions: false,
++    realigns_events: false,
+ };
+ pub const HELIX_LT: DeviceProfile = DeviceProfile {
+     product_id: 0x424A,
+@@ -172,6 +182,7 @@ pub const HELIX_LT: DeviceProfile = DeviceProfile {
+     controls: rpc::ControlLayout::Stomp,
+     closes_ir_reads: false,
+     closes_sessions: false,
++    realigns_events: false,
+ };
+ pub const HX_EFFECTS: DeviceProfile = DeviceProfile {
+     product_id: 0x4245,
+@@ -185,6 +196,7 @@ pub const HX_EFFECTS: DeviceProfile = DeviceProfile {
+     controls: rpc::ControlLayout::Stomp,
+     closes_ir_reads: false,
+     closes_sessions: false,
++    realigns_events: true,
+ };
+ 
+ /// Every device profile we recognise.
+diff --git a/crates/hx-usb/src/commands.rs b/crates/hx-usb/src/commands.rs
+index 566f210..22bfa91 100644
+--- a/crates/hx-usb/src/commands.rs
++++ b/crates/hx-usb/src/commands.rs
+@@ -1872,7 +1872,7 @@ mod pedal_tests {
+     #[test]
+     fn a_frame_sent_out_of_order_costs_one_notification() {
+         let pedal = Pedal::new();
+-        let mut session = fake::session(&pedal);
++        let mut session = fake::session_as(&pedal, hx_proto::HX_EFFECTS);
+         session.poll_notifications().unwrap();
+         {
+             let mut pedal = pedal.lock().unwrap();
+@@ -1889,6 +1889,23 @@ mod pedal_tests {
+         assert_eq!(session.events_skipped(), 21);
+     }
+ 
++    /// A device whose profile does not realign reads the events channel as
++    /// before: there the same frame is still reported.
++    #[test]
++    fn an_hx_stomp_still_reports_a_frame_sent_out_of_order() {
++        let pedal = Pedal::new();
++        let mut session = fake::session(&pedal);
++        session.poll_notifications().unwrap();
++        let rotated = [&TICK_BYTES[4..], &TICK_BYTES[..4]].concat();
++        pedal.lock().unwrap().send_raw_events(&rotated);
++        let outcome = (0..2).find_map(|_| session.poll_notifications().err());
++        assert!(
++            matches!(outcome, Some(crate::Error::Protocol(_))),
++            "{outcome:?}"
++        );
++        assert_eq!(session.events_skipped(), 0);
++    }
++
+     #[test]
+     fn a_session_says_whether_the_events_channel_answered() {
+         let pedal = Pedal::new();
+diff --git a/crates/hx-usb/src/lib.rs b/crates/hx-usb/src/lib.rs
+index 69de063..5917e3e 100644
+--- a/crates/hx-usb/src/lib.rs
++++ b/crates/hx-usb/src/lib.rs
+@@ -195,8 +195,9 @@ struct Channel {
+     /// stops the device dead - including the channels nobody is waiting on.
+     acked: u32,
+     reader: StreamReader,
+-    /// Events channel only: what the device sends passes through this before
+-    /// `reader`, which cannot recover from a frame sent out of order.
++    /// Events channel only, and only where the device's profile realigns
++    /// it: what the device sends passes through this before `reader`, which
++    /// cannot recover from a frame sent out of order.
+     realign: Realign,
+     /// Whether the device answered this channel's handshake.
+     answered: bool,
+@@ -657,6 +658,7 @@ impl Session {
+         let Some((hdr, rest)) = ChannelHeader::decode(&f.payload) else {
+             return;
+         };
++        let realigns = self.profile.realigns_events;
+         let Some(ch) = self.channels.get_mut(&f.src) else {
+             return;
+         };
+@@ -665,7 +667,7 @@ impl Session {
+         }
+         if hdr.has_data() && !rest.is_empty() {
+             ch.rx_bytes = ch.rx_bytes.wrapping_add(rest.len() as u32);
+-            if f.src == ChannelId::EVENTS.device {
++            if realigns && f.src == ChannelId::EVENTS.device {
+                 let skipped = ch.realign.skipped();
+                 ch.reader.push(&ch.realign.push(rest));
+                 if debug() && ch.realign.skipped() > skipped {
+diff --git a/crates/hx-usb/src/realign.rs b/crates/hx-usb/src/realign.rs
+index 0a2a789..0dbdb7e 100644
+--- a/crates/hx-usb/src/realign.rs
++++ b/crates/hx-usb/src/realign.rs
+@@ -21,6 +21,9 @@
+ //! prefix and a modest length, and steps over anything else a byte at a time
+ //! until the stream makes sense again. The cost of a slip is the one
+ //! notification it cut through.
++//!
++//! Only where the device's profile says so
++//! (`DeviceProfile::realigns_events`): the HX Effects' so far.
+ 
+ /// Largest notification taken as genuine. Real ones are tens of bytes; the
+ /// device never has more than 4 KB unacknowledged on this channel
+-- 
+2.39.1.windows.1
+

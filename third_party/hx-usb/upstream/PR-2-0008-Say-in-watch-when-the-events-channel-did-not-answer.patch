@@ -1,0 +1,49 @@
+From 1a1fde59107489cfd24889fb225e9189f6c66857 Mon Sep 17 00:00:00 2001
+From: anthonybartczak <49080651+anthonybartczak@users.noreply.github.com>
+Date: Wed, 11 Nov 2026 21:02:45 +0100
+Subject: [PATCH 8/8] Say in watch when the events channel did not answer
+
+A session whose events handshake went unanswered reports nothing, and
+`tonepush watch` then sat silent without a reason. It now says so once
+on stderr, with what to do: wait half a minute and run it again.
+Nothing is retried.
+
+Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>
+---
+ crates/tonepush-cli/src/main.rs | 9 +++++++++
+ docs/_guide/using-the-cli.md    | 2 +-
+ 2 files changed, 10 insertions(+), 1 deletion(-)
+
+diff --git a/crates/tonepush-cli/src/main.rs b/crates/tonepush-cli/src/main.rs
+index b949161..0c86cd4 100644
+--- a/crates/tonepush-cli/src/main.rs
++++ b/crates/tonepush-cli/src/main.rs
+@@ -1204,6 +1204,15 @@ fn restore(session: &mut hx_usb::Session, file: &std::path::Path) -> Result<()>
+ 
+ fn watch(session: &mut hx_usb::Session) -> Result<()> {
+     println!("watching for device notifications; ctrl-c to stop");
++    // A session opened too soon after another one can find the events
++    // channel never answers its handshake (PROTOCOL.md). Nothing is retried
++    // here; saying so beats a watch that stays silent without a reason.
++    if !session.events_answered() {
++        eprintln!(
++            "the device did not answer on its events channel, so this session may report \
++             nothing; if it stays silent, wait half a minute and run watch again"
++        );
++    }
+     loop {
+         for (event, args) in session.poll_notifications()? {
+             println!("event {event}: {args:?}");
+diff --git a/docs/_guide/using-the-cli.md b/docs/_guide/using-the-cli.md
+index 8152805..292039f 100644
+--- a/docs/_guide/using-the-cli.md
++++ b/docs/_guide/using-the-cli.md
+@@ -96,4 +96,4 @@ tonepush models           # browse the catalog; needs no hardware
+ tonepush decode capture.log   # decode a USB capture; needs no hardware
+ ```
+ 
+-`watch` prints what the device reports as you touch the front panel, which is also the fastest way to discover what an unlabelled control actually sends. `decode` replays the captures the protocol documentation was reconstructed from; the [opcode dictionary](/opcodes/) is the map.
++`watch` prints what the device reports as you touch the front panel, which is also the fastest way to discover what an unlabelled control actually sends. Started too soon after another session, it can find the device silent on its events channel; it then says so, and running it again half a minute later works. `decode` replays the captures the protocol documentation was reconstructed from; the [opcode dictionary](/opcodes/) is the map.
+-- 
+2.39.1.windows.1
+

@@ -4,10 +4,10 @@ Vendored from [TonePush](https://github.com/crmne/tonepush) tag `v0.12.1` (commi
 `dcdedcf`), MIT (see `LICENSE`). Only `Cargo.toml`'s workspace keys are made
 explicit; everything else we changed is in `src/`. To see exactly what, diff `src/`
 against `crates/hx-usb/src/` of a TonePush `v0.12.1` checkout: the result is
-sections 2 and 3 below and nothing else. `server/Cargo.toml` swaps this copy in with
+sections 2 to 4 below and nothing else. `server/Cargo.toml` swaps this copy in with
 `[patch."https://github.com/crmne/tonepush"]`. The `tonepush` CLI shipped in the Pi
 bundle is built from upstream: it has section 1 (upstream since `v0.10.0`) but
-**not** sections 2 and 3. `../hx-proto/tests/` holds the two upstream test files
+**not** sections 2 to 4. `../hx-proto/tests/` holds the two upstream test files
 the crate's tests read.
 
 History of the pin: `v0.9.0` (`5e44812`) with sections 1 to 3 as local patches until
@@ -17,8 +17,21 @@ section 1 and ours had touched the same lines). Not run on the pedal since.
 
 Drop this folder once upstream has an equivalent of sections 2 and 3: move the
 TonePush pin to that tag (AGENTS.md 3, with a note in the commit), delete this
-folder and the `[patch]` section in `server/Cargo.toml`. They have not been offered
-upstream yet.
+folder and the `[patch]` section in `server/Cargo.toml`. Offered upstream on
+2026-11-11 as https://github.com/crmne/tonepush/pull/118 (open): the realigner
+(2a and 3) and `events_answered` (2b), on TonePush `main` at `d4094a3`. The text and
+patches as sent are `upstream/PR-2.md`, `PR-2-0001` and `PR-2-0002`. Held back:
+`PR-2-0003`, the 30 s drain, and the server's 20 s settle, which is ours anyway.
+On the maintainer's triage rule (transport changes belong in the device's profile)
+the upstream realigner runs only where `DeviceProfile::realigns_events` is set, the
+HX Effects' profile so far (`PR-2-0004`). Our copy here realigns for every device,
+which is the same thing for us: the bridge only talks to an HX Effects.
+
+Faults found in upstream review are fixed there (`PR-2-0005` to `PR-2-0011`) and
+here: section 4. `PR-2-0008`, a line `tonepush watch` prints when the events
+channel did not answer, is CLI only and has nothing to port.
+crmne/tonepush pull request 100 (open, another contributor) reports fault 2a on a
+Helix Floor (3.80) and may be merged instead of or before ours.
 
 ## 1. Acknowledge the events channel (2026-10-13)
 
@@ -64,8 +77,9 @@ A/B the same evening, power cycle before each run, hands off: upstream
 
 ## 2. Survive the events channel going wrong (2026-10-14)
 
-Not upstream yet. Two device faults, both found in `HX_DEBUG=1` captures on the
-HX Effects 3.80 (Pi 4), and both also in TonePush's own material.
+Offered upstream 2026-11-11 (pull request 118), not merged. Two device faults, both found in `HX_DEBUG=1` captures on the
+HX Effects 3.80 (Pi 4). The second is also in TonePush's own material; the first
+is not (see the correction in 2a).
 
 **2a. A frame sent out of order.** Now and then the device sends one
 notification with its first four bytes moved behind the rest:
@@ -78,9 +92,15 @@ received  0d 00 00 00 <13-byte tick body> | 00 00 04 00 | 00 00 04 00 0d ...
 The byte count is right, so acknowledgements stay right, but the stream reader
 reads a body as a length: "stream message declares 1779853698 bytes" ends the
 session, or a 262144-byte length makes it wait while every later notification
-piles up behind it. HX Edit's capture of an HX Stomp
-(`captures/mac-enums-capture.log`) holds the same frame twice in ~3500
-notifications, so the device does it with HX Edit too.
+piles up behind it.
+
+*Correction 2026-11-11.* This section said HX Edit's capture of an HX Stomp
+(`captures/mac-enums-capture.log`) holds the same frame twice, so the device does
+it with HX Edit too. A re-check for the upstream pull request did not find it: all
+17 of TonePush's capture logs read in order (70 507 messages on the events
+channel). The one frame of this shape in `mac-enums-capture.log` is the first
+frame of the capture, the rest of a message the device split across two frames,
+which is in order. So the fault is confirmed on the HX Effects only.
 
 *Change:* `realign.rs`. On the events channel only, bytes pass to the stream
 reader as whole messages that start `00 00 04 00` (or service 0, as the
@@ -125,7 +145,7 @@ which ACKs once per 700 ms) while 119-145 notifications per 10 s kept arriving.
 
 ## 3. Check a realigned message's body (2026-10-15)
 
-Not upstream. Follows 2a.
+Offered upstream 2026-11-11 with 2a (pull request 118), not merged. Follows 2a.
 
 **Symptom.** HX Effects 3.80, Pi 4, helix-bridge: turning knobs on the pedal
 ended the session within a minute or so, every time, with "stream message is
@@ -156,3 +176,106 @@ blocks for about 1.5 minutes, 39 out-of-order frames stepped over (7-56 bytes ea
 under a second apart at times), no session lost. Unpatched, the same use ended the
 session within about a minute, twice. Each slip still costs the notification it cut
 through, so a knob value can lag until its next change.
+
+## 4. Faults found in upstream review (2026-11-11 and 2026-11-12)
+
+Offered upstream with 2a and 3 (pull request 118), not merged. Both were in our
+own code from sections 2a and 3, found by the automated review of that pull
+request. 4a and 4b were ported here the same day from `upstream/PR-2-0005` and
+`PR-2-0006`; 4c and 4d on 2026-11-12 from `PR-2-0007`, `PR-2-0009` and
+`PR-2-0010`, by taking
+`realign.rs` as it stands upstream (only comments differ).
+
+**4a. A notification split across the service opening was dropped.** The device
+splits a notification across two frames after its first four bytes.
+`open_service` cleared the realigner after the read that follows the service
+opening, so a first half that arrived with that read was lost, and the body
+that followed was stepped over: one notification, 17 bytes on the counter.
+
+*Change:* only the clear after the handshake stays. What the channel sent
+before it was for the session before, and the device does not finish a message
+it cut short there: in TonePush's `captures/mac-enums-capture.log` frame seq
+0xd9 ends in a message's first four bytes, HX Edit's handshake follows 4.8 s
+later, and the stream then starts on a fresh header.
+
+**4b. A false header could hold back up to 4 KB.** After a slip, bytes can read
+as a header that declares up to `MAX_MESSAGE`. The realigner waited for that
+many bytes, about half a minute of ticks with nothing delivered, before it
+could reject it.
+
+*Change:* a header whose message is still missing bytes is stepped over once a
+whole message has arrived behind it (the device sends a message's bytes
+together, in two frames at most). With nothing whole behind it, it is still
+waited for, as a message split after its first eight bytes needs.
+
+**Tests.** `commands::pedal_tests::a_notification_split_across_the_service_opening_is_kept`
+(the fake pedal's `events_at_open`), `realign::tests::a_false_header_does_not_hold_back_what_follows`,
+`a_header_split_from_its_body_still_waits`. The first two failed before their
+change (checked in the upstream clone, same code). All 70 507 events messages
+in TonePush's HX Edit captures pass through the changed realigner as before.
+
+**4c. A false header could take a real notification with it.** The realigner
+passed a candidate whose body began with any value that decodes; "as an RPC
+message" in section 3 was weaker than it reads, because TonePush decodes any
+value it does not recognise as `Message::Other`. A false header over a nil and
+a real notification was passed on as one message, and the notification went
+with it, with nothing counted as skipped.
+
+*Change:* a candidate is exactly one notification, or the bare service number
+that answers the service opening, filling its declared body, or it is stepped
+over. TonePush's HX Edit captures hold nothing else on this channel: 70 492
+notifications and 15 service-open replies, none with bytes after its value.
+The header's service number is not held against a notification (`PR-2-0010`):
+the first version of this change required 4 there and so dropped everything
+the fake pedal's `notify` sends, which writes 0. Our own
+`watching_keeps_the_events_channel_flowing` caught that here; upstream no test
+did, because there only the HX Effects profile realigns.
+
+**4d. An unfinished header was abandoned on evidence from inside its own body.**
+After 4b a header still missing bytes was stepped over as soon as a whole
+message lay behind it. What lies behind an unfinished header is inside its
+declared body, so a notification carrying another one's bytes as data, cut
+after them, lost its own header.
+
+*Change:* two things together show a header was false: it has already waited
+through a whole frame (no message has been seen in more than two), and a whole
+notification has arrived behind it. A false header is therefore stepped over
+one frame later than under 4b, and no later. What is left: nothing establishes
+two frames as a limit on the HX Effects, so a notification that took three and
+carried another one's bytes as data would still lose its header. The upstream
+reviewer keeps that open; a fresh `HX_DEBUG` capture counting frames per
+message would settle how real it is.
+
+**Tests for 4c and 4d.** `realign::tests::a_header_over_another_notification_is_not_taken_for_one`,
+`a_split_notification_is_kept_when_its_body_looks_like_a_reply`,
+`a_split_notification_is_kept_when_its_body_holds_a_notification`,
+`a_false_header_is_given_one_more_frame`. Each failed before its change
+(checked in the upstream clone). The captures pass as before.
+
+**On hardware: verified** 2026-11-12, HX Effects 3.80, Pi 4, pedal behind the
+4-port USB hub and untouched, build `54cd34c` (4a to 4d) installed with
+`helix-bridge-update --branch`, then rolled back to `fcbd733`.
+
+- As the service, 8 minutes: one USB session, never lost or reopened, 54
+  out-of-order frames stepped over.
+- `helix-bridge watch 180` after a 40 s wait: 1296 notifications, 65 in the
+  first 10 s and 74 to 79 in every 10 s after, no stall; 2835 bytes stepped over.
+- That watch's frame log (`HX_DEBUG=1`, 561 events frames) replayed offline
+  through the realigner: 1368 messages. Counting whole in-order ticks in the
+  same bytes by hand gives 1362 after the handshake, so it passes on all there
+  is to pass on. It never held more than 8 bytes back after a frame.
+- Not accounted for: the watch counted about 65 fewer than the replay. Frames
+  read while the session opens and closes are in the log but not in the count;
+  whether that is all of it was not checked.
+
+What the device sent, from the same log:
+
+- In-order ticks came in one frame (1153) or two (209), never three. The cut is
+  after the first 4 bytes (128) or the first 8 (81).
+- About every 4 s a 4-byte piece of a tick arrived 17 bytes late. 43 times it
+  was the `00 00 04 00`, giving a run of ticks each with its first four bytes
+  behind the rest (2a). 42 times it was the length, giving a tick whose length
+  comes after its body, which 2a does not describe.
+- Each costs the ticks it cuts: about 130 of roughly 1500 in 180 s, 9%. In
+  October, with the pedal on a port of its own, it was one frame in three days.
+  The hub is still the untested guess.
