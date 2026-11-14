@@ -295,6 +295,27 @@ places around those frames: 38 and 76 bytes into one, and 332 and 336 bytes
 after its start. So the scrambling is not random: it follows the device
 batching ticks into a large frame, which follows how often we read and
 acknowledge (poll, sleep 700 ms, keep-alive). That makes the hub a weaker
-guess than a firmware fault that a large frame brings out. Not tested yet: a
-shorter poll interval, which should keep frames small. In October the same
-loop saw none in 30 s, at about 6 ticks a second; now there are about 8.
+guess than a firmware fault that a large frame brings out.
+
+**Reading more often removes it**, same day, same setup, build `6e2f41d`
+(`helix-bridge watch SECONDS POLL_MS`; keep-alives stay 700 ms apart whatever
+the interval, 128 or 129 per channel in each run). Three watches of 90 s, 40 s
+apart:
+
+| Sleep between reads | Notifications | Bytes stepped over | Largest frame | Whole ticks in the bytes | ACKs sent |
+|---|---|---|---|---|---|
+| 700 ms | 635 | 1386 | 277 bytes | 707 | 175 |
+| 350 ms | 1146 | 0 | 105 bytes | 1179 | 273 |
+| 100 ms | 1163 | 0 | 21 bytes | 1180 | 908 |
+
+At 350 ms and 100 ms not one frame was out of order, and every frame held whole
+ticks (one tick was cut 8 + 13 once). The pedal makes about 13 ticks a second.
+Read every 700 ms it delivers about 8 of them and scrambles some of those, so
+the old loop lost nearly half: the pedal drops what it cannot hand over, and
+the realigner drops what arrives damaged.
+
+So the trigger is how seldom we read, not the hub. The realigner stays as the
+safety net. What this suggests and has not been done: shorten the server's own
+`POLL` (700 ms in `server/src/usb.rs`), which needs its own check on the pedal
+because the server's loop also serves requests. `tonepush watch` sleeps 700 ms
+as well.
