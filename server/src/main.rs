@@ -76,11 +76,15 @@ async fn main() {
         .with_ansi(std::io::IsTerminal::is_terminal(&std::io::stdout()))
         .init();
 
-    // Diagnostic: `helix-bridge watch [SECONDS]` (see usb::watch).
+    // Diagnostic: `helix-bridge watch [SECONDS [POLL_MS]]` (see usb::watch).
     let args: Vec<String> = std::env::args().collect();
     if args.get(1).map(String::as_str) == Some("watch") {
         let seconds = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(180);
-        if let Err(e) = helix_bridge::usb::watch(seconds) {
+        let poll = args
+            .get(3)
+            .and_then(|s| s.parse().ok())
+            .map(std::time::Duration::from_millis);
+        if let Err(e) = helix_bridge::usb::watch(seconds, poll) {
             eprintln!("watch failed: {e}");
             std::process::exit(1);
         }

@@ -1677,17 +1677,25 @@ impl Worker {
     }
 }
 
-/// `helix-bridge watch [SECONDS]`: print every notification with a time
-/// stamp, and a count every 10 s, the way `tonepush watch` does but through
-/// the patched hx-usb (third_party/hx-usb/PATCHES.md). For checking on the
-/// pedal that notifications keep flowing. Stop the service first.
-pub fn watch(seconds: u64) -> std::result::Result<(), String> {
+/// `helix-bridge watch [SECONDS [POLL_MS]]`: print every notification with a
+/// time stamp, and a count every 10 s, the way `tonepush watch` does but
+/// through the patched hx-usb (third_party/hx-usb/PATCHES.md). For checking
+/// on the pedal that notifications keep flowing. Stop the service first.
+///
+/// `poll` is how long to sleep between reads, the server's own 700 ms when
+/// not given. Reading more often also acknowledges more often, which is what
+/// the experiment in PATCHES.md 4 is about. Keep-alives stay 700 ms apart
+/// whatever the poll interval: sending those faster is what wedged the
+/// device during TonePush's development.
+pub fn watch(seconds: u64, poll: Option<Duration>) -> std::result::Result<(), String> {
+    let poll = poll.unwrap_or(POLL);
     let found = hx_usb::list().map_err(|e| e.to_string())?;
     let device = found.first().ok_or(NO_DEVICE)?;
     let mut session = device.open().map_err(|e| e.to_string())?;
     println!(
-        "watching {} for {seconds} s; ctrl-c to stop",
-        session.profile.name
+        "watching {} for {seconds} s, reading every {} ms; ctrl-c to stop",
+        session.profile.name,
+        poll.as_millis()
     );
     if !session.events_answered() {
         println!(
@@ -1698,6 +1706,7 @@ pub fn watch(seconds: u64) -> std::result::Result<(), String> {
     }
     let start = Instant::now();
     let (mut window, mut count, mut total) = (Instant::now(), 0u32, 0u32);
+    let mut kept_alive = Instant::now();
     while start.elapsed() < Duration::from_secs(seconds) {
         for (event, args) in session.poll_notifications().map_err(|e| e.to_string())? {
             count += 1;
@@ -1716,8 +1725,11 @@ pub fn watch(seconds: u64) -> std::result::Result<(), String> {
             );
             (window, count) = (Instant::now(), 0);
         }
-        thread::sleep(POLL);
-        session.keepalive().map_err(|e| e.to_string())?;
+        thread::sleep(poll);
+        if kept_alive.elapsed() >= POLL {
+            session.keepalive().map_err(|e| e.to_string())?;
+            kept_alive = Instant::now();
+        }
     }
     println!("total: {total} notifications in {seconds} s");
     let skipped = session.events_skipped();
