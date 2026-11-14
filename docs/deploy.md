@@ -1,8 +1,8 @@
 # Deploy to a Raspberry Pi
 
-Runs Helix Bridge as a systemd service on 64-bit Raspberry Pi OS Lite, reachable from
-the iPad at `http://helix-bridge.local`. The Pi never compiles: GitHub Actions builds
-the bundle (`.github/workflows/release.yml`).
+Runs Helix Bridge as a systemd service on 64-bit Raspberry Pi OS Lite, reachable from a
+browser on any tablet, phone or computer on the same Wi-Fi, at `http://helix-bridge.local`.
+The Pi never compiles: GitHub Actions builds the bundle (`.github/workflows/release.yml`).
 
 ## What gets installed
 
@@ -22,10 +22,19 @@ the bundle (`.github/workflows/release.yml`).
 1. **Flash the SD card.** Raspberry Pi Imager → Raspberry Pi OS Lite
    **(64-bit)**. In the Imager settings: hostname `helix-bridge`, enable SSH, your user
    and password, your Wi-Fi. Boot the Pi and wait about 2 minutes.
-2. **Get the bundle.** On the dev machine, from the repo's GitHub **Releases** page (or a
-   workflow run's `pi-bundle` artifact), download
-   `helix-bridge-<version>-aarch64-linux.tar.gz`. A workflow run's artifact needs a GitHub
-   login; a release does not.
+2. **Get the bundle.** On the dev machine, download
+   `helix-bridge-<version>-aarch64-linux.tar.gz` from a green build:
+   - On GitHub: the repo → **Actions** → **build**. Filter by branch `main`, event
+     **push** and status **success**, and open the newest run.
+   - Under **Artifacts**, download `pi-bundle` and unzip it: the tarball is inside.
+     Downloading needs a GitHub login (any account). Builds expire after 90 days.
+   - To test a branch before it is merged, filter by that branch instead of `main`.
+     After it merges, move the Pi back with `sudo helix-bridge-update --branch main`.
+   - Take a **push** run, never a **pull_request** run. A pull_request bundle records the
+     branch as `<number>/merge`, so `helix-bridge-update` finds no newer builds for it.
+
+   There are no tagged releases yet. Once there are, the repo's **Releases** page has the
+   same tarball, with no login needed.
 3. **Copy it to the Pi.** PowerShell on the dev machine:
    `scp .\helix-bridge-*-aarch64-linux.tar.gz <user>@helix-bridge.local:`
 4. **Install.** On the Pi (`ssh <user>@helix-bridge.local`):
@@ -34,13 +43,13 @@ the bundle (`.github/workflows/release.yml`).
    cd helix-bridge-*-aarch64-linux
    sudo ./install.sh --hostname helix-bridge
    ```
-   It ends with `Done. Open http://helix-bridge.local on the iPad`.
+   It ends with `Done. Open http://helix-bridge.local in a browser on the same Wi-Fi`.
 5. **Check without the pedal.** Before plugging the device in, try the fake backend:
    ```sh
    sudo sed -i 's/^HELIX_BACKEND=.*/HELIX_BACKEND=fake/' /etc/helix-bridge/helix-bridge.env
    sudo systemctl restart helix-bridge
    ```
-   Open `http://helix-bridge.local` on the iPad: the recorded presets appear. Switch back
+   Open `http://helix-bridge.local` in a browser: the recorded presets appear. Switch back
    with `HELIX_BACKEND=cli` and restart.
 6. **Copy HX Edit data.** Needed for model and parameter names. Never
    commit these files (AGENTS.md 5.4). PowerShell on the dev machine:
@@ -77,20 +86,20 @@ the bundle (`.github/workflows/release.yml`).
    ls -l /dev/bus/usb/*/* | grep helix-bridge   # the udev rule applied
    curl -s http://localhost/api/device
    ```
-8. **Open `http://helix-bridge.local` on the iPad.** Add it to the Home Screen
-   (Share → Add to Home Screen) for a full-screen app.
+8. **Open `http://helix-bridge.local` in a browser** on a tablet, phone or computer. On an
+   iPad or iPhone, Safari's Share → Add to Home Screen makes it a full-screen app.
 9. **Turn on writes (optional).** Without a token the UI is read-only.
    Only after a full preset backup from HX Edit (AGENTS.md 6). On the Pi:
    ```sh
    echo "HELIX_TOKEN=$(openssl rand -hex 16)" | sudo tee -a /etc/helix-bridge/helix-bridge.env
    sudo chmod 600 /etc/helix-bridge/helix-bridge.env
    sudo systemctl restart helix-bridge
-   sudo grep HELIX_TOKEN /etc/helix-bridge/helix-bridge.env   # type this on the iPad
+   sudo grep HELIX_TOKEN /etc/helix-bridge/helix-bridge.env   # type this in the app when asked
    ```
-   The iPad asks for the token on the first write and keeps it in Safari. The log line
+   The app asks for the token on the first write; each browser keeps it. The log line
    `helix-bridge listening … writes="on"` confirms it (`journalctl -u helix-bridge -n 5`).
 10. **Live sync (installs before 2026-10-13 only).** New installs use
-    the `usb` backend already: one held USB session, pedal changes appear on the iPad
+    the `usb` backend already: one held USB session, pedal changes appear in the app
     within about 1 s. An older settings file still says `cli`; switch it:
     ```sh
     sudo sed -i 's/^HELIX_BACKEND=.*/HELIX_BACKEND=usb/' /etc/helix-bridge/helix-bridge.env
@@ -102,7 +111,7 @@ the bundle (`.github/workflows/release.yml`).
 ## Own Wi-Fi for gigs (optional)
 
 On a venue's Wi-Fi, anyone else on it can open the bridge and watch your setup. With
-its own Wi-Fi the Pi makes a password-protected network that only your iPad joins.
+its own Wi-Fi the Pi makes a password-protected network that only your devices join.
 It is set in the app and is off until you turn it on. **Away** is the easy choice: at
 home the Pi joins your Wi-Fi as before (for updates); anywhere it finds no saved Wi-Fi
 it makes its own, about 1 minute after power-on. Needs the write token (step 9).
@@ -110,12 +119,12 @@ it makes its own, about 1 minute after power-on. Needs the write token (step 9).
 1. **Open Settings** in the app: the gear, or the connection dots on a tablet or phone.
 2. **Under Own Wi-Fi for gigs, tap Away.** Keep the name or change it, and type a
    password of 8 or more characters.
-3. **Tap Save.** Nothing changes now: switching would cut off this iPad.
+3. **Tap Save.** Nothing changes now: switching would cut off the browser you are using.
 4. **Try it once at home:** switch your Wi-Fi router off (or take
    the Pi out of its range), power the Pi off and on, and wait 1 minute.
-5. **Join it on the iPad:** Settings → Wi-Fi → **Helix Bridge**, type the password once.
-   iOS says "No Internet Connection": that is expected, stay on it. Then open
-   `http://helix-bridge.local` (or `http://10.42.0.1`).
+5. **Join it:** on your tablet, phone or computer, pick the **Helix Bridge** Wi-Fi and type
+   the password once. It may warn that there is no internet: that is expected, stay on it.
+   Then open `http://helix-bridge.local` (or `http://10.42.0.1`).
 
 - **Always** makes its own Wi-Fi even at home; **Off** (the default) never does.
 - Do not save the venue's Wi-Fi on the Pi: with Away it would join that instead.
@@ -182,9 +191,9 @@ HX_EDIT_RESOURCES=/opt/helix-bridge/vendor/res /opt/helix-bridge/bin/tonepush in
 | `usb` backend: "cannot open the pedal" in the log | HX Edit or a hand-run `tonepush` holds the interface. Close it; the server retries by itself (5 s, backing off to 60 s) |
 | `helix-bridge-update`: "GitHub API request failed" | Token expired, mistyped, or lacks Actions: read. Make a new one (Updating, step 2) |
 | Write buttons dashed, "Writes are off" | No `HELIX_TOKEN` in the settings file. See step 9 |
-| iPad keeps asking for the token | Token typed wrong, or changed on the Pi. Re-type it; the UI asks again after each refusal |
+| The app keeps asking for the token | Token typed wrong, or changed on the Pi. Re-type it; the UI asks again after each refusal |
 | No "Helix Bridge" Wi-Fi at the gig | A saved Wi-Fi was in range (Away joined it), or the setting is Off. `journalctl -u helix-bridge-hotspot -b` says which |
-| Pi on its own Wi-Fi at home, needed on your Wi-Fi | Always keeps it there. Join "Helix Bridge" on the iPad, open the app, set Away or Off in Settings, then switch the Pi off and on |
+| Pi on its own Wi-Fi at home, needed on your Wi-Fi | Always keeps it there. Join "Helix Bridge", open the app, set Away or Off in Settings, then switch the Pi off and on |
 
 Memory: `systemctl status helix-bridge` shows the service's RAM, `free -h` the whole Pi.
 The unit caps the service at 180 MB (`MemoryMax`).

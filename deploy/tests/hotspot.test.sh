@@ -75,7 +75,7 @@ run "on" 0 "$(saved on gig-secret-1)" FAKE_ON=HomeNet
 logged "connection add type wifi ifname wlan0 con-name helix-bridge-hotspot autoconnect no ssid Helix Bridge 802-11-wireless.mode ap"
 logged "wifi-sec.psk gig-secret-1"
 logged "connection up helix-bridge-hotspot"
-said "Join it on the iPad, then open http://helix-bridge.local"
+said "Join it on your tablet, phone or computer, then open http://helix-bridge.local"
 
 # A literal `$(x)`: the password must reach nmcli as text, never run.
 # shellcheck disable=SC2016
