@@ -279,3 +279,22 @@ What the device sent, from the same log:
 - Each costs the ticks it cuts: about 130 of roughly 1500 in 180 s, 9%. In
   October, with the pedal on a port of its own, it was one frame in three days.
   The hub is still the untested guess.
+
+**Again on the merged build**, 2026-11-14, `fd244a0` installed with
+`helix-bridge-update`, same pedal, same hub, untouched. Device, preset and chain
+each read twice through the bridge: all answered, both reads identical.
+`helix-bridge watch 180` after a 40 s wait: 1296 notifications, 64 in the first
+10 s and 74 to 79 in every 10 s after, no stall, 2814 bytes stepped over.
+
+The two frame logs, two days apart, are the same to the byte count (555 events
+frames, 31 530 stream bytes after the handshake), and so is where the damage
+falls. Twice in every 714 bytes of stream (34 ticks, about 4 s) the device
+sends one frame of exactly 277 bytes, 13 ticks and 4 bytes, where its other
+frames hold one tick or part of one. The damaged stretches sit at fixed
+places around those frames: 38 and 76 bytes into one, and 332 and 336 bytes
+after its start. So the scrambling is not random: it follows the device
+batching ticks into a large frame, which follows how often we read and
+acknowledge (poll, sleep 700 ms, keep-alive). That makes the hub a weaker
+guess than a firmware fault that a large frame brings out. Not tested yet: a
+shorter poll interval, which should keep frames small. In October the same
+loop saw none in 30 s, at about 6 ticks a second; now there are about 8.
