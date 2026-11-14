@@ -304,20 +304,25 @@ The models a block can be added with, from HX Edit's catalog. No device call; fe
   no type. `types` lists, in display order, only types some model has; empty (and no
   `type`) for Wah, Volume/Pan and Send/Return.
 
-- Categories and shelves in HX Edit's order: Distortion, Dynamics, EQ, Modulation, Delay,
-  Reverb, Pitch/Synth, Filter, Wah, Volume/Pan, Send/Return. Left out, as the HX Effects
-  has none: Amp, Amp+Cab, Preamp, Cab, IR, Looper; also Favorites and the structural
-  categories (input, output, split, merge).
+- Depends on the pedal last connected (`usb`; the HX Effects until one connects). Categories
+  and shelves in HX Edit's order: Distortion, Dynamics, EQ, Modulation, Delay, Reverb,
+  Pitch/Synth, Filter, Wah, Volume/Pan, Send/Return. Other devices also get Amp, Preamp,
+  Cab and IR; left out on the HX Effects, which has none. Left out everywhere: Amp+Cab, the
+  Dual and Dual Legacy cab shelves and the dual IR (their second half is written with the
+  first, which adding does not do), Looper (untried), Favorites and the structural
+  categories (input, output, split, merge). Amps and cabs on a Stomp are untested.
 - `id` is the device's model number for `POST /api/blocks/{position}`. HX Edit's catalog
   keeps one model for the mono and stereo versions; the device numbers them apart
   (`HD2_DelaySimpleDelayMono` 80, `…Stereo` 92), so the same name has another `id` on
   each shelf.
 - Models HX Edit marks `hidden` (older versions kept so old presets load, e.g. a second
   Glitch Delay and Poly Sustain) are left out, as HX Edit's browser does. So are models
-  whose `devices` list in HX Edit's `.models` files lacks the HX Effects (`0x00210005`):
-  FX Loop, Send and Return 3, 4 and 3/4 are Helix-only.
+  whose `devices` list in HX Edit's `.models` files lacks the pedal's device id (HX Effects
+  `0x00210005`, HX Stomp `0x00210006`, XL `0x0021000B`): FX Loop, Send and Return 3, 4
+  and 3/4 are Helix-only.
 - `based_on` needs `vendor/based-on.json`, as in `/api/chain`.
-- `fake`: the catalog when the machine has HX Edit, else the 4 recorded models.
+- `fake`: the catalog when the machine has HX Edit, as for an HX Effects, else the 4
+  recorded models.
 
 ## Own Wi-Fi for gigs: `/api/hotspot`
 

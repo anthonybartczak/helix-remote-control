@@ -244,7 +244,7 @@ function handleError(e) {
     state.device = 'missing';
     state.blocked = {
       icon: 'USB', title: 'Device not connected',
-      text: 'Check the USB cable between the HX Effects and the computer running Helix Bridge, and that the pedal is powered on.',
+      text: 'Check the USB cable between the pedal and the computer running Helix Bridge, and that it is powered on.',
       detail: err.message,
     };
   } else if (state.chain || state.presets.length) {
