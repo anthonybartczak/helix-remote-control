@@ -1,6 +1,6 @@
 # Helix Bridge
 
-Edit a Line 6 HX Effects over Wi-Fi from a browser on a tablet, phone or computer. A
+Edit a Line 6 HX Effects or HX Stomp over Wi-Fi from a browser on a tablet, phone or computer. A
 Raspberry Pi sits between the pedal and your network: it talks to the pedal over USB and
 serves a touch-friendly web UI.
 
@@ -46,8 +46,10 @@ The screenshots show the demo data of the `fake` backend (see [Settings](#settin
 
 ## What you need
 
-- **Line 6 HX Effects**, firmware 3.80. This is the only device it has been tested on;
-  other HX-family devices may work but are untested.
+- **Line 6 HX Effects, HX Stomp or HX Stomp XL**, firmware 3.80. Only the HX Effects has
+  been tested with Helix Bridge; the HX Stomp and XL should work but are untested. On a
+  Stomp the web UI also adds amps, preamps, single cabs and IRs; dual cabs, Amp+Cab and the
+  looper cannot be added yet. Other HX-family devices may work but are untested.
 - **Raspberry Pi 4** with 64-bit Raspberry Pi OS Lite, on the same network as the device
   you edit from.
 - **HX Edit** installed on a computer, once: the Pi needs a copy of its data folder for
@@ -56,7 +58,7 @@ The screenshots show the demo data of the `fake` backend (see [Settings](#settin
 
 ## Install
 
-Full guide, about 45 minutes: [docs/deploy.md](docs/deploy.md). In short:
+Full guide: [docs/deploy.md](docs/deploy.md). In short:
 
 1. Flash 64-bit Raspberry Pi OS Lite and boot the Pi.
 2. Copy the Pi bundle (from this repo's GitHub Actions or releases) to the Pi and unpack it.

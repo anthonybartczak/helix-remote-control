@@ -159,22 +159,27 @@ pub struct ModelEntry {
 const LOOPER: u32 = 17;
 const FAVORITES: u32 = 23;
 
-/// Whether blocks of this category can be added. The HX Effects has no amp,
-/// preamp, cab or IR blocks (Pilot's Guide 3.80, p. 57) and no looper; the
-/// structural categories (input, output, split, merge) are not blocks at all,
-/// and Favorites re-lists models from the others.
-fn offered(c: &hx_catalog::Category) -> bool {
+/// Whether blocks of this category can be added on `device`. The HX Effects
+/// has no amp, preamp, cab or IR blocks (Pilot's Guide 3.80, p. 57); the
+/// rest of the family has them. Left out everywhere: the looper (untried),
+/// Amp+Cab (its cab is written with the amp, which adding does not do), the
+/// structural categories (input, output, split, merge), which are not blocks
+/// at all, and Favorites, which re-lists models from the others.
+fn offered(c: &hx_catalog::Category, device: &hx_proto::DeviceProfile) -> bool {
     use hx_catalog::Category as C;
-    let not_here = [
-        C::AMP,
-        C::PREAMP,
-        C::CAB,
-        C::IR,
-        C::AMP_CAB,
-        LOOPER,
-        FAVORITES,
-    ];
-    c.is_effect() && !c.paired && !not_here.contains(&c.id)
+    let rig = [C::AMP, C::PREAMP, C::CAB, C::IR];
+    let never = [C::AMP_CAB, LOOPER, FAVORITES];
+    let effects_only = device.device_id == hx_proto::HX_EFFECTS.device_id;
+    c.is_effect() && !c.paired && !never.contains(&c.id) && !(effects_only && rig.contains(&c.id))
+}
+
+/// Whether shelf `shelf` of category `c` can be added. Dual cabs and dual IRs
+/// are left out: a dual cab's second cab is written with the first, as
+/// Amp+Cab's cab is, and the dual IR is untried.
+fn shelf_offered(c: &hx_catalog::Category, shelf: Option<&str>) -> bool {
+    use hx_catalog::Category as C;
+    let dual = shelf.is_some_and(|s| s.starts_with("Dual"));
+    !(dual && (c.id == C::CAB || c.id == C::IR))
 }
 
 /// The numbers the device uses (`Helix.sym`) for each catalog model. The
@@ -221,40 +226,52 @@ impl<'a> Numbers<'a> {
     }
 }
 
-/// Catalog ids the browser leaves out, read once from HX Edit's files
-/// (`hx_catalog` reads neither flag):
-/// - marked `"hidden"` in `HX_ModelCatalog.json`: kept only so old presets
-///   still load (Victoria_ShufflingDelay, an older Glitch Delay);
-/// - with a `devices` list in a `.models` file that lacks the HX Effects
-///   (FX Loop, Send and Return 3 and 4 are Helix-only). A model without the
-///   list runs on every device.
-fn left_out() -> &'static HashSet<String> {
-    static LEFT_OUT: OnceLock<HashSet<String>> = OnceLock::new();
-    LEFT_OUT.get_or_init(|| {
-        let mut ids = HashSet::new();
+/// Which catalog models a device can add, read once from HX Edit's files
+/// (`hx_catalog` reads neither flag).
+#[derive(Default)]
+struct Availability {
+    /// Marked `"hidden"` in `HX_ModelCatalog.json`: kept only so old presets
+    /// still load (Victoria_ShufflingDelay, an older Glitch Delay).
+    hidden: HashSet<String>,
+    /// Models a `.models` file gives a `devices` list, with the device ids on
+    /// it (FX Loop, Send and Return 3 and 4 are Helix-only). A model without
+    /// the list runs on every device.
+    devices: HashMap<String, Vec<u32>>,
+}
+
+impl Availability {
+    fn runs_on(&self, id: &str, device: u32) -> bool {
+        !self.hidden.contains(id) && self.devices.get(id).is_none_or(|d| d.contains(&device))
+    }
+}
+
+fn availability() -> &'static Availability {
+    static AVAILABILITY: OnceLock<Availability> = OnceLock::new();
+    AVAILABILITY.get_or_init(|| {
+        let mut found = Availability::default();
         let Some(dir) = hx_catalog::resources_dir() else {
-            return ids;
+            return found;
         };
         let json = |path: &std::path::Path| -> Option<serde_json::Value> {
             serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()
         };
         if let Some(catalog) = json(&dir.join("HX_ModelCatalog.json")) {
-            collect_hidden(&catalog, &mut ids);
+            collect_hidden(&catalog, &mut found.hidden);
         }
         let files = std::fs::read_dir(&dir).into_iter().flatten().flatten();
         for path in files.map(|f| f.path()) {
             if path.extension().is_some_and(|e| e == "models") {
                 if let Some(models) = json(&path) {
-                    collect_elsewhere(&models, hx_proto::HX_EFFECTS.device_id, &mut ids);
+                    collect_devices(&models, &mut found.devices);
                 }
             }
         }
-        ids
+        found
     })
 }
 
-/// Models of a `.models` file whose `devices` list lacks `device`.
-fn collect_elsewhere(models: &serde_json::Value, device: u32, ids: &mut HashSet<String>) {
+/// The `devices` list of each model in a `.models` file that has one.
+fn collect_devices(models: &serde_json::Value, into: &mut HashMap<String, Vec<u32>>) {
     let Some(models) = models.as_array() else {
         return;
     };
@@ -265,12 +282,11 @@ fn collect_elsewhere(models: &serde_json::Value, device: u32, ids: &mut HashSet<
         ) else {
             continue;
         };
-        let here = devices
+        let ids = devices
             .iter()
-            .any(|d| d.get("id").and_then(|v| v.as_u64()) == Some(u64::from(device)));
-        if !here {
-            ids.insert(id.to_owned());
-        }
+            .filter_map(|d| d.get("id")?.as_u64()?.try_into().ok())
+            .collect();
+        into.insert(id.to_owned(), ids);
     }
 }
 
@@ -289,21 +305,25 @@ fn collect_hidden(value: &serde_json::Value, ids: &mut HashSet<String>) {
     }
 }
 
-/// Every model a block can be added with, by category and shelf, in HX
-/// Edit's order, each with its effect type ([`crate::types`]). Left out:
-/// models the device has no number for, the ones HX Edit hides, and the ones
-/// another device has but the HX Effects not ([`left_out`]).
-pub fn browser(catalog: &hx_catalog::Catalog) -> Vec<ModelGroup> {
+/// Every model a block can be added with on `device`, by category and shelf,
+/// in HX Edit's order, each with its effect type ([`crate::types`]). Left
+/// out: models the device has no number for, the ones HX Edit hides, the
+/// ones only other devices have ([`Availability`]), and the categories and
+/// shelves [`offered`] and [`shelf_offered`] turn down.
+pub fn browser(catalog: &hx_catalog::Catalog, device: &hx_proto::DeviceProfile) -> Vec<ModelGroup> {
     let numbers = Numbers::new(catalog);
-    let left_out = left_out();
+    let available = availability();
     catalog
         .categories()
         .iter()
-        .filter(|c| offered(c))
+        .filter(|c| offered(c, device))
         .filter_map(|c| {
             let entries = |ids: &[String], shelf: Option<&str>| -> Vec<ModelEntry> {
+                if !shelf_offered(c, shelf) {
+                    return Vec::new();
+                }
                 ids.iter()
-                    .filter(|id| !left_out.contains(*id))
+                    .filter(|id| available.runs_on(id, device.device_id))
                     .filter_map(|id| {
                         let name = catalog.model(id)?.name.clone();
                         Some(ModelEntry {
@@ -358,16 +378,29 @@ pub fn used_types(category: &str, shelves: &[Shelf]) -> Vec<String> {
         .collect()
 }
 
-/// Whether model number `number` is one [`browser`] offers.
-pub fn addable(catalog: &hx_catalog::Catalog, number: u32) -> bool {
+/// Whether model number `number` is one [`browser`] offers on `device`.
+pub fn addable(
+    catalog: &hx_catalog::Catalog,
+    device: &hx_proto::DeviceProfile,
+    number: u32,
+) -> bool {
     let Some(model) = catalog.model_number(number) else {
         return false;
     };
-    !left_out().contains(&model.id)
+    let on_offered_shelf = |c: &hx_catalog::Category| {
+        if c.subcategories.is_empty() {
+            c.models.contains(&model.id)
+        } else {
+            c.subcategories
+                .iter()
+                .any(|s| shelf_offered(c, Some(&s.name)) && s.models.contains(&model.id))
+        }
+    };
+    availability().runs_on(&model.id, device.device_id)
         && catalog
             .categories()
             .iter()
-            .any(|c| offered(c) && c.models.contains(&model.id))
+            .any(|c| offered(c, device) && on_offered_shelf(c))
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -633,7 +666,9 @@ mod tests {
         let Ok(catalog) = hx_catalog::Catalog::load() else {
             return;
         };
-        let groups = browser(&catalog);
+        let fx = &hx_proto::HX_EFFECTS;
+        let addable = |n: u32| addable(&catalog, fx, n);
+        let groups = browser(&catalog, fx);
         let names: Vec<&str> = groups.iter().map(|g| g.name.as_str()).collect();
         // HX Edit 3.80's effect categories, in its order (Pilot's Guide p. 57).
         assert_eq!(
@@ -663,7 +698,7 @@ mod tests {
             .flat_map(|g| &g.shelves)
             .flat_map(|s| &s.models)
             .collect();
-        assert!(all.iter().all(|m| addable(&catalog, m.id)));
+        assert!(all.iter().all(|m| addable(m.id)));
         let symbol = |id: u32| catalog.symbol(id).unwrap().symbol.clone();
         // Mono and stereo are one catalog model but two device numbers.
         let delay = &groups[4];
@@ -688,13 +723,13 @@ mod tests {
         }
         let numbers = Numbers::new(&catalog);
         let old_glitch = numbers.get("Victoria_ShufflingDelay", Some("Mono"));
-        assert!(old_glitch.is_some_and(|n| !addable(&catalog, n)));
+        assert!(old_glitch.is_some_and(|n| !addable(n)));
         // An amp is a real model, but not one this device can add.
         let amp = catalog
             .models_in(hx_catalog::Category::AMP)
             .first()
             .and_then(|m| numbers.get(&m.id, None));
-        assert!(amp.is_some_and(|n| !addable(&catalog, n)));
+        assert!(amp.is_some_and(|n| !addable(n)));
 
         // Helix-only loops are left out; the HX Effects' own two stay.
         let names: Vec<&str> = all.iter().map(|m| m.name.as_str()).collect();
@@ -744,6 +779,62 @@ mod tests {
         assert!(groups[8].types.is_empty(), "Wah has no types");
     }
 
+    /// The HX Stomp adds amps, preamps, single cabs and single IRs as well;
+    /// dual cabs, Amp+Cab and Helix-only loops stay out. Skipped without HX
+    /// Edit's catalog, as above.
+    #[test]
+    fn browser_offers_a_stomp_its_rig() {
+        let Ok(catalog) = hx_catalog::Catalog::load() else {
+            return;
+        };
+        let stomp = &hx_proto::HX_STOMP;
+        let groups = browser(&catalog, stomp);
+        let names: Vec<&str> = groups.iter().map(|g| g.name.as_str()).collect();
+        for kept in ["Distortion", "Amp", "Preamp", "Cab", "IR", "Send/Return"] {
+            assert!(names.contains(&kept), "{kept}");
+        }
+        for gone in ["Amp+Cab", "Looper", "Favorites", "Input"] {
+            assert!(!names.contains(&gone), "{gone}");
+        }
+        let shelves = |name: &str| -> Vec<Option<String>> {
+            let group = groups.iter().find(|g| g.name == name).unwrap();
+            group.shelves.iter().map(|s| s.name.clone()).collect()
+        };
+        let named = |names: &[&str]| -> Vec<Option<String>> {
+            names.iter().map(|n| Some(n.to_string())).collect()
+        };
+        assert_eq!(shelves("Cab"), named(&["Single", "Single Legacy"]));
+        assert_eq!(shelves("IR"), named(&["Single"]));
+
+        let all: Vec<&ModelEntry> = groups
+            .iter()
+            .flat_map(|g| &g.shelves)
+            .flat_map(|s| &s.models)
+            .collect();
+        assert!(all.iter().all(|m| addable(&catalog, stomp, m.id)));
+        let names: Vec<&str> = all.iter().map(|m| m.name.as_str()).collect();
+        for gone in ["FX Loop 3", "FX Loop 3/4", "Send 3"] {
+            assert!(!names.contains(&gone), "{gone}");
+        }
+
+        let numbers = Numbers::new(&catalog);
+        let first = |category: u32| {
+            let model = catalog.models_in(category).into_iter().next()?;
+            numbers.get(&model.id, None)
+        };
+        let amp = first(hx_catalog::Category::AMP).unwrap();
+        assert!(addable(&catalog, stomp, amp));
+        assert!(!addable(&catalog, &hx_proto::HX_EFFECTS, amp));
+        // A dual cab's half (the `WithPan` cab) is on the Dual shelf only.
+        let with_pan = catalog
+            .symbols()
+            .iter()
+            .find(|s| s.symbol.starts_with("HD2_CabMicIr_") && s.symbol.ends_with("WithPan"))
+            .map(|s| s.number)
+            .unwrap();
+        assert!(!addable(&catalog, stomp, with_pan));
+    }
+
     #[test]
     fn device_lists_leave_other_devices_models_out() {
         let models = serde_json::json!([
@@ -751,9 +842,15 @@ mod tests {
             { "symbolicID": "HelixOnly", "devices": [{ "id": 2162689 }, { "id": 2162690 }] },
             { "symbolicID": "AlsoHere", "devices": [{ "id": 2162689 }, { "id": 2162693 }] }
         ]);
-        let mut ids = HashSet::new();
-        collect_elsewhere(&models, hx_proto::HX_EFFECTS.device_id, &mut ids);
-        assert_eq!(ids, HashSet::from(["HelixOnly".to_owned()]));
+        let mut found = Availability::default();
+        collect_devices(&models, &mut found.devices);
+        found.hidden.insert("Old".to_owned());
+        let fx = hx_proto::HX_EFFECTS.device_id;
+        let stomp = hx_proto::HX_STOMP.device_id;
+        assert!(found.runs_on("Everywhere", fx) && found.runs_on("Everywhere", stomp));
+        assert!(!found.runs_on("HelixOnly", fx) && !found.runs_on("HelixOnly", stomp));
+        assert!(found.runs_on("AlsoHere", fx) && !found.runs_on("AlsoHere", stomp));
+        assert!(!found.runs_on("Old", fx));
     }
 
     #[test]

@@ -105,7 +105,19 @@ pub struct UsbDevice {
     /// HX Edit's catalog, shared with the worker; metadata is read here so
     /// `/api/models` never waits behind a USB command.
     catalog: Option<Arc<hx_catalog::Catalog>>,
+    /// The pedal last connected, set by the worker: which blocks it can add.
+    pedal: Pedal,
     worker: Arc<Mutex<Option<thread::JoinHandle<()>>>>,
+}
+
+/// The device profile of the pedal last connected. The HX Effects until one
+/// connects: the narrowest block list (see [`controls::browser`]).
+type Pedal = Arc<Mutex<hx_proto::DeviceProfile>>;
+
+fn profile_of(pedal: &Pedal) -> hx_proto::DeviceProfile {
+    *pedal
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// Closes the session on shutdown. Kept apart from [`UsbDevice`], which the
@@ -142,14 +154,17 @@ impl UsbDevice {
             }
         };
         let shared = catalog.clone();
+        let pedal: Pedal = Arc::new(Mutex::new(hx_proto::HX_EFFECTS));
+        let set_by_worker = pedal.clone();
         let worker = thread::Builder::new()
             .name("hx-usb".into())
-            .spawn(move || Worker::new(publish, shared).run(rx))
+            .spawn(move || Worker::new(publish, shared, set_by_worker).run(rx))
             .expect("spawn the USB worker thread");
         UsbDevice {
             jobs,
             live,
             catalog,
+            pedal,
             worker: Arc::new(Mutex::new(Some(worker))),
         }
     }
@@ -200,13 +215,18 @@ impl Device for UsbDevice {
     }
 
     fn catalog(&self) -> Option<Vec<ModelGroup>> {
-        Some(controls::browser(self.catalog.as_deref()?))
+        Some(controls::browser(
+            self.catalog.as_deref()?,
+            &profile_of(&self.pedal),
+        ))
     }
 }
 
 struct Worker {
     session: Option<Session>,
     catalog: Option<Arc<hx_catalog::Catalog>>,
+    /// Shared with [`UsbDevice`]; set on every open.
+    pedal: Pedal,
     live: broadcast::Sender<Live>,
     last_poll: Instant,
     last_connect: Option<Instant>,
@@ -269,10 +289,15 @@ enum Patch {
 }
 
 impl Worker {
-    fn new(live: broadcast::Sender<Live>, catalog: Option<Arc<hx_catalog::Catalog>>) -> Self {
+    fn new(
+        live: broadcast::Sender<Live>,
+        catalog: Option<Arc<hx_catalog::Catalog>>,
+        pedal: Pedal,
+    ) -> Self {
         Worker {
             session: None,
             catalog,
+            pedal,
             live,
             last_poll: Instant::now(),
             last_connect: None,
@@ -524,6 +549,9 @@ impl Worker {
             tracing::info!(device = session.profile.name, "USB session open");
             self.check_events(&session);
             self.skipped = session.events_skipped();
+            if let Ok(mut pedal) = self.pedal.lock() {
+                *pedal = session.profile;
+            }
             self.session = Some(session);
             self.last_poll = Instant::now();
             self.last_audit = Instant::now();
@@ -907,7 +935,7 @@ impl Worker {
     fn label(&self, index: i64) -> String {
         self.session
             .as_ref()
-            .map_or_else(|| index.to_string(), |s| s.profile.slot_label(index))
+            .map_or_else(|| index.to_string(), |s| slot_label(&s.profile, index))
     }
 
     /// `show_info`.
@@ -1243,12 +1271,17 @@ impl Worker {
         let catalog = self.catalog.clone().ok_or_else(|| {
             DeviceError::Invalid("adding a block needs HX Edit data on the server (/vendor)".into())
         })?;
-        if !controls::addable(&catalog, model) {
+        self.read_doc()?;
+        let pedal = self
+            .session
+            .as_ref()
+            .map_or_else(|| profile_of(&self.pedal), |s| s.profile);
+        if !controls::addable(&catalog, &pedal, model) {
             return Err(DeviceError::Invalid(format!(
-                "model {model} is not an effect this device offers"
+                "model {model} is not a block the {} can add",
+                pedal.name
             )));
         }
-        self.read_doc()?;
         let slot = (block as usize).wrapping_sub(1);
         let preset = &self.doc.as_ref().expect("just read").preset;
         let place = routing_of(preset)
@@ -1792,6 +1825,19 @@ pub fn probe_add(position: usize, model: u32) -> std::result::Result<(), String>
     Ok(())
 }
 
+/// A zero-based preset index as the pedal's screen shows it. TonePush
+/// (v0.12.1) gives the HX Stomp XL three presets a bank, but its 128 presets
+/// are 32 banks of four, `01A`-`32D`, as an XL owner read off the screen
+/// (fretwire, issue #13). Every other profile is taken as TonePush has it.
+fn slot_label(profile: &hx_proto::DeviceProfile, index: i64) -> String {
+    let per_bank = if profile.product_id == hx_proto::HX_STOMP_XL.product_id {
+        4
+    } else {
+        profile.presets_per_bank
+    };
+    hx_proto::rpc::slot_label_for(index, per_bank)
+}
+
 fn probe_open() -> std::result::Result<Session, String> {
     let found = hx_usb::list().map_err(|e| e.to_string())?;
     let device = found.first().ok_or(NO_DEVICE)?;
@@ -2333,7 +2379,7 @@ pub fn probe_switch_table() -> std::result::Result<(), String> {
     let mut session = probe_open()?;
     let (setlist, _, _) = session.preset_info().map_err(|e| e.to_string())?;
     let mut counts: std::collections::BTreeMap<String, u32> = Default::default();
-    for index in 0..128 {
+    for index in 0..i64::from(session.profile.presets) {
         let Some(preset) = session
             .read_preset_at(setlist, index)
             .map_err(|e| e.to_string())?
@@ -2573,6 +2619,20 @@ fn notice(event: i64, args: &Value) -> Option<Cause> {
 mod tests {
     use super::*;
     use hx_proto::msgmap;
+
+    #[test]
+    fn preset_labels_follow_the_pedals_banks() {
+        let label = |p: &hx_proto::DeviceProfile, i| slot_label(p, i);
+        // HX Effects: 32 banks of four.
+        assert_eq!(label(&hx_proto::HX_EFFECTS, 104), "27A");
+        assert_eq!(label(&hx_proto::HX_EFFECTS, 127), "32D");
+        // HX Stomp: 42 banks of three.
+        assert_eq!(label(&hx_proto::HX_STOMP, 3), "02A");
+        assert_eq!(label(&hx_proto::HX_STOMP, 125), "42C");
+        // HX Stomp XL: 32 banks of four, not TonePush's three.
+        assert_eq!(label(&hx_proto::HX_STOMP_XL, 4), "02A");
+        assert_eq!(label(&hx_proto::HX_STOMP_XL, 127), "32D");
+    }
 
     /// `{82: 0, 68: 10, 121: 27, 106: nil}` and friends, as `tonepush watch`
     /// printed them on the HX Effects (docs/hx-effects-notifications.md).

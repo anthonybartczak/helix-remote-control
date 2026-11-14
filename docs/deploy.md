@@ -4,8 +4,6 @@ Runs Helix Bridge as a systemd service on 64-bit Raspberry Pi OS Lite, reachable
 the iPad at `http://helix-bridge.local`. The Pi never compiles: GitHub Actions builds
 the bundle (`.github/workflows/release.yml`).
 
-Total time: about 45 minutes, most of it flashing the SD card and the first boot.
-
 ## What gets installed
 
 | Path | What |
@@ -21,16 +19,16 @@ Total time: about 45 minutes, most of it flashing the SD card and the first boot
 
 ## Steps
 
-1. **Flash the SD card (about 15 minutes).** Raspberry Pi Imager → Raspberry Pi OS Lite
+1. **Flash the SD card.** Raspberry Pi Imager → Raspberry Pi OS Lite
    **(64-bit)**. In the Imager settings: hostname `helix-bridge`, enable SSH, your user
    and password, your Wi-Fi. Boot the Pi and wait about 2 minutes.
-2. **Get the bundle (about 2 minutes).** On the dev machine, from the repo's GitHub
-   **Releases** page (or a workflow run's `pi-bundle` artifact), download
-   `helix-bridge-<version>-aarch64-linux.tar.gz`. The repo is private, so download in the
-   browser while logged in.
+2. **Get the bundle.** On the dev machine, from the repo's GitHub **Releases** page (or a
+   workflow run's `pi-bundle` artifact), download
+   `helix-bridge-<version>-aarch64-linux.tar.gz`. A workflow run's artifact needs a GitHub
+   login; a release does not.
 3. **Copy it to the Pi.** PowerShell on the dev machine:
    `scp .\helix-bridge-*-aarch64-linux.tar.gz <user>@helix-bridge.local:`
-4. **Install (about 1 minute).** On the Pi (`ssh <user>@helix-bridge.local`):
+4. **Install.** On the Pi (`ssh <user>@helix-bridge.local`):
    ```sh
    tar xzf helix-bridge-*-aarch64-linux.tar.gz
    cd helix-bridge-*-aarch64-linux
@@ -44,7 +42,7 @@ Total time: about 45 minutes, most of it flashing the SD card and the first boot
    ```
    Open `http://helix-bridge.local` on the iPad: the recorded presets appear. Switch back
    with `HELIX_BACKEND=cli` and restart.
-6. **Copy HX Edit data (about 5 minutes).** Needed for model and parameter names. Never
+6. **Copy HX Edit data.** Needed for model and parameter names. Never
    commit these files (AGENTS.md 5.4). PowerShell on the dev machine:
    ```powershell
    scp -r 'C:\Program Files (x86)\Line6\HX Edit\res' <user>@helix-bridge.local:hx-res
@@ -59,7 +57,7 @@ Total time: about 45 minutes, most of it flashing the SD card and the first boot
    The `chmod` matters: `scp` from Windows creates the folder as `drwx------`, so the
    service user cannot read it and names stay `model 269`.
 
-   Optional, for "Based on MXR Dyna Comp" under each model (about 3 minutes): build the
+   Optional, for "Based on MXR Dyna Comp" under each model: build the
    table from HX Edit's Pilot's Guide on the dev machine, from the repository root. It is
    Line 6's table, so it stays in the gitignored `vendor/`:
    ```powershell
@@ -73,15 +71,15 @@ Total time: about 45 minutes, most of it flashing the SD card and the first boot
    ```
    The log says `based-on table loaded … models=261`.
 7. **Plug in the pedal.** Quit HX Edit on every machine first (AGENTS.md 5.5). Connect
-   the HX Effects to the Pi over USB, then:
+   the pedal to the Pi over USB, then:
    ```sh
-   lsusb | grep -i 0e41               # expect 0e41:4245 Line 6
+   lsusb | grep -i 0e41   # 0e41:4245 HX Effects, 0e41:4246 HX Stomp, 0e41:4253 HX Stomp XL
    ls -l /dev/bus/usb/*/* | grep helix-bridge   # the udev rule applied
    curl -s http://localhost/api/device
    ```
 8. **Open `http://helix-bridge.local` on the iPad.** Add it to the Home Screen
    (Share → Add to Home Screen) for a full-screen app.
-9. **Turn on writes (about 2 minutes, optional).** Without a token the UI is read-only.
+9. **Turn on writes (optional).** Without a token the UI is read-only.
    Only after a full preset backup from HX Edit (AGENTS.md 6). On the Pi:
    ```sh
    echo "HELIX_TOKEN=$(openssl rand -hex 16)" | sudo tee -a /etc/helix-bridge/helix-bridge.env
@@ -91,7 +89,7 @@ Total time: about 45 minutes, most of it flashing the SD card and the first boot
    ```
    The iPad asks for the token on the first write and keeps it in Safari. The log line
    `helix-bridge listening … writes="on"` confirms it (`journalctl -u helix-bridge -n 5`).
-10. **Live sync (about 2 minutes, installs before 2026-10-13 only).** New installs use
+10. **Live sync (installs before 2026-10-13 only).** New installs use
     the `usb` backend already: one held USB session, pedal changes appear on the iPad
     within about 1 s. An older settings file still says `cli`; switch it:
     ```sh
@@ -101,7 +99,7 @@ Total time: about 45 minutes, most of it flashing the SD card and the first boot
     ```
     Back to the old behaviour: same with `HELIX_BACKEND=cli`.
 
-## Own Wi-Fi for gigs (about 5 minutes, optional)
+## Own Wi-Fi for gigs (optional)
 
 On a venue's Wi-Fi, anyone else on it can open the bridge and watch your setup. With
 its own Wi-Fi the Pi makes a password-protected network that only your iPad joins.
@@ -113,7 +111,7 @@ it makes its own, about 1 minute after power-on. Needs the write token (step 9).
 2. **Under Own Wi-Fi for gigs, tap Away.** Keep the name or change it, and type a
    password of 8 or more characters.
 3. **Tap Save.** Nothing changes now: switching would cut off this iPad.
-4. **Try it once at home (about 2 minutes):** switch your Wi-Fi router off (or take
+4. **Try it once at home:** switch your Wi-Fi router off (or take
    the Pi out of its range), power the Pi off and on, and wait 1 minute.
 5. **Join it on the iPad:** Settings → Wi-Fi → **Helix Bridge**, type the password once.
    iOS says "No Internet Connection": that is expected, stay on it. Then open
@@ -141,7 +139,7 @@ One command on the Pi, once set up: `sudo helix-bridge-update`. It takes the new
 
 Builds are kept by GitHub for 90 days; older ones cannot be downloaded.
 
-### One-time setup (about 10 minutes)
+### One-time setup
 
 1. **Install a bundle that has the updater** (one that contains `deploy/update.sh`), the manual
    way: steps 2–4 above. It installs `/usr/local/sbin/helix-bridge-update`.
