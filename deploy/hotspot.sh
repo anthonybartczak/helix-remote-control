@@ -1,5 +1,5 @@
 #!/bin/sh
-# The Pi's own Wi-Fi, so at a gig the iPad talks to the Pi directly and nobody
+# The Pi's own Wi-Fi, so at a gig your devices talk to the Pi directly and nobody
 # on the venue's network can reach the bridge. Set in the app (Settings, Own
 # Wi-Fi for gigs), which saves /var/lib/helix-bridge/hotspot.conf; run at
 # start-up by helix-bridge-hotspot.service. By hand (cuts an SSH session that
@@ -85,7 +85,7 @@ bring_up() {
         nmcli connection delete "$CON" >/dev/null 2>&1 || true
         die "could not start our own Wi-Fi: journalctl -u NetworkManager -n 50"
     fi
-    say "Own Wi-Fi \"$name\" is on. Join it on the iPad, then open http://$(hostname).local"
+    say "Own Wi-Fi \"$name\" is on. Join it on your tablet, phone or computer, then open http://$(hostname).local"
 }
 
 wait_for_saved() { # true once $dev is on a saved network

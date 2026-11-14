@@ -24,6 +24,18 @@ so all USB work happens on the Pi.
     **unconfirmed** on this device.
   - Untouched factory presets may use the older 10-word section table; writes must keep the
     form the document arrived in (TonePush handles this).
+- Line 6 **HX Stomp** (`0e41:4246`, device id `0x00210006`) and **HX Stomp XL** (`0e41:4253`,
+  `0x0021000B`): being adapted. Not owned; a tester has one. Nothing in this repo has run on
+  either.
+  - HX Stomp: 126 presets, 42 banks × 3 (`01A`–`42C`), three snapshots, footswitches FS1–FS5
+    (FS4/FS5 are external), at most two Mic+IR cabs per preset (error -306). TonePush is
+    hardware-tested on one (fw 3.80).
+  - HX Stomp XL: 128 presets, 32 banks × 4 (`01A`–`32D`; TonePush's profile says 3, the
+    server corrects it), four snapshots, eight footswitches.
+  - Source for the snapshot, bank and cab facts: fretwire
+    (https://github.com/john-baxter-dev/fretwire, `fretwire-protocol` `DEVICES`), an
+    independent editor developed on an HX Stomp. Read it for Stomp behaviour; copy no code
+    without its licence notice (MIT/Apache-2.0).
 - Dev target 1: Raspberry Pi 4 (already owned) — used first for testing.
 - Dev target 2: Raspberry Pi 3 Model A+ (512 MB RAM, 1.4 GHz quad Cortex-A53, one USB-A port,
   dual-band Wi-Fi) — final deployment target.
@@ -160,7 +172,7 @@ Reports must be quick to scan. Shape every report like this:
 
 ## 10. Local vs cloud work
 
-The repo lives at https://github.com/anthonybartczak/helix-remote-control (private). Work is
+The repo lives at https://github.com/anthonybartczak/helix-remote-control. Work is
 split so pure code can be done in cloud sessions and only hardware work needs the dev machine.
 
 **Rule:** anything touching the HX Effects, the Pi, or HX Edit data files is local. Everything
@@ -184,8 +196,8 @@ verifies on hardware. Every cloud session starts with `git pull`; ends with a pu
 - Recorded on the real HX Effects only; never hand-edited. Re-record when the TonePush pin
   changes.
 - They may contain model names (rendered from HX Edit data) and the user's preset names.
-  This is fine while the repo is private; **never commit the HX Edit data files themselves.**
-  If the repo is ever made public, review fixtures first.
+  The repo is public: review a fixture before committing it, and **never commit the HX Edit
+  data files themselves.**
 
 **In cloud sessions:**
 - The device is not reachable. Use `FakeDevice`. Never claim hardware was tested.

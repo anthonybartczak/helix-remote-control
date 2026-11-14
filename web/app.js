@@ -237,14 +237,14 @@ function handleError(e) {
     state.device = 'unknown';
     state.blocked = {
       icon: 'LAN', title: "Can't reach Helix Bridge server",
-      text: 'Check that the iPad is on the same Wi-Fi as the bridge and that the bridge is powered on.',
+      text: 'Check that you are on the same Wi-Fi as the bridge and that the bridge is powered on.',
       detail: '',
     };
   } else if (err.code === 'no_device') {
     state.device = 'missing';
     state.blocked = {
       icon: 'USB', title: 'Device not connected',
-      text: 'Check the USB cable between the HX Effects and the computer running Helix Bridge, and that the pedal is powered on.',
+      text: 'Check the USB cable between the pedal and the computer running Helix Bridge, and that it is powered on.',
       detail: err.message,
     };
   } else if (state.chain || state.presets.length) {
@@ -1729,7 +1729,7 @@ function renderSettings() {
 const HOTSPOT_MODES = [['off', 'Off'], ['auto', 'Away'], ['on', 'Always']];
 const HOTSPOT_NOTES = {
   off: 'The Pi only joins your Wi-Fi. At a gig, anyone on the same Wi-Fi could open this page.',
-  auto: 'At home the Pi joins your Wi-Fi. Anywhere else it makes its own, with a password, so only your iPad gets in.',
+  auto: 'At home the Pi joins your Wi-Fi. Anywhere else it makes its own, with a password, so only your devices get in.',
   on: 'The Pi always makes its own Wi-Fi, even at home. Updates need your home Wi-Fi: choose Away for those.',
 };
 
@@ -1769,7 +1769,7 @@ function renderHotspot() {
   $('hotspot-status').textContent = state.writes ? h.status : 'Saving needs the write token (HELIX_TOKEN) on the Pi.';
 }
 
-/** Save it on the Pi. Nothing switches now: that would cut off this iPad. */
+/** Save it on the Pi. Nothing switches now: that would cut off this browser. */
 async function saveHotspot() {
   const h = state.hotspot;
   if (!h?.saved || h.saving) return;
@@ -1790,7 +1790,7 @@ async function saveHotspot() {
       h.status = res.mode === 'off'
         ? 'Saved. From the next time the Pi is switched on, it only joins your Wi-Fi.'
         : `Saved. Next time the Pi is switched on${res.mode === 'auto' ? ' away from home' : ''}, ` +
-          `join “${res.name}” in the iPad's Wi-Fi settings with this password, then open ${address}.`;
+          `join “${res.name}” in your Wi-Fi settings with this password, then open ${address}.`;
     }
   } catch (e) {
     const message = e instanceof ApiError ? e.message : String(e);

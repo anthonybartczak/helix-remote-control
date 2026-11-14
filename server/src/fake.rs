@@ -203,9 +203,13 @@ fn typed(model: u32, param: u32, text: &str) -> Option<f32> {
     })
 }
 
+/// The pedal the fixtures were recorded on.
+const PEDAL: hx_proto::DeviceProfile = hx_proto::HX_EFFECTS;
+
 /// Whether a block can be added with `model`.
 fn addable(model: u32) -> bool {
-    synthetic::model(model).is_some() || catalog().is_some_and(|c| controls::addable(c, model))
+    synthetic::model(model).is_some()
+        || catalog().is_some_and(|c| controls::addable(c, &PEDAL, model))
 }
 
 /// A block just put in: on, with its model's default values.
@@ -520,7 +524,7 @@ impl Device for FakeDevice {
 
     /// The catalog's models when this machine has it, else the recorded four.
     fn catalog(&self) -> Option<Vec<ModelGroup>> {
-        Some(catalog().map_or_else(synthetic::groups, controls::browser))
+        Some(catalog().map_or_else(synthetic::groups, |c| controls::browser(c, &PEDAL)))
     }
 }
 

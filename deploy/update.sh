@@ -9,8 +9,8 @@
 #   sudo helix-bridge-update --branch NAME   follow another branch (remembered)
 #   sudo helix-bridge-update --download-only fetch and verify, do not install
 #
-# Needs a read-only GitHub token in /etc/helix-bridge/github-token (the repo is
-# private). Setup: docs/deploy.md, "Updating". Never compiles (AGENTS.md 5.1).
+# Needs a read-only GitHub token in /etc/helix-bridge/github-token (Actions builds
+# need a login). Setup: docs/deploy.md, "Updating". Never compiles (AGENTS.md 5.1).
 set -eu
 
 CONF_DIR=/etc/helix-bridge
